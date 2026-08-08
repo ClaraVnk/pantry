@@ -1,15 +1,24 @@
 # Publishes the API image to GHCR from commits that are already on `main`.
 #
-# The production host does not pull from here directly on a schedule of its own
-# choosing: `podman-auto-update.timer` polls this registry every 15 minutes and
-# restarts the service when the `:latest` digest has moved. See ops/README.md.
+# HOW PRODUCTION CONSUMES THIS. Not `podman-auto-update.timer`, which this header
+# used to name and which is MASKED on the deployment host. Every 15 minutes
+# `chaudron-verified-update.timer` runs `ops/verified-auto-update.sh`, which
+# pulls the tag, runs `cosign verify` against the pinned identity below, and only
+# then restarts the service onto the bytes it just verified. `AutoUpdate=` has
+# been removed from every quadlet, so `podman auto-update` has no candidates at
+# all and the ungated path does not exist. See ops/README.md §5.
 #
 # Consequence to keep in mind: anything merged to `main` reaches production
 # within 15 minutes, with no human gate. The protections are (a) this workflow
 # refusing to publish unless CI passed on a commit that is reachable from
-# `main` in this repository, (b) the image being signed with cosign so the
-# operator can prove where a digest came from, and (c) Podman rolling the
-# container back automatically when the new image fails its health check.
+# `main` in this repository, (b) the image being signed with cosign, which the
+# host verifies as a PRECONDITION of deploying rather than as after-the-fact
+# evidence, and (c) the host waiting for the container's health check and
+# failing the update unit when it does not pass.
+#
+# What is NOT a protection any more, and was listed here as one: Podman's
+# automatic rollback. It belonged to `podman auto-update`, which is no longer in
+# the path. Rolling back is a documented manual step — ops/README.md §5.3.
 name: publish
 
 on:
@@ -30,12 +39,16 @@ on:
         required: true
         type: string
 
+# Workflow-level default: read the repository, and nothing else.
+#
+# `packages: write` and `id-token: write` used to sit here. Both are needed by
+# exactly one job, and a token at this level is granted to EVERY job in the file
+# — including jobs that do not exist yet. The next job somebody adds, to run a
+# scan or publish a report, would inherit the right to push to GHCR and to mint
+# an OIDC token that signs as this workflow, silently and without a diff that
+# mentions permissions. Scoped down to `jobs.publish` below.
 permissions:
   contents: read
-  packages: write
-  # Keyless cosign signing: the runner exchanges this OIDC token for a
-  # short-lived Fulcio certificate. No signing key is ever stored anywhere.
-  id-token: write
 
 concurrency:
   group: publish-main
@@ -48,6 +61,15 @@ jobs:
   publish:
     name: Build and push to GHCR
     runs-on: ubuntu-latest
+    # The only job that may push an image or sign one. A job-level block
+    # replaces the workflow-level default wholesale rather than adding to it,
+    # so `contents: read` is restated here.
+    permissions:
+      contents: read
+      packages: write
+      # Keyless cosign signing: the runner exchanges this OIDC token for a
+      # short-lived Fulcio certificate. No signing key is ever stored anywhere.
+      id-token: write
     # Three conditions, none of which is sufficient alone. A `workflow_run`
     # payload describes a run that happened *in this repository* but may have
     # been produced by somebody else's code, and each field closes a different
@@ -76,6 +98,35 @@ jobs:
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
+      # First, before anything is built, logged into or pushed.
+      #
+      # `workflow_dispatch` lets the operator choose the ref the workflow RUNS
+      # from, which is a different thing from the `ref` input naming the commit
+      # to BUILD. The commit input is validated against main's history below;
+      # the ref the workflow runs from was not validated at all, and it is what
+      # ends up in the keyless signing certificate:
+      # `…/publish.yml@refs/heads/<whatever>`.
+      #
+      # The deployment host pins that identity to `@refs/heads/main`
+      # (ops/verified-auto-update.sh). So dispatching from any other branch
+      # produced a perfectly valid signature that the gate is built to REFUSE —
+      # and it did so only after `:latest` had already been moved. Production
+      # then sat on a digest it would not deploy, failing every 15 minutes, with
+      # a green workflow run to look at.
+      #
+      # This fails the job rather than skipping it via `if:`. A skipped job
+      # leaves the run green, which is the same silence in a different shape.
+      - name: Refuse to publish from a ref other than main
+        env:
+          RUNNING_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNING_REF" != "refs/heads/main" ]; then
+            echo "::error title=Wrong ref::This workflow was run from '${RUNNING_REF}'. Keyless signing would record that ref in the certificate, and the deployment host only accepts '…/publish.yml@refs/heads/main' — so the image would be published, :latest would move, and the host would refuse to deploy it. Re-run this workflow from the main branch; the commit to publish is the 'ref' input, not the branch you launch from."
+            exit 1
+          fi
+          echo "Running from ${RUNNING_REF}." >> "$GITHUB_STEP_SUMMARY"
+
       # Checked out at `main`, deliberately not at the ref being published: the
       # ref is validated against this history before it is ever materialised, so
       # a commit that is not on `main` never lands in the workspace.
@@ -212,5 +263,9 @@ jobs:
             echo "Published ${IMAGE}:latest → ${DIGEST}"
             echo "Immutable tag: ${IMAGE}:${SHORT} (commit ${SHA})"
             echo "Signed keyless as ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/publish.yml@${GITHUB_REF}"
-            echo "Production will pick this up within 15 minutes."
+            echo ""
+            echo "That identity string is what ops/verified-auto-update.sh pins."
+            echo "Production picks this up within 15 minutes, but only after"
+            echo "cosign verifies it; watch the host with:"
+            echo '  systemctl --user is-failed chaudron-verified-update.service'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -34,21 +34,25 @@ from chaudron.domain.llm_ports import (
     ProviderCapabilities,
     ProviderContext,
     ProviderResponseInvalid,
+    TokenUsage,
 )
-from chaudron.infra.llm.base import CompletionRequest, ProviderTransport
+from chaudron.infra.llm.base import Completion, CompletionRequest, ProviderTransport
 from chaudron.infra.llm.http import (
     GuardedHttpClient,
     HttpFailure,
     Resolver,
+    resolve_pin,
     translate_http_status,
     validate_ollama_base_url,
 )
 from chaudron.infra.llm.settings import _DEFAULT_MAX_NUM_CTX, LlmSettings
+from chaudron.infra.llm.usage import token_count
 
 __all__ = [
     "PROVIDER_CODE",
     "OllamaTransport",
     "build_guarded_client",
+    "build_pinned_client",
     "probe_capabilities",
 ]
 
@@ -93,6 +97,42 @@ def build_guarded_client(
         transport=transport,
         resolver=resolver,
         pinned_addresses=pinned_addresses,
+    )
+
+
+async def build_pinned_client(
+    base_url: str,
+    settings: LlmSettings,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    resolver: Resolver | None = None,
+) -> GuardedHttpClient:
+    """:func:`build_guarded_client`, with the pin *obtained* rather than supplied.
+
+    This is the production entry point, and the reason the whole build path is
+    asynchronous. The rebinding check needs two DNS answers taken at different
+    moments; only a caller that can await a resolver is able to take the first one.
+    A synchronous build could pass a resolver but never a pin, which yields a client
+    whose check returns on its first line -- present, plausible, and inert.
+
+    ``build_guarded_client`` stays synchronous beside it because the conformance
+    suite and the SSRF tests supply their own pin and must not need an event loop
+    to construct a client.
+    """
+    if resolver is None:
+        # No resolver means no pinning by design: the first-party providers, and the
+        # tests that exercise the other guards on their own.
+        return build_guarded_client(base_url, settings, transport=transport)
+    # Validated twice on this path -- here for the URL to resolve, then again inside
+    # the builder. It is a pure function over a short string; paying it keeps a
+    # single construction path rather than two that can drift.
+    url = validate_ollama_base_url(base_url, settings)
+    return build_guarded_client(
+        base_url,
+        settings,
+        transport=transport,
+        resolver=resolver,
+        pinned_addresses=await resolve_pin(url, resolver),
     )
 
 
@@ -199,7 +239,7 @@ class OllamaTransport(ProviderTransport):
         self._client = client
         self._max_num_ctx = max_num_ctx
 
-    async def complete(self, request: CompletionRequest) -> str:
+    async def complete(self, request: CompletionRequest) -> Completion:
         payload = self._payload(request)
         result = await self._client.post_json(
             "/api/chat",
@@ -217,7 +257,7 @@ class OllamaTransport(ProviderTransport):
                     + _UNREACHABLE_HINT
                 ),
             )
-        return self._text_of(result)
+        return Completion(text=self._text_of(result), usage=_usage_of(result))
 
     def _payload(self, request: CompletionRequest) -> dict[str, Any]:
         user: dict[str, Any] = {"role": "user", "content": request.user}
@@ -264,3 +304,30 @@ class OllamaTransport(ProviderTransport):
                 context=self.context("empty_response"),
             )
         return content
+
+
+def _usage_of(payload: dict[str, Any]) -> TokenUsage | None:
+    """Ollama's counters, which are named after evaluation rather than billing.
+
+    ``prompt_eval_count`` is the prompt it evaluated and ``eval_count`` what it
+    generated. Two Ollama-specific facts are encoded here rather than assumed:
+
+    * ``prompt_eval_count`` is **omitted** when the runtime answered entirely from
+      its own KV cache, so its absence is a real "unknown", not an error;
+    * ``cached_input_tokens`` is ``0``, and that zero is a measurement rather than a
+      default. Ollama exposes no addressable prompt cache -- which is exactly why
+      ``supports_prompt_caching`` is ``False`` and the stable prefix is resent every
+      call -- so nothing was served from one. This is the one place a zero is the
+      truthful answer, and it is what makes the degraded-mode notice ("your model
+      does not cache the instructions") a number the household can read.
+    """
+    reported = TokenUsage(
+        input_tokens=token_count(payload.get("prompt_eval_count")),
+        output_tokens=token_count(payload.get("eval_count")),
+        cached_input_tokens=0,
+    )
+    # `is_known` is always true thanks to the zero above, so the real question is
+    # whether the runtime said anything at all about the tokens it evaluated.
+    if reported.input_tokens is None and reported.output_tokens is None:
+        return None
+    return reported

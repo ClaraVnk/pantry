@@ -9,7 +9,7 @@ to prevent.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -54,11 +54,15 @@ class SecurityHeadersMiddleware:
       only document this app serves.
     * ``Content-Security-Policy`` -- see :data:`API_CSP` and :data:`HTML_CSP`.
     * ``Cache-Control: no-store`` on ``/v1/*`` -- the concrete one. Those responses
-      are one household's inventory, and the identifier selecting the household
-      travels in a header no cache includes in its key. Without this, a shared
-      proxy may serve household A's fridge to household B.
-    * ``Vary: X-Household-Id`` on ``/v1/*`` -- belt to the same braces, for a cache
-      that ignores ``no-store``.
+      are one household's inventory, and neither the cookie identifying the
+      account nor the header selecting the household is part of a cache's key by
+      default. Without this, a shared proxy may serve household A's fridge to
+      household B.
+    * ``Vary: Cookie, X-Household-Id`` on ``/v1/*`` -- belt to the same braces, for
+      a cache that ignores ``no-store``. ``Cookie`` is the one that matters since
+      authentication moved there: it is now the input that decides *whose* data a
+      response contains, and a cache keyed only on the URL would hand one
+      account's answer to the next caller.
     * ``Strict-Transport-Security`` in production only.
 
     Deliberately **not** set: ``Cross-Origin-Embedder-Policy`` and
@@ -96,6 +100,7 @@ class SecurityHeadersMiddleware:
         headers.setdefault("content-security-policy", HTML_CSP if is_html else API_CSP)
         if private:
             headers.setdefault("cache-control", "no-store")
+            headers.append("vary", "Cookie")
             headers.append("vary", "X-Household-Id")
         if self._production:
             headers.setdefault("strict-transport-security", HSTS_VALUE)
@@ -116,30 +121,50 @@ class RequestSizeLimitMiddleware:
     a generic ``400``, so any other exception type would be reported as a parse
     failure instead of a size refusal.
 
+    *Per-path bounds.* ``path_bounds`` raises the ceiling for the routes that
+    carry a file rather than a JSON document. The general cap is sized for the
+    largest legitimate JSON body (``config.py``), and a route accepting an upload
+    needs its own, higher number -- raising the global one instead would hand
+    every JSON endpoint the same memory footprint. A path absent from the mapping
+    keeps the general cap, so the default behaviour of this class is unchanged by
+    the existence of the feature.
+
     This is the application's own floor, not a substitute for the same limit on the
     reverse proxy -- a request refused here has still crossed the network.
     """
 
-    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+    def __init__(
+        self, app: ASGIApp, *, max_bytes: int, path_bounds: Mapping[str, int] | None = None
+    ) -> None:
         self._app = app
         self._max_bytes = max_bytes
+        self._path_bounds = dict(path_bounds or {})
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
 
+        limit = self._limit_for(str(scope.get("path", "")))
         declared = _declared_length(scope)
-        if declared is not None and declared > self._max_bytes:
-            response = problem_for_body_too_large(self._max_bytes).to_response()
+        if declared is not None and declared > limit:
+            response = problem_for_body_too_large(limit).to_response()
             await response(scope, receive, send)
             return
 
-        await self._app(scope, self._counted(receive), send)
+        await self._app(scope, self._counted(receive, limit), send)
 
-    def _counted(self, receive: Receive) -> Callable[[], Awaitable[Message]]:
+    def _limit_for(self, path: str) -> int:
+        """The bound for ``path``: an exact match, else the general cap.
+
+        Exact rather than prefix: a prefix match would silently raise the ceiling
+        for every route later added under the same segment, which is how a bound
+        stops meaning anything.
+        """
+        return self._path_bounds.get(path, self._max_bytes)
+
+    def _counted(self, receive: Receive, limit: int) -> Callable[[], Awaitable[Message]]:
         read = 0
-        limit = self._max_bytes
 
         async def counted_receive() -> Message:
             nonlocal read

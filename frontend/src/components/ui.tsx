@@ -78,6 +78,141 @@ export function Field({ label, hint, error, required = false, children }: FieldP
   );
 }
 
+interface FieldsetProps {
+  legend: string;
+  hint?: ReactNode;
+  error?: string | null;
+  children: ReactNode;
+}
+
+/**
+ * A real <fieldset>/<legend> for grouped controls. Checkboxes and radios that
+ * only have individual labels are the classic way an accessible form quietly
+ * stops being one: the group's question disappears for a screen reader.
+ */
+export function Fieldset({ legend, hint, error, children }: FieldsetProps) {
+  const id = useId();
+  const hintId = `${id}-hint`;
+  const errorId = `${id}-error`;
+  const describedBy =
+    [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(' ') || undefined;
+
+  return (
+    <fieldset className={styles.fieldset} aria-describedby={describedBy}>
+      <legend className={styles.legend}>{legend}</legend>
+      {hint ? (
+        <div className={styles.hint} id={hintId}>
+          {hint}
+        </div>
+      ) : null}
+      {children}
+      {error ? (
+        <p className={styles.fieldError} id={errorId}>
+          {error}
+        </p>
+      ) : null}
+    </fieldset>
+  );
+}
+
+interface ChoiceProps {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  children: ReactNode;
+  detail?: ReactNode;
+  disabled?: boolean;
+}
+
+export function Checkbox({ checked, onChange, children, detail, disabled }: ChoiceProps) {
+  return (
+    <label className={styles.choice}>
+      <input
+        type="checkbox"
+        className={styles.choiceInput}
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => {
+          onChange(event.target.checked);
+        }}
+      />
+      <span className={styles.choiceText}>
+        <span>{children}</span>
+        {detail ? <span className={styles.choiceDetail}>{detail}</span> : null}
+      </span>
+    </label>
+  );
+}
+
+export function Radio({
+  name,
+  value,
+  checked,
+  onSelect,
+  children,
+  detail,
+}: {
+  name: string;
+  value: string;
+  checked: boolean;
+  onSelect: (value: string) => void;
+  children: ReactNode;
+  detail?: ReactNode;
+}) {
+  return (
+    <label className={styles.choice}>
+      <input
+        type="radio"
+        className={styles.choiceInput}
+        name={name}
+        value={value}
+        checked={checked}
+        onChange={() => {
+          onSelect(value);
+        }}
+      />
+      <span className={styles.choiceText}>
+        <span>{children}</span>
+        {detail ? <span className={styles.choiceDetail}>{detail}</span> : null}
+      </span>
+    </label>
+  );
+}
+
+/**
+ * Names which of the three constraint mechanisms of contract §4bis is at work.
+ *
+ * The wording is the point: a filter is removed from the inventory before the
+ * model is asked anything, a preference is only ever text in a prompt. The user
+ * must not file both under the same reliability. Shape and glyph differ too, so
+ * the distinction survives greyscale and colour blindness.
+ *
+ * Two of the three glyphs used to be `▣` (U+25A3) and `▤` (U+25A4), and neither
+ * is covered by the fonts this application asks for: both fell back to `.notdef`
+ * and drew nothing, which quietly removed one of the two channels the paragraph
+ * above relies on. Replaced by characters checked in the browser — a solid
+ * square, a triple bar, a double tilde — still three distinct shapes.
+ */
+export type ConstraintClass = 'filter' | 'computed' | 'preference';
+
+const CONSTRAINT_CLASS_META: Record<
+  ConstraintClass,
+  { label: string; glyph: string; className: string }
+> = {
+  filter: { label: 'Filtre appliqué', glyph: '■', className: 'classFilter' },
+  computed: { label: 'Calculé par l’application', glyph: '≡', className: 'classComputed' },
+  preference: { label: 'Préférence transmise', glyph: '≈', className: 'classPreference' },
+};
+
+export function ClassTag({ kind }: { kind: ConstraintClass }) {
+  const meta = CONSTRAINT_CLASS_META[kind];
+  return (
+    <span className={[styles.classTag, styles[meta.className]].filter(Boolean).join(' ')}>
+      <span aria-hidden="true">{meta.glyph}</span>
+      {meta.label}
+    </span>
+  );
+}
+
 interface ChipProps {
   active: boolean;
   onClick: () => void;

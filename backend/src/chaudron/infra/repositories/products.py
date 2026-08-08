@@ -74,7 +74,7 @@ class SqlProductRepository:
             brand=draft.brand,
             gtin=draft.gtin,
             default_unit_code=draft.default_unit_code,
-            source=ProductSource.MANUAL,
+            source=draft.source,
         )
         self._session.add(product)
         await self._session.flush()
@@ -118,6 +118,16 @@ class SqlProductRepository:
         product.category_tag = record.category_tag
         product.net_content_value = record.net_content_value
         product.net_content_unit_code = record.net_content_unit_code
+        # Overwritten wholesale on every refresh, including back to `unknown`.
+        # A record that has *lost* its allergen fields upstream -- a contributor
+        # blanking a page is a thing that happens on a wiki -- must stop
+        # supporting the claim it used to support, rather than keeping a stale
+        # declaration that now describes nothing.
+        product.allergen_state = record.allergen_state
+        product.allergens_contains = list(record.allergens_contains)
+        product.allergens_may_contain = list(record.allergens_may_contain)
+        product.pnns_markers = list(record.pnns_markers)
+        product.food_family = record.food_family
         product.source = ProductSource.OPEN_FOOD_FACTS
         product.off_payload = payload
         product.off_synced_at = now

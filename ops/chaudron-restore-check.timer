@@ -1,0 +1,39 @@
+# Chaudron — weekly restore-drill schedule.
+#
+# Install on:  the BACKUP host, not the application host. This drill needs the
+#              age PRIVATE identity, and the point of encrypting to a public
+#              recipient is that the machine running the application cannot read
+#              its own backups. See ops/README.md §8.6 — the script refuses to
+#              run on the application host unless the downgrade is acknowledged
+#              explicitly.
+#
+# Install to:  ~/.config/systemd/user/chaudron-restore-check.timer
+# Then:        systemctl --user daemon-reload
+#              systemctl --user enable --now chaudron-restore-check.timer
+# Verify:      systemctl --user list-timers chaudron-restore-check.timer
+#
+# Weekly, not daily: a restore reads the whole archive and writes a whole
+# database. That no longer touches production PostgreSQL — the drill stands up a
+# disposable container of its own — but it is still real disk and CPU on the
+# host that runs it. Weekly bounds the worst case, "the backups have been broken
+# for at most seven days", at a cost nothing feels.
+#
+# Wire the unit's failure into whatever monitoring exists. A restore check that
+# fails silently is indistinguishable from one that was never written:
+#   systemctl --user is-failed chaudron-restore-check.service
+
+[Unit]
+Description=Chaudron — weekly backup restore drill
+Documentation=https://github.com/ClaraVnk/chaudron
+
+[Timer]
+Unit=chaudron-restore-check.service
+
+# Sunday 04:30, after Sunday's backup has been taken and copied off. On the
+# backup host this is "after the rsync has landed", which is the same clock.
+OnCalendar=Sun *-*-* 04:30:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

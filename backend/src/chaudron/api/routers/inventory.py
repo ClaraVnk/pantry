@@ -1,18 +1,44 @@
-"""Inventory: listing, adding, correcting and removing stock."""
+"""Inventory: listing, adding, correcting and removing stock.
+
+**``DELETE`` answers ``200``, not the ``204`` contract v1 froze.** Contract v1.1
+section 6bis requires the body of this very call to carry ``depleted``, and a
+``204 No Content`` has no body to carry it in; one of the two had to give. The
+deviation is recorded in ``docs/api-contract-v1.md`` at the ``DELETE`` and argued
+in section 6bis of ``docs/api-contract-v1.1-dietary.md``, so a reader of either
+document finds it without reading this module.
+
+**The proposal never endangers the mutation.** Removing a lot is what the user
+asked for; offering to buy the product again is a courtesy computed afterwards.
+It therefore runs inside a savepoint and behind a ``try`` -- if the proposal
+fails, the removal stands and ``depleted`` is ``null``. The reverse (a courtesy
+that rolls back a deletion the user watched succeed) is not a trade anyone would
+accept.
+"""
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from chaudron.api.deps import HouseholdDep, InventoryServiceDep
+from chaudron.api.deps import (
+    DepletionServiceDep,
+    InventoryReadDep,
+    InventoryServiceDep,
+    InventoryWriteDep,
+    SessionDep,
+)
 from chaudron.api.schemas import (
+    DepletedOut,
     InventoryCreateIn,
+    InventoryItemMutatedOut,
     InventoryItemOut,
     InventoryPageOut,
     InventoryPatchIn,
+    InventoryRemovalOut,
     LocationRefOut,
     ProductOut,
     QuantityOut,
@@ -28,7 +54,11 @@ from chaudron.domain.ports import (
     UnsetType,
     display_gtin,
 )
-from chaudron.services.inventory import AddItemCommand, UpdateItemCommand
+from chaudron.domain.shopping import DepletionEvent
+from chaudron.services.inventory import AddItemCommand, DepletionSignal, UpdateItemCommand
+from chaudron.services.shopping_import import DepletionService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/inventory", tags=["inventory"])
 
@@ -58,6 +88,7 @@ def _to_out(item: InventoryItem) -> InventoryItemOut:
         expires_on=item.best_before,
         expiry_kind=item.date_kind,
         opened_at=item.opened_at,
+        effective_expires_on=item.effective_expiry,
         source=item.entry_source,
         created_at=item.created_at,
     )
@@ -65,7 +96,7 @@ def _to_out(item: InventoryItem) -> InventoryItemOut:
 
 @router.get("", response_model=InventoryPageOut, summary="List the current stock")
 async def list_inventory(
-    household_id: HouseholdDep,
+    household_id: InventoryReadDep,
     service: InventoryServiceDep,
     location_id: uuid.UUID | None = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
@@ -93,7 +124,7 @@ async def list_inventory(
     summary="Add stock",
 )
 async def add_inventory_item(
-    household_id: HouseholdDep, service: InventoryServiceDep, payload: InventoryCreateIn
+    household_id: InventoryWriteDep, service: InventoryServiceDep, payload: InventoryCreateIn
 ) -> InventoryItemOut:
     item = await service.add_item(
         household_id,
@@ -121,13 +152,15 @@ async def add_inventory_item(
     return _to_out(item)
 
 
-@router.patch("/{item_id}", response_model=InventoryItemOut, summary="Correct a stock item")
+@router.patch("/{item_id}", response_model=InventoryItemMutatedOut, summary="Correct a stock item")
 async def patch_inventory_item(
-    household_id: HouseholdDep,
+    household_id: InventoryWriteDep,
     service: InventoryServiceDep,
+    depletion_service: DepletionServiceDep,
+    session: SessionDep,
     item_id: uuid.UUID,
     payload: InventoryPatchIn,
-) -> InventoryItemOut:
+) -> InventoryItemMutatedOut:
     provided = payload.model_fields_set
 
     def maybe[T](field: str, value: T) -> Maybe[T]:
@@ -138,7 +171,7 @@ async def patch_inventory_item(
         """
         return value if field in provided else UNSET
 
-    item = await service.update_item(
+    updated = await service.update_item(
         household_id,
         item_id,
         UpdateItemCommand(
@@ -150,22 +183,87 @@ async def patch_inventory_item(
             opened_at=maybe("opened_at", payload.opened_at),
         ),
     )
-    return _to_out(item)
+    return InventoryItemMutatedOut(
+        **_to_out(updated.item).model_dump(),
+        depleted=await _propose(session, depletion_service, household_id, updated.depletion),
+    )
 
 
 @router.delete(
     "/{item_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=InventoryRemovalOut,
     summary="Remove a stock item",
 )
 async def delete_inventory_item(
-    household_id: HouseholdDep,
+    household_id: InventoryWriteDep,
     service: InventoryServiceDep,
+    depletion_service: DepletionServiceDep,
+    session: SessionDep,
     item_id: uuid.UUID,
     reason: RemovalReason = "consumed",
-) -> Response:
-    await service.remove_item(household_id, item_id, reason)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+) -> InventoryRemovalOut:
+    """Deplete a lot, and say what the household may want to buy again.
+
+    ``200`` with a body, where contract v1 wrote ``204``. See the module
+    docstring: ``depleted`` and "no content" are mutually exclusive.
+    """
+    signal = await service.remove_item(household_id, item_id, reason)
+    return InventoryRemovalOut(
+        depleted=await _propose(session, depletion_service, household_id, signal)
+    )
+
+
+async def _propose(
+    session: AsyncSession,
+    service: DepletionService,
+    household_id: uuid.UUID,
+    signal: DepletionSignal | None,
+) -> DepletedOut | None:
+    """The repurchase proposal for what just ran out, or ``None``.
+
+    Three properties, in order of how much they matter.
+
+    *It cannot undo the mutation.* The lot has been depleted or corrected and the
+    ledger written; a proposal is a suggestion computed afterwards. Any failure
+    is swallowed into ``None``, and the ``SAVEPOINT`` is what makes swallowing
+    honest: a database error inside a transaction poisons it, so a bare ``except``
+    would leave the request to die at ``COMMIT`` and roll back the very deletion
+    the user watched succeed.
+
+    *It does not decide.* ``signal.reason`` is handed over verbatim, ``correction``
+    included, and :class:`DepletionService` applies contract 6bis' rule. A second
+    filter here would be a second place for the rule to be wrong.
+
+    *It costs nothing when there is nothing.* No signal, no savepoint, no query --
+    which is every ``PATCH`` and every removal of an already-empty lot.
+    """
+    if signal is None:
+        return None
+    try:
+        async with session.begin_nested():
+            proposals = await service.propose(
+                household_id, [DepletionEvent(product_id=signal.product_id, reason=signal.reason)]
+            )
+    except Exception:
+        # Never re-raised: the mutation is done and correct, and a household that
+        # asked to throw away the yoghurt does not care that the shopping-list
+        # hint failed.
+        logger.warning("depletion_proposal_failed", exc_info=True)
+        return None
+
+    # One lot, one product: the service groups by construction, so this sequence
+    # holds at most one proposal -- and holds none when the reason was a
+    # correction, which is where "a correction never proposes" actually happens.
+    if not proposals:
+        return None
+    proposal = proposals[0]
+    return DepletedOut(
+        product_id=proposal.product_id,
+        product_name=proposal.product_name,
+        reason=proposal.reason,
+        already_on_list=proposal.already_on_list,
+        previously_declined=proposal.previously_declined,
+    )
 
 
 def _required[T](value: Maybe[T | None]) -> Maybe[T]:

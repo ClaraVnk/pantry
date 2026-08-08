@@ -1,0 +1,59 @@
+# Chaudron — cosign-gated image update.
+#
+# Install to:   ~chaudron/.config/systemd/user/chaudron-verified-update.service
+# Paired with:  chaudron-verified-update.timer
+# Replaces:     podman-auto-update.service/.timer, which MUST be masked:
+#                 systemctl --user mask podman-auto-update.timer
+#
+# The stock timer runs `podman auto-update` directly, which pulls and deploys a
+# digest nobody checked. This unit verifies the pulled digest against a pinned
+# cosign identity and then restarts chaudron.service onto exactly those bytes —
+# NOT via `podman auto-update`, which would re-query the registry and could
+# deploy a different digest than the one verified. `AutoUpdate=` has been removed
+# from every quadlet so that path has no candidates at all.
+#
+# See ops/verified-auto-update.sh for the full argument, including what this
+# costs: there is no automatic rollback in this deployment. The script waits for
+# the container's health check and fails this unit if it never passes, which is
+# why `systemctl --user is-failed` on it is a signal worth monitoring.
+
+[Unit]
+Description=Chaudron — verify image signature, then auto-update
+Documentation=https://github.com/ClaraVnk/chaudron
+# The gate is useless if the network is not up: without it the pull fails, the
+# unit fails, and an operator is paged for a non-event.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/chaudron/bin/verified-auto-update.sh
+
+# A failed verification must stay visible. Without this the unit fails, the
+# timer fires again in 15 minutes, and the failure scrolls past in the journal
+# looking exactly like a transient network error.
+#
+# `systemctl --user is-failed chaudron-verified-update.service` is the check, and
+# it is now load-bearing rather than advisory: it is the compensating control for
+# the automatic rollback this deployment no longer has. Wire it into whatever
+# monitoring exists. It catches three distinct failures that were all invisible
+# before — a rejected signature, a restart that did not happen, and an image that
+# started and never became healthy.
+Restart=no
+
+# Long enough for the pull, the Rekor/Fulcio round trip, and the post-restart
+# health wait (CHAUDRON_HEALTH_TIMEOUT, 180 s by default) with room to spare.
+TimeoutStartSec=600
+
+# The script pulls an image and restarts one service. It needs neither new
+# privileges nor a writable home beyond Podman's own storage.
+NoNewPrivileges=true
+
+# Bounded so that a pull of a pathologically large image cannot compete with
+# PostgreSQL for memory.
+MemoryHigh=512M
+MemoryMax=768M
+CPUQuota=100%
+
+# Deliberately no [Install]: the timer pulls this unit in. Enabling the service
+# itself would run it once at boot with no gate on ordering.

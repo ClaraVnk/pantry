@@ -29,6 +29,19 @@ from chaudron.domain.ports import (
 logger = logging.getLogger(__name__)
 
 
+def _age_seconds(synced_at: datetime | None) -> int | None:
+    """How long ago a cached entry was last synced, or ``None`` if never.
+
+    Whole seconds: the freshness comparison is against an integer TTL, so the
+    fractional part changes no decision, and the value is also what a log line
+    carries -- where a float would suggest a precision the sync timestamp does
+    not have.
+    """
+    if synced_at is None:
+        return None
+    return int((datetime.now(UTC) - synced_at).total_seconds())
+
+
 class ProductService:
     def __init__(
         self,
@@ -56,7 +69,8 @@ class ProductService:
 
         cached = await self._products.find_cached(normalized)
         cached_view = cached[0] if cached is not None else None
-        if cached is not None and self._is_fresh(cached[1]):
+        cached_synced_at = cached[1] if cached is not None else None
+        if cached is not None and self._is_fresh(cached_synced_at):
             if cached_view is None:
                 raise BarcodeNotFoundError(gtin)
             return cached_view
@@ -68,7 +82,28 @@ class ProductService:
             # so that a household keeps resolving its usual groceries while Open
             # Food Facts is down or has banned us (ADR-0008).
             if cached_view is not None:
-                logger.warning("catalog_unavailable_serving_stale", extra={"gtin": normalized})
+                # **No barcode in this line**, and its absence is the control
+                # rather than an oversight (audit S-16). ``infra/logging.py``
+                # stamps ``household_id`` on every record it writes, so a ``gtin``
+                # here would not be a product identifier: it would be the sentence
+                # "this household holds this product", correlated, timestamped and
+                # durable. What a cupboard contains is health-adjacent in the
+                # general case and article 9 data in plenty of particular ones,
+                # and an application log is exactly where an article 17 erasure
+                # cannot reach it.
+                #
+                # Redaction is no help and must not be mistaken for one: it
+                # recognises credential *shapes*, and a GTIN has none. That is the
+                # same argument that keeps ``uvicorn.access`` unwired, where this
+                # barcode travels in the query string -- the control for those
+                # lines is not emitting them.
+                #
+                # The age is what an operator actually reads this line for: it
+                # says how stale the answer going out is, and it names nobody.
+                logger.warning(
+                    "catalog_unavailable_serving_stale",
+                    extra={"cached_age_seconds": _age_seconds(cached_synced_at)},
+                )
                 return cached_view
             raise
 
@@ -100,10 +135,8 @@ class ProductService:
         )
 
     def _is_fresh(self, synced_at: datetime | None) -> bool:
-        if synced_at is None:
-            return False
-        age = (datetime.now(UTC) - synced_at).total_seconds()
-        return age < self._cache_ttl_seconds
+        age = _age_seconds(synced_at)
+        return age is not None and age < self._cache_ttl_seconds
 
     async def _sanitise(self, record: CatalogRecord) -> CatalogRecord:
         """Drop upstream values our reference tables cannot accept.

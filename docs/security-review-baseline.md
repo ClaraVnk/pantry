@@ -1,242 +1,237 @@
-# Chaudron — revue de sécurité du baseline
+# Chaudron — baseline security review
 
-> Audit de l'existant au **3 août 2026**, avant la première publication du dépôt.
-> Rédigé en français ; les identifiants cités (fichiers, colonnes, variables) sont
-> en anglais et font foi tels quels.
-> Compagnon : [`security-model.md`](security-model.md), qui décrit la cible.
-> **Ce document rapporte. Aucune correction n'a été appliquée.**
+> Audit of the existing state as of **3 August 2026**, before the first
+> publication of the repository. The identifiers cited (files, columns,
+> variables) are in English and are authoritative as written.
+> Companion: [`security-model.md`](security-model.md), which describes the target.
+> **This document reports. No fix has been applied.**
 
 ---
 
-## 1. Méthode et périmètre
+## 1. Method and scope
 
-Le dépôt est en phase de cadrage : documentation, ADR, squelette de modèle de
-données, unités de conteneurs, CI. **Aucun code de fonctionnalité.** L'audit
-porte donc sur la **conception** et le **baseline**, pas sur une implémentation.
+The repository is in the scoping phase: documentation, ADRs, data-model skeleton,
+container units, CI. **No feature code.** The audit therefore covers the
+**design** and the **baseline**, not an implementation.
 
-Périmètre couvert : les 37 fichiers qui seront effectivement publiés (liste
-obtenue en appliquant `.gitignore`), soit `README.md`, `SECURITY.md`,
-`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `LICENSE`, `.gitignore`,
-`.editorconfig`, `.env.example`, `.github/**`, `backend/**` (hors caches et
-`.venv`), `docs/**`, `ops/**`.
+Scope covered: the 37 files that will actually be published (list obtained by
+applying `.gitignore`), namely `README.md`, `SECURITY.md`, `CONTRIBUTING.md`,
+`CODE_OF_CONDUCT.md`, `LICENSE`, `.gitignore`, `.editorconfig`, `.env.example`,
+`.github/**`, `backend/**` (excluding caches and `.venv`), `docs/**`, `ops/**`.
 
-Conséquence de conception assumée : les constats portant sur une décision (RLS,
-rétention, signature de webhook) sont notés comme des défauts **de conception**.
-À ce stade, corriger un document coûte une après-midi ; corriger le schéma
-correspondant coûtera une migration.
+Accepted design consequence: findings that concern a decision (RLS, retention,
+webhook signature) are recorded as **design** defects. At this stage, fixing a
+document costs an afternoon; fixing the corresponding schema will cost a
+migration.
 
-**Échelle de sévérité.** Elle qualifie l'impact du produit **s'il est livré tel
-que conçu**, pas l'exploitabilité aujourd'hui — rien n'est exploitable
-aujourd'hui, il n'y a pas d'application.
+**Severity scale.** It qualifies the product impact **if it ships as designed**,
+not exploitability today — nothing is exploitable today, there is no application.
 
-| Niveau | Signification |
+| Level | Meaning |
 |---|---|
-| **Critique** | Compromet un actif appartenant à un tiers, ou l'isolation entre foyers. Bloque la phase 2. |
-| **Élevée** | Annule ou contredit un contrôle de sécurité annoncé par le projet. |
-| **Moyenne** | Durcissement manquant, ou écart entre deux documents qui produira un défaut. |
-| **Faible** | Défaut réel mais à impact borné, ou friction opérationnelle. |
-| **Informationnel** | Cohérence, hygiène, dette documentaire. |
+| **Critical** | Compromises an asset belonging to a third party, or tenant isolation between households. Blocks phase 2. |
+| **High** | Cancels or contradicts a security control announced by the project. |
+| **Medium** | Missing hardening, or a divergence between two documents that will produce a defect. |
+| **Low** | Real defect but with bounded impact, or operational friction. |
+| **Informational** | Consistency, hygiene, documentation debt. |
 
 ---
 
-## 2. Scan de secrets — résultat
+## 2. Secret scan — result
 
 ### 2.1 Verdict
 
-> ## **Aucun secret réel n'a été trouvé. Le dépôt est propre. Le scan n'est pas un bloqueur de publication.**
+> ## **No real secret was found. The repository is clean. The scan is not a publication blocker.**
 
-### 2.2 Outillage
+### 2.2 Tooling
 
-`gitleaks`, `trufflehog` et `osv-scanner` **ne sont pas installés** sur le poste
-(`which` négatif pour les trois). Conformément à la consigne, le scan a été fait
-**manuellement** avec `grep -rInE`, sur l'intégralité de l'arbre, `.git/`,
+`gitleaks`, `trufflehog` and `osv-scanner` **are not installed** on the machine
+(`which` negative for all three). In accordance with the brief, the scan was done
+**manually** with `grep -rInE`, over the whole tree, with `.git/`,
 `backend/.venv/`, `backend/.mypy_cache/`, `backend/.ruff_cache/`,
-`backend/.pytest_cache/` et `__pycache__/` exclus, puis rejoué **fichier par
-fichier sur les 37 fichiers réellement publiables**.
+`backend/.pytest_cache/` and `__pycache__/` excluded, then replayed **file by
+file over the 37 actually publishable files**.
 
-Note favorable : la CI exécute `gitleaks/gitleaks-action@v2` sur l'historique
-complet (`fetch-depth: 0`, `.github/workflows/ci.yml:194-206`). Le contrôle
-automatisé existe donc dans le pipeline, il manque seulement sur le poste.
+A favourable note: CI runs `gitleaks/gitleaks-action@v2` over the full history
+(`fetch-depth: 0`, `.github/workflows/ci.yml:194-206`). The automated control
+therefore exists in the pipeline; it is only missing on the machine.
 
-### 2.3 Motifs recherchés
+### 2.3 Patterns searched for
 
 `AKIA…`, `ASIA…`, `ghp_`, `gho_`, `ghs_`, `github_pat_`, `sk-`, `sk-ant-`,
 `AIza…`, `xox[baprs]-`, `glpat-`, `-----BEGIN`, `PRIVATE KEY`, `AGE-SECRET-KEY`,
-`eyJhbGciOi` (JWT), URL à identifiants intégrés `://user:pass@`, et
-affectations du type `password|secret|token|api_key|credential = <valeur de 8+
-caractères>`. Une passe complémentaire a cherché les chaînes base64/hex de 40
-caractères et plus.
+`eyJhbGciOi` (JWT), URLs with embedded credentials `://user:pass@`, and
+assignments of the form `password|secret|token|api_key|credential = <value of 8+
+characters>`. A complementary pass looked for base64/hex strings of 40 characters
+or more.
 
-### 2.4 Occurrences relevées, et pourquoi aucune n'est un secret
+### 2.4 Occurrences noted, and why none is a secret
 
-| Fichier:ligne | Valeur | Verdict |
+| File:line | Value | Verdict |
 |---|---|---|
-| `.env.example:20` | `postgresql+asyncpg://user:password@host:5432/dbname` | **Gabarit.** Littéralement `user` et `password`. |
-| `CONTRIBUTING.md:130` | `postgresql+asyncpg://chaudron:<password>@127.0.0.1:5432/chaudron` | **Gabarit.** Le mot de passe est un chevron à remplacer. |
-| `.github/workflows/ci.yml:111` | `postgresql+asyncpg://chaudron:chaudron@localhost:5432/chaudron_test` | **Identifiants d'un service conteneurisé éphémère**, créé et détruit dans le job. Aucune valeur hors CI. Voir SEC-025. |
-| `.github/workflows/ci.yml:112` | `CHAUDRON_SECRET_KEY: ci-only-not-a-real-secret` | **Valeur auto-documentée**, sans entropie. Correcte. |
-| `.env.example:61` | `CHAUDRON_LLM_DEFAULT_MODEL=claude-opus-5` | **Nom de modèle**, pas un secret. Voir SEC-027. |
-| `.env.example:89` | `CHAUDRON_OFF_BASE_URL=https://world.openfoodfacts.org` | URL publique. |
+| `.env.example:20` | `postgresql+asyncpg://user:password@host:5432/dbname` | **Template.** Literally `user` and `password`. |
+| `CONTRIBUTING.md:130` | `postgresql+asyncpg://chaudron:<password>@127.0.0.1:5432/chaudron` | **Template.** The password is an angle-bracket placeholder. |
+| `.github/workflows/ci.yml:111` | `postgresql+asyncpg://chaudron:chaudron@localhost:5432/chaudron_test` | **Credentials of an ephemeral containerised service**, created and destroyed within the job. No value outside CI. See SEC-025. |
+| `.github/workflows/ci.yml:112` | `CHAUDRON_SECRET_KEY: ci-only-not-a-real-secret` | **Self-documenting value**, with no entropy. Correct. |
+| `.env.example:61` | `CHAUDRON_LLM_DEFAULT_MODEL=claude-opus-5` | **Model name**, not a secret. See SEC-027. |
+| `.env.example:89` | `CHAUDRON_OFF_BASE_URL=https://world.openfoodfacts.org` | Public URL. |
 
-### 2.5 Vérifications complémentaires
+### 2.5 Complementary checks
 
-- **Historique git : vide.** `git log` ne retourne aucun commit (`No commits yet
-  on main`). Il n'y a donc **aucun objet git à réécrire ni à purger** : le
-  premier push publiera exactement l'état auditable ci-dessus. C'est la situation
-  la plus favorable possible, et elle ne se reproduira pas.
-- **`.git/config` :** ne contient qu'un `user.email`, aucun remote, aucun jeton,
-  aucun credential helper. Voir SEC-029.
-- **Fichiers ignorés présents sur le disque** (`.venv/`, `.coverage`,
-  `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `__pycache__/`) : **tous
-  correctement exclus** par `.gitignore`. Aucun n'apparaît dans la liste des
-  fichiers publiables.
-- **`.env` : absent du disque.** Rien à fuiter.
-- **`backend/uv.lock` :** aucune correspondance sur les motifs de clés ; ne
-  contient que des empreintes SHA-256, ce qui est son objet.
-- **Aucun fichier binaire** dans l'ensemble publiable hormis `uv.lock` (texte).
-  Pas d'archive, pas de dump, pas de certificat, pas de clé privée.
+- **Git history: empty.** `git log` returns no commit (`No commits yet on main`).
+  There is therefore **no git object to rewrite or purge**: the first push will
+  publish exactly the auditable state above. This is the most favourable
+  situation possible, and it will not occur again.
+- **`.git/config`:** contains only a `user.email`, no remote, no token, no
+  credential helper. See SEC-029.
+- **Ignored files present on disk** (`.venv/`, `.coverage`, `.pytest_cache/`,
+  `.mypy_cache/`, `.ruff_cache/`, `__pycache__/`): **all correctly excluded** by
+  `.gitignore`. None appears in the list of publishable files.
+- **`.env`: absent from disk.** Nothing to leak.
+- **`backend/uv.lock`:** no match on the key patterns; contains only SHA-256
+  digests, which is its purpose.
+- **No binary file** in the publishable set apart from `uv.lock` (text). No
+  archive, no dump, no certificate, no private key.
 
-**Conclusion :** la publication n'est pas bloquée par une fuite de secret. Elle
-est bloquée par les constats de la §3 ci-dessous.
-
----
-
-## 3. Constats
-
-### Critique
+**Conclusion:** publication is not blocked by a secret leak. It is blocked by the
+findings in §3 below.
 
 ---
 
-#### SEC-001 — L'isolation entre foyers repose sur une convention applicative, sans garde-fou moteur
+## 3. Findings
 
-**Sévérité :** Critique
-**Fichiers :** `docs/adr/0006-multi-tenant-from-day-one.md:41,49,54` ·
-`docs/data-model.md:816-862` (§5.2, §5.3) ·
-`backend/src/chaudron/domain/models.py:245-256` (`HouseholdScopedMixin`), `:847-851`
-(`ix_receipt_pending`), `:416-418` (`product.household_id` nullable) ·
+### Critical
+
+---
+
+#### SEC-001 — Tenant isolation between households rests on an application convention, with no engine-level guard rail
+
+**Severity:** Critical
+**Files:** `docs/adr/0006-multi-tenant-from-day-one.md:41,49,54` ·
+`docs/data-model.md` §5.2 (composite foreign keys, `HouseholdScope`) and §5.3 (RLS) ·
+`backend/src/chaudron/domain/models.py` → `HouseholdScopedMixin`, the
+`ix_receipt_pending` index on `Receipt`, `Product.household_id` (nullable) ·
 `CONTRIBUTING.md:373-377`
 
-**Description.** Le dispositif d'isolation a trois couches. Les deux premières
-sont réelles mais ne couvrent pas la menace principale, et la troisième est
-reportée.
+**Description.** The isolation setup has three layers. The first two are real but
+do not cover the principal threat, and the third is deferred.
 
-Les **FK composites** `(household_id, x_id) → parent(household_id, id)` sont un
-excellent contrôle : elles rendent une **écriture** croisée impossible au niveau
-de la base, y compris avec un bug applicatif. Sur `llm_purpose_binding`, c'est ce
-qui empêche de dépenser la clé d'API d'un autre foyer. Ce point est bien conçu et
-doit être conservé.
+The **composite FKs** `(household_id, x_id) → parent(household_id, id)` are an
+excellent control: they make a cross-household **write** impossible at the
+database level, even with an application bug. On `llm_purpose_binding`, this is
+what prevents spending another household's API key. This point is well designed
+and must be kept.
 
-Mais la fuite qui détruit ce produit est une **lecture** : un `SELECT` sans
-`WHERE household_id`. Aucune FK ne filtre une lecture. Restent donc :
+But the leak that destroys this product is a **read**: a `SELECT` without
+`WHERE household_id`. No FK filters a read. What remains, then, is:
 
-1. la revue de code — assurée par un mainteneur unique, qui relit son propre code ;
-2. les tests d'isolation obligatoires — écrits par la même personne, pour les
-   ressources auxquelles elle a pensé. **Rien n'échoue quand on oublie d'écrire
-   le test.** C'est exactement le mode d'échec que l'ADR-0006 reproche à la
-   migration tardive, reproduit un cran plus bas.
+1. code review — carried out by a single maintainer, who reviews their own code;
+2. mandatory isolation tests — written by the same person, for the resources she
+   thought of. **Nothing fails when you forget to write the test.** That is
+   exactly the failure mode ADR-0006 holds against late migration, reproduced one
+   level down.
 
-Trois aggravations concrètes dans le schéma actuel :
+Three concrete aggravating factors in the current schema:
 
-- **Les jobs de fond** (parsing de tickets, notifications de péremption,
-  réconciliation) s'exécutent **hors requête HTTP**, donc hors du `HouseholdScope`.
-  `docs/data-model.md:881-883` le dit explicitement : *« ce sont eux qui fuiront
-  en premier »*. L'index `ix_receipt_pending` est **délibérément transverse aux
-  foyers** : le worker lit une file mélangée et doit se rescoper à la main sur
-  chaque ligne.
-- **`product_id` est une FK simple**, car `product.household_id` est nullable et
-  ne peut donc pas servir de cible composite. Rien au niveau base n'empêche de
-  référencer le produit *privé* d'un autre foyer — ce qui expose des habitudes
-  d'achat nominatives (marques, régimes, produits médicaux). Trou connu et assumé
-  (`docs/data-model.md:832-838`).
-- **Le déclencheur d'activation du RLS n'est pas observable** : « le jour où un
-  compte est créé par une personne extérieure au cercle familial ». Ni la CI ni
-  un test ne peuvent le constater. Il sera franchi un soir, par commodité.
+- **Background jobs** (receipt parsing, expiry notifications, reconciliation) run
+  **outside the HTTP request**, hence outside `HouseholdScope`.
+  `docs/data-model.md` §5.4 says so explicitly: *"they are the ones that will
+  leak first"*. The `ix_receipt_pending` index is **deliberately cross-household**:
+  the worker reads a mixed queue and must re-scope itself by hand on every row.
+- **`product_id` is a simple FK**, because `product.household_id` is nullable and
+  therefore cannot serve as a composite target. Nothing at the database level
+  prevents referencing another household's *private* product — which exposes
+  identifying purchase habits (brands, diets, medical products). Known and
+  accepted hole (`docs/data-model.md` §5.2, the "known and owned hole" paragraph
+  on `inventory_lot.product_id`).
+- **The trigger for enabling RLS is not observable**: "the day an account is
+  created by a person outside the family circle". Neither CI nor a test can
+  detect it. It will be crossed one evening, out of convenience.
 
-**L'argument de report ne tient pas pour la pile choisie.** Le RLS est différé
-parce que `SET LOCAL` imposerait un pooling en mode transaction, et qu'une
-erreur produirait une fuite inverse — une connexion recyclée conservant le foyer
-précédent. Ce raisonnement est juste **en présence d'un pooler externe**
-(PgBouncer en mode session ou statement). La pile retenue est SQLAlchemy 2.x
-asynchrone + `asyncpg`, avec un pool **en processus** qui réserve une connexion
-pour la durée de la transaction ; `SET LOCAL` est réinitialisé par PostgreSQL
-lui-même au `COMMIT`/`ROLLBACK`. Le mode d'échec redouté suppose soit un `SET` de
-session au lieu d'un `SET LOCAL`, soit un composant que Chaudron n'a pas choisi.
-**Le coût invoqué est celui d'une architecture qui n'est pas la sienne.**
+**The deferral argument does not hold for the chosen stack.** RLS is deferred
+because `SET LOCAL` would require transaction-mode pooling, and an error would
+produce an inverted leak — a recycled connection retaining the previous
+household. That reasoning is correct **in the presence of an external pooler**
+(PgBouncer in session or statement mode). The chosen stack is asynchronous
+SQLAlchemy 2.x + `asyncpg`, with an **in-process** pool that reserves a connection
+for the duration of the transaction; `SET LOCAL` is reset by PostgreSQL itself at
+`COMMIT`/`ROLLBACK`. The feared failure mode assumes either a session `SET`
+instead of a `SET LOCAL`, or a component that Chaudron has not chosen. **The cost
+invoked is that of an architecture which is not its own.**
 
-**Impact concret.** Un utilisateur légitime d'un autre foyer lit l'inventaire
-complet d'un domicile (`recipe_suggestion.stock_snapshot`), les tickets de
-caisse, la liste de courses et la configuration de fournisseur d'un tiers. C'est
-la fuite la plus probable et la plus grave de ce produit, et le dépôt public
-indiquera précisément où chercher.
+**Concrete impact.** A legitimate user of another household reads a home's
+complete inventory (`recipe_suggestion.stock_snapshot`), the till receipts, the
+shopping list and a third party's provider configuration. It is the most likely
+and most severe leak of this product, and the public repository will indicate
+precisely where to look.
 
-**Correction.** **Exiger le RLS dès la v1**, dans la première migration Alembic :
+**Fix.** **Require RLS as of v1**, in the first Alembic migration:
 
-1. Rôle applicatif `chaudron_app`, **non propriétaire** des tables, plus
-   `ALTER TABLE … FORCE ROW LEVEL SECURITY` sur chaque table portant un
-   `household_id` (sans `FORCE`, le propriétaire contourne les politiques).
-2. `SET LOCAL app.household_id = …` émis par **un point unique** — la fabrique de
-   session — dans la transaction ; discipline « une requête HTTP = une
-   transaction », déjà listée comme prérequis à payer immédiatement.
-3. Politiques avec `USING` **et** `WITH CHECK` identiques :
-   `household_id = current_setting('app.household_id', true)::uuid`. Un
-   `current_setting` absent doit faire **échouer** la requête, pas la laisser
-   passer.
-4. Rôle `chaudron_worker` distinct pour la file transverse : une vue ou une
-   fonction `SECURITY DEFINER` n'exposant que `(id, household_id)` des tickets en
-   attente ; le traitement réel n'a lieu qu'après avoir posé le tenant.
-   `ix_receipt_pending` reste transverse mais ne donne plus accès aux données.
-5. **Conserver** la couche applicative et les tests d'isolation : le RLS est une
-   seconde barrière, pas un remplacement. Un filtre applicatif absent donnera
-   alors une requête lente, pas une requête fausse.
-6. Trancher en même temps le durcissement de `product_id`
-   (`docs/data-model.md:1263`, question 4) : sentinelle `household_id` sur le
-   catalogue public, ou `CHECK` par fonction.
+1. Application role `chaudron_app`, **not the owner** of the tables, plus
+   `ALTER TABLE … FORCE ROW LEVEL SECURITY` on every table carrying a
+   `household_id` (without `FORCE`, the owner bypasses the policies).
+2. `SET LOCAL app.household_id = …` emitted from **a single point** — the session
+   factory — inside the transaction; a "one HTTP request = one transaction"
+   discipline, already listed as a prerequisite to be paid immediately.
+3. Policies with identical `USING` **and** `WITH CHECK`:
+   `household_id = current_setting('app.household_id', true)::uuid`. An absent
+   `current_setting` must make the query **fail**, not let it through.
+4. A separate `chaudron_worker` role for the cross-household queue: a view or a
+   `SECURITY DEFINER` function exposing only `(id, household_id)` of the pending
+   receipts; the actual processing takes place only after the tenant has been set.
+   `ix_receipt_pending` stays cross-household but no longer gives access to the data.
+5. **Keep** the application layer and the isolation tests: RLS is a second
+   barrier, not a replacement. A missing application filter will then give a slow
+   query, not a wrong query.
+6. Settle at the same time the hardening of `product_id`
+   (`docs/data-model.md` §11, open question 4): a `household_id` sentinel on the
+   public catalogue, or a function-based `CHECK`.
 
-Mettre à jour l'ADR-0006 par un **nouvel ADR qui le remplace** (les ADR sont
-immuables, `CONTRIBUTING.md:351-356`), corrigeant la prémisse sur le pooling.
+Update ADR-0006 through a **new ADR that supersedes it** (ADRs are immutable,
+`CONTRIBUTING.md:351-356`), correcting the premise about pooling.
 
-**Coût aujourd'hui : une migration et une dépendance de session.** Il n'y a aucun
-code de fonctionnalité. Chaque heure de rétrofit que l'ADR-0006 redoute est une
-heure qui n'a pas encore été dépensée — c'est l'argument de l'ADR-0006 lui-même,
-appliqué à sa propre conclusion.
+**Cost today: one migration and one session dependency.** There is no feature
+code. Every hour of retrofit that ADR-0006 dreads is an hour that has not yet
+been spent — that is ADR-0006's own argument, applied to its own conclusion.
 
 ---
 
-### Élevée
+### High
 
 ---
 
-#### SEC-002 — La clé de chiffrement des credentials n'est provisionnée par aucun secret Podman
+#### SEC-002 — The credential encryption key is provisioned by no Podman secret
 
-**Sévérité :** Élevée
-**Fichiers :** `ops/chaudron.container:32,40-42` · `ops/README.md:160-190` ·
+**Severity:** High
+**Files:** `ops/chaudron.container:32,40-42` · `ops/README.md:160-190` ·
 `.env.example:38-58` · `docs/adr/0007-byok-and-local-inference.md:42` ·
-`docs/data-model.md:1111-1116`
+`docs/data-model.md` §9.2 (`llm_provider_config.api_key_ciphertext`,
+`api_key_encryption_key_id`)
 
-**Description.** `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` est déclarée **requise**
-(`.env.example:44`) et l'ADR-0007 comme le modèle de données affirment qu'elle
-provient de l'environnement **via un secret Podman**, jamais de la base, pour
-qu'un dump volé ne contienne rien d'exploitable.
+**Description.** `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` is declared **required**
+(`.env.example:44`) and both ADR-0007 and the data model state that it comes from
+the environment **via a Podman secret**, never from the database, so that a stolen
+dump contains nothing usable.
 
-Or le quadlet ne déclare que **trois** secrets — `CHAUDRON_SECRET_KEY`,
-`ANTHROPIC_API_KEY`, `CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY` (lignes 40-42) — et la
-procédure d'`ops/README.md:167-181` n'en crée que quatre, sans celle-ci.
-L'opérateur qui suit la documentation n'a qu'un endroit où la mettre :
-`EnvironmentFile=%h/chaudron/chaudron.env` (ligne 32), **un fichier en clair, dans le
-même répertoire personnel que les sauvegardes** produites par `ops/README.md:257`.
+Yet the quadlet declares only **three** secrets — `CHAUDRON_SECRET_KEY`,
+`ANTHROPIC_API_KEY`, `CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY` (lines 40-42) — and the
+procedure in `ops/README.md:167-181` creates only four, without this one. An
+operator who follows the documentation has only one place to put it:
+`EnvironmentFile=%h/chaudron/chaudron.env` (line 32), **a cleartext file, in the
+same home directory as the backups** produced by `ops/README.md:257`.
 
-Le contrôle décrit — « un dump volé ne suffit pas à déchiffrer » — repose
-entièrement sur le fait que la clé et le dump ne voyagent pas ensemble. En
-suivant la documentation, ils voyagent ensemble.
+The described control — "a stolen dump is not enough to decrypt" — rests entirely
+on the key and the dump not travelling together. Following the documentation,
+they travel together.
 
-**Écart secondaire :** `OPENAI_API_KEY`, `GEMINI_API_KEY` et `MISTRAL_API_KEY`
-(`.env.example:56-58`) ne sont pas non plus provisionnées, alors que quatre
-fournisseurs sont visés en v1 (ADR-0005). Le quadlet est resté à l'époque où
-Anthropic était seul.
+**Secondary divergence:** `OPENAI_API_KEY`, `GEMINI_API_KEY` and `MISTRAL_API_KEY`
+(`.env.example:56-58`) are not provisioned either, whereas four providers are
+targeted in v1 (ADR-0005). The quadlet has stayed in the era when Anthropic was
+the only one.
 
-**Correction.**
+**Fix.**
 
-1. Ajouter au quadlet, à la suite des lignes 40-42 :
+1. Add to the quadlet, after lines 40-42:
 
    ```ini
    Secret=chaudron-credential-encryption-key,type=env,target=CHAUDRON_CREDENTIAL_ENCRYPTION_KEY
@@ -245,434 +240,451 @@ Anthropic était seul.
    Secret=chaudron-mistral-api-key,type=env,target=MISTRAL_API_KEY
    ```
 
-2. Ajouter la commande correspondante dans `ops/README.md` §2.3, au même format
-   sûr que les autres (saisie masquée, stdin, `unset`), à exécuter **sur le
-   serveur, sous le compte `chaudron`** :
+2. Add the corresponding command to `ops/README.md` §2.3, in the same safe format
+   as the others (masked entry, stdin, `unset`), to be run **on the server, under
+   the `chaudron` account**:
 
    ```sh
    read -rs -p 'Credential encryption key: ' V && printf '%s' "$V" | podman secret create chaudron-credential-encryption-key - && unset V
    ```
 
-3. Déplacer les quatre clés fournisseur hors de `.env.example` §« instance_owner »
-   vers une note renvoyant aux secrets Podman, pour que le gabarit ne suggère plus
-   de les écrire dans un fichier.
-4. Ajouter à `ops/README.md` §4 l'avertissement explicite : **les sauvegardes de
-   la base et la clé de chiffrement ne doivent pas être stockées au même
-   endroit**, faute de quoi le chiffrement au repos ne protège plus de rien.
+3. Move the four provider keys out of the `.env.example` "instance_owner" section
+   into a note pointing to the Podman secrets, so that the template no longer
+   suggests writing them into a file.
+4. Add to `ops/README.md` §4 the explicit warning: **the database backups and the
+   encryption key must not be stored in the same place**, failing which encryption
+   at rest no longer protects anything.
 
 ---
 
-#### SEC-003 — Les colonnes d'erreur peuvent recevoir une clé d'API en clair et l'afficher
+#### SEC-003 — The error columns can receive an API key in cleartext and display it
 
-**Sévérité :** Élevée
-**Fichiers :** `backend/src/chaudron/domain/models.py:978` (`last_error`), `:831`
-(`parse_error`), `:830` (`raw_response`) · `docs/data-model.md:731,764-765` ·
+**Severity:** High
+**Files:** `backend/src/chaudron/domain/models.py` → `LlmProviderConfig.last_error`,
+`Receipt.parse_error`, `Receipt.raw_response` · `docs/data-model.md` §4.10
+(`receipt.raw_response`, `receipt.parse_error`) and §4.13
+(`llm_provider_config.last_error`) ·
 `docs/adr/0007-byok-and-local-inference.md:44`
 
-**Description.** L'ADR-0007 promet que les clés ne sont *« jamais journalisées »*
-et que *« les traces d'exception renvoyées au client sont réécrites — un SDK qui
-inclurait la clé dans un message d'erreur ne doit pas la propager »*.
+**Description.** ADR-0007 promises that keys are *"never logged"* and that
+*"exception traces returned to the client are rewritten — an SDK that included the
+key in an error message must not propagate it"*.
 
-Le schéma contredit cette promesse. `llm_provider_config.last_error` est une
-colonne `text` destinée à recevoir le message d'erreur amont, et
-`docs/data-model.md:763-765` prévoit qu'elle alimente le bandeau *« votre clé ne
-fonctionne plus »*, **affiché sur toutes les pages**. `receipt.parse_error` a la
-même forme, et `receipt.raw_response` reçoit la sortie brute d'un endpoint.
+The schema contradicts that promise. `llm_provider_config.last_error` is a `text`
+column intended to receive the upstream error message, and
+`docs/data-model.md` §4.13 plans for it to feed the *"your key no longer works"*
+banner — the one `ix_llm_provider_config_invalid` exists to serve —
+**displayed on every page**. `receipt.parse_error` has the same
+shape, and `receipt.raw_response` receives an endpoint's raw output.
 
-Aucune redaction n'est spécifiée **à l'écriture**. Le chemin est direct : un
-fournisseur, un proxy d'entreprise, ou un endpoint sous contrôle d'un tiers, qui
-renvoie l'en-tête `Authorization` ou la clé dans son message d'erreur, et un
-`last_error = str(exc)` écrit dans le service. La clé se retrouve alors **en
-clair en base**, puis **à l'écran**, puis **dans le dump `pg_dump`** — c'est-à-dire
-exactement là où tout le dispositif de chiffrement au repos servait à ce qu'elle
-ne soit pas. C'est la seule faille du projet capable d'annuler la §6.1 du modèle
-de menace avec une seule ligne de code.
+No redaction is specified **at write time**. The path is direct: a provider, a
+corporate proxy, or an endpoint under a third party's control that returns the
+`Authorization` header or the key in its error message, and a
+`last_error = str(exc)` written in the service. The key then ends up **in
+cleartext in the database**, then **on screen**, then **in the `pg_dump` dump** —
+that is, exactly where the whole at-rest encryption apparatus existed to keep it
+out of. It is the only flaw in the project capable of cancelling §6.1 of the
+threat model with a single line of code.
 
-**Correction.**
+**Fix.**
 
-1. Ces trois colonnes ne reçoivent **jamais** un texte amont brut. Le service
-   traduit l'erreur en un code de domaine (`ProviderUnavailable`,
-   `ProviderQuotaExceeded`, `ProviderResponseInvalid`, déjà définis par
-   l'ADR-0005) et n'écrit que ce code plus un message contrôlé.
-2. Si un extrait amont doit absolument être conservé pour le diagnostic : le
-   faire passer par une fonction de redaction unique et testée, qui masque tout
-   motif de secret connu (`sk-`, `sk-ant-`, `AIza`, `Bearer …`, en-tête
-   `x-api-key`) **et** toute chaîne d'entropie élevée de plus de 20 caractères ;
-   borner la longueur stockée.
-3. Ajouter un `comment=` sur `last_error` et `parse_error` dans le modèle, au même
-   titre que celui déjà porté par `api_key_ciphertext` (`models.py:952-957`), qui
-   est un bon exemple à généraliser.
-4. Ajouter à la suite de tests un cas explicite : un adaptateur factice qui
-   renvoie une erreur contenant une fausse clé, et l'assertion que ni la base ni
-   la réponse HTTP ne la contiennent.
-
----
-
-#### SEC-004 — Deux sources de vérité contradictoires pour l'autorisation `instance_owner`
-
-**Sévérité :** Élevée
-**Fichiers :** `.env.example:52` (`CHAUDRON_INSTANCE_OWNER_HOUSEHOLD_ID`) ·
-`backend/src/chaudron/domain/models.py:273,280-285`
-(`household.is_instance_owner`, `uq_household_instance_owner`) ·
-`docs/adr/0007-byok-and-local-inference.md:29` · `docs/data-model.md:1193-1196`
-
-**Description.** Le mode `instance_owner` détermine **qui a le droit de dépenser
-l'argent de l'exploitant**. Deux mécanismes différents prétendent le décider :
-
-- l'ADR-0007 : *« utilisable que par le foyer explicitement désigné comme
-  propriétaire de l'instance (**variable d'environnement dédiée**) »* — d'où
-  `CHAUDRON_INSTANCE_OWNER_HOUSEHOLD_ID` ;
-- le modèle de données : la colonne `household.is_instance_owner`, protégée par
-  un index unique garantissant qu'il y en a **au plus un**.
-
-Rien ne dit lequel fait foi, ni comment ils sont maintenus cohérents. Toute
-divergence est une autorisation accordée par erreur : un foyer marqué en base
-mais absent de l'environnement, ou l'inverse, et l'exploitant paie l'inférence
-d'un tiers. Le modèle de données reconnaît par ailleurs que la règle est
-inter-tables, donc non exprimable en `CHECK`, et repose sur le service seul.
-
-**Correction.** Choisir **une** source et la rendre subordonnée.
-
-- Retenir `household.is_instance_owner` comme **seule** autorité — l'index unique
-  est un vrai garde-fou, ce que l'environnement n'est pas.
-- Conserver `CHAUDRON_INSTANCE_OWNER_HOUSEHOLD_ID` uniquement comme **assertion de
-  démarrage** : au boot, si la variable est renseignée et ne correspond pas au
-  foyer marqué en base, **refuser de démarrer** (cohérent avec la règle
-  fail-fast de `.env.example:3`). Si elle est vide, le mode est désactivé.
-- Documenter la procédure d'attribution comme un geste d'administration explicite
-  et journalisé.
-- Doubler d'une politique RLS lors de l'application de SEC-001.
+1. These three columns **never** receive raw upstream text. The service
+   translates the error into a domain code (`ProviderUnavailable`,
+   `ProviderQuotaExceeded`, `ProviderResponseInvalid`, already defined by
+   ADR-0005) and writes only that code plus a controlled message.
+2. If an upstream excerpt absolutely must be kept for diagnostics: pass it
+   through a single, tested redaction function that masks every known secret
+   pattern (`sk-`, `sk-ant-`, `AIza`, `Bearer …`, the `x-api-key` header) **and**
+   any high-entropy string longer than 20 characters; bound the stored length.
+3. Add a `comment=` on `last_error` and `parse_error` in the model, just as the
+   one already carried by `LlmProviderConfig.api_key_ciphertext`, which is a
+   good example to generalise.
+4. Add an explicit case to the test suite: a fake adapter returning an error
+   containing a fake key, and the assertion that neither the database nor the HTTP
+   response contains it.
 
 ---
 
-#### SEC-005 — Webhook email : rejeu non traité, adresse de foyer devinable, aucune modélisation
+#### SEC-004 — Two contradictory sources of truth for `instance_owner` authorisation
 
-**Sévérité :** Élevée
-**Fichiers :** `.env.example:93-101` · `docs/architecture.md:153-163` ·
-`SECURITY.md:124-130` · `backend/src/chaudron/domain/models.py:264-286`
-(`Household`, sans colonne d'adresse entrante) · note de conception absente
+**Severity:** High
+**Files:** `.env.example:52` (`CHAUDRON_INSTANCE_OWNER_HOUSEHOLD_ID`) ·
+`backend/src/chaudron/domain/models.py` → `Household.is_instance_owner` and the
+`uq_household_instance_owner` index ·
+`docs/adr/0007-byok-and-local-inference.md:29` · `docs/data-model.md` §9.4
+(`household.is_instance_owner`, `uq_household_instance_owner`)
 
-**Description.** C'est le seul endpoint conçu pour être appelé par un inconnu, et
-c'est la surface sensible la plus sous-spécifiée du dépôt. Quatre manques
-distincts :
+**Description.** The `instance_owner` mode determines **who has the right to spend
+the operator's money**. Two different mechanisms claim to decide it:
 
-1. **Rejeu.** La signature est prévue (`CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY`), mais
-   rien ne parle d'horodatage signé, de fenêtre de tolérance, ni de cache
-   d'identifiants de message. Une signature valide capturée reste valide
-   indéfiniment et peut être rejouée N fois.
-2. **Comparaison non constante.** L'algorithme n'est pas spécifié. Un `==` sur
-   une signature est vulnérable au timing ; `hmac.compare_digest` est obligatoire
-   et doit être écrit, pas supposé.
-3. **Devinabilité de l'adresse de destination — le point le plus grave.**
-   L'architecture rattache un email à un foyer *« par l'adresse de destination »*.
-   Cette adresse est donc, de fait, **un secret d'autorisation** : quiconque la
-   connaît injecte dans ce foyer. Si elle dérive du nom du foyer ou d'un
-   compteur, elle est devinable et énumérable — et le dépôt public dira
-   exactement comment elle est construite. **Aucune colonne du modèle de données
-   ne la porte aujourd'hui**, donc rien ne garantit qu'elle sera aléatoire.
-4. **Énumération.** Rien n'impose une réponse identique pour une adresse connue
-   et inconnue. Sans cela, le webhook devient un oracle d'existence de foyer.
+- ADR-0007: *"usable only by the household explicitly designated as the owner of
+  the instance (**dedicated environment variable**)"* — hence
+  `CHAUDRON_INSTANCE_OWNER_HOUSEHOLD_ID`;
+- the data model: the `household.is_instance_owner` column, protected by a unique
+  index guaranteeing there is **at most one**.
 
-**Aggravant :** la note de conception censée couvrir tout cela,
-`docs/technical-notes-ingestion.md`, **n'existe pas** (voir SEC-019).
+Nothing says which one is authoritative, nor how they are kept consistent. Any
+divergence is an authorisation granted by mistake: a household marked in the
+database but absent from the environment, or the reverse, and the operator pays
+for a third party's inference. The data model also acknowledges that the rule is
+cross-table, hence not expressible as a `CHECK`, and rests on the service alone.
 
-**Correction.**
+**Fix.** Choose **one** source and make the other subordinate.
 
-1. Ajouter à `household` une colonne `inbound_email_token` : jeton aléatoire
-   d'**au moins 128 bits**, unique, indexé, régénérable, nullable (le foyer qui
-   n'utilise pas la fonction n'en a pas). L'adresse devient
-   `<token>@<CHAUDRON_INBOUND_EMAIL_DOMAIN>` et ne dérive **jamais** du nom du
-   foyer ni d'un identifiant séquentiel.
-2. Spécifier la signature : HMAC-SHA-256 sur `timestamp + corps brut`,
-   `hmac.compare_digest`, fenêtre de tolérance de 5 minutes, table de
-   déduplication des identifiants de message avec purge.
-3. Réponse et délai **identiques** pour une adresse inconnue et une adresse
-   connue.
-4. Bornes de pièces jointes : nombre maximal, dimensions d'image vérifiées
-   **avant** décodage, type MIME déterminé par inspection du contenu et non par
-   l'en-tête, et **clé de stockage dérivée de `(household_id, uuid)` — jamais du
-   nom de fichier reçu**.
-5. Écrire `docs/technical-notes-ingestion.md` **avant** d'implémenter la
-   fonction.
+- Retain `household.is_instance_owner` as the **sole** authority — the unique
+  index is a real guard rail, which the environment is not.
+- Keep `CHAUDRON_INSTANCE_OWNER_HOUSEHOLD_ID` only as a **startup assertion**: at
+  boot, if the variable is set and does not match the household marked in the
+  database, **refuse to start** (consistent with the fail-fast rule of
+  `.env.example:3`). If it is empty, the mode is disabled.
+- Document the assignment procedure as an explicit and logged administrative act.
+- Back it up with an RLS policy when SEC-001 is applied.
 
 ---
 
-#### SEC-006 — La validation SSRF décrite ne ferme ni le TOCTOU DNS, ni le port, ni les notations alternatives
+#### SEC-005 — Email webhook: replay not handled, household address guessable, no modelling
 
-**Sévérité :** Élevée
-**Fichiers :** `.env.example:71-81` · `docs/adr/0007-byok-and-local-inference.md:47` ·
-`docs/architecture.md:190-193` · `SECURITY.md:99-109`
+**Severity:** High
+**Files:** `.env.example:93-101` · `docs/architecture.md` §3.4 ("Receiving an
+order email") · `SECURITY.md:124-130` ·
+`backend/src/chaudron/domain/models.py` → `Household` (no inbound address
+column) · design note absent
 
-**Description.** Le choix de l'allowlist explicite est **correct**, et le
-raisonnement qui l'amène (le filtrage des plages privées est inopérant, puisque
-l'adresse légitime d'un Ollama colocalisé *est* privée) est juste. Ce sont les
-détails d'application qui manquent, et une allowlist n'est sûre que si l'hôte
-autorisé est exactement l'hôte contacté.
+**Description.** This is the only endpoint designed to be called by a stranger,
+and it is the most under-specified sensitive surface in the repository. Four
+distinct gaps:
 
-Cinq lacunes :
+1. **Replay.** The signature is planned (`CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY`),
+   but nothing mentions a signed timestamp, a tolerance window, or a cache of
+   message identifiers. A captured valid signature stays valid indefinitely and
+   can be replayed N times.
+2. **Non-constant-time comparison.** The algorithm is not specified. A `==` on a
+   signature is vulnerable to timing; `hmac.compare_digest` is mandatory and must
+   be written, not assumed.
+3. **Guessability of the destination address — the most severe point.** The
+   architecture attaches an email to a household *"by the destination address"*.
+   That address is therefore, in effect, **an authorisation secret**: whoever
+   knows it injects into that household. If it derives from the household name or
+   from a counter, it is guessable and enumerable — and the public repository will
+   say exactly how it is built. **No column of the data model carries it today**,
+   so nothing guarantees that it will be random.
+4. **Enumeration.** Nothing requires an identical response for a known and an
+   unknown address. Without that, the webhook becomes an oracle for household
+   existence.
 
-1. **DNS rebinding.** Le contrôle annoncé est *« résolution DNS effectuée à la
-   validation et avant l'appel »*. Résoudre deux fois ne ferme pas la fenêtre :
-   le client HTTP re-résout au moment de la connexion. Le seul contrôle qui tient
-   est **résoudre, valider l'IP, puis se connecter à cette IP**, en portant le
-   nom d'origine dans l'en-tête `Host`.
-2. **Port libre.** `.env.example:76-79` accepte « hostnames **or** host:port ».
-   Un hôte autorisé sans port autorise **tous** ses ports : le serveur devient un
-   scanner de ports interne (`ollama:22`, `ollama:5432`, `ollama:6379`), les
-   temps de réponse suffisant à cartographier.
-3. **Notations alternatives.** Aucune normalisation n'est décrite. `0x7f000001`,
+**Aggravating factor:** the design note meant to cover all of this,
+`docs/technical-notes-ingestion.md`, **does not exist** (see SEC-019).
+
+**Fix.**
+
+1. Add to `household` an `inbound_email_token` column: a random token of **at
+   least 128 bits**, unique, indexed, regenerable, nullable (a household not using
+   the feature does not have one). The address becomes
+   `<token>@<CHAUDRON_INBOUND_EMAIL_DOMAIN>` and **never** derives from the
+   household name nor from a sequential identifier.
+2. Specify the signature: HMAC-SHA-256 over `timestamp + raw body`,
+   `hmac.compare_digest`, a 5-minute tolerance window, a message-identifier
+   deduplication table with purging.
+3. **Identical** response and delay for an unknown address and a known one.
+4. Attachment bounds: maximum count, image dimensions checked **before** decoding,
+   MIME type determined by inspecting the content and not from the header, and
+   **storage key derived from `(household_id, uuid)` — never from the received
+   file name**.
+5. Write `docs/technical-notes-ingestion.md` **before** implementing the feature.
+
+---
+
+#### SEC-006 — The described SSRF validation closes neither the DNS TOCTOU, nor the port, nor the alternative notations
+
+**Severity:** High
+**Files:** `.env.example:71-81` · `docs/adr/0007-byok-and-local-inference.md:47` ·
+`docs/architecture.md` §4 ("The hard part: Ollama topology", the paragraph on the
+user-supplied base URL as an SSRF primitive) · `SECURITY.md:99-109`
+
+**Description.** The choice of an explicit allowlist is **correct**, and the
+reasoning that leads to it (filtering private ranges is inoperative, since the
+legitimate address of a co-located Ollama *is* private) is sound. What is missing
+are the application details, and an allowlist is only safe if the allowed host is
+exactly the host contacted.
+
+Five gaps:
+
+1. **DNS rebinding.** The announced control is *"DNS resolution performed at
+   validation and before the call"*. Resolving twice does not close the window:
+   the HTTP client re-resolves at connection time. The only control that holds is
+   **resolve, validate the IP, then connect to that IP**, carrying the original
+   name in the `Host` header.
+2. **Free port.** `.env.example:76-79` accepts "hostnames **or** host:port". An
+   allowed host without a port allows **all** of its ports: the server becomes an
+   internal port scanner (`ollama:22`, `ollama:5432`, `ollama:6379`), response
+   times alone being enough to map.
+3. **Alternative notations.** No normalisation is described. `0x7f000001`,
    `2130706433`, `127.1`, `0.0.0.0`, `[::1]`, `[::ffff:127.0.0.1]`, `localhost.`
-   (point final), `127.0.0.1.nip.io` contournent toute comparaison textuelle sur
-   l'hôte.
-4. **`userinfo`.** `http://ollama@attaquant.example/` est lu comme autorisé par un
-   parseur naïf.
-5. **Pas de plancher de refus.** L'allowlist étant entièrement à la main de
-   l'opérateur, rien n'empêche `169.254.169.254` d'y figurer par erreur ou par
-   copier-coller.
+   (trailing dot), `127.0.0.1.nip.io` bypass any textual comparison on the host.
+4. **`userinfo`.** `http://ollama@attacker.example/` is read as allowed by a naive
+   parser.
+5. **No refusal floor.** The allowlist being entirely in the operator's hands,
+   nothing prevents `169.254.169.254` from appearing in it by mistake or by
+   copy-paste.
 
-**Correction.** Une fonction unique, testée, traversée par **tous** les appels
-sortants vers un hôte fourni par l'utilisateur — y compris le sondage de
-capacités à l'enregistrement :
+**Fix.** A single, tested function, traversed by **all** outbound calls toward a
+user-supplied host — including capability probing at registration:
 
 ```
 resolve_and_validate(url) -> (ip, port, host_header)
 ```
 
-- schéma strictement `http`/`https` ; rejet si l'URL contient `@`, un caractère
-  de contrôle, ou une séquence encodée dans la partie hôte ;
-- **port obligatoire** dans l'allowlist ; une entrée sans port signifie « 11434
-  uniquement », jamais « tous » ;
-- résolution, puis comparaison sur **l'IP normalisée** (pas sur le texte), puis
-  connexion à cette IP avec `Host` explicite ;
-- **denylist plancher non contournable**, appliquée même si l'opérateur autorise
-  l'hôte : `169.254.0.0/16`, `::ffff:169.254.0.0/112`, `fd00:ec2::254`,
-  `0.0.0.0/8`, `::/128` ;
-- `follow_redirects=False` posé explicitement sur le client `httpx` ;
-- borne de **taille** de réponse — ajouter `CHAUDRON_OLLAMA_MAX_RESPONSE_BYTES`, il
-  n'existe aujourd'hui qu'une borne de temps — et borne de profondeur du JSON
-  désérialisé ;
-- jeu de tests contenant nommément chacune des notations ci-dessus.
+- scheme strictly `http`/`https`; rejection if the URL contains `@`, a control
+  character, or an encoded sequence in the host part;
+- **mandatory port** in the allowlist; an entry without a port means "11434 only",
+  never "all";
+- resolution, then comparison on **the normalised IP** (not on the text), then
+  connection to that IP with an explicit `Host`;
+- **non-bypassable floor denylist**, applied even if the operator allows the host:
+  `169.254.0.0/16`, `::ffff:169.254.0.0/112`, `fd00:ec2::254`, `0.0.0.0/8`,
+  `::/128`;
+- `follow_redirects=False` set explicitly on the `httpx` client;
+- a response **size** bound — add `CHAUDRON_OLLAMA_MAX_RESPONSE_BYTES`, today there
+  is only a time bound — and a depth bound on the deserialised JSON;
+- a test set containing each of the notations above by name.
 
 ---
 
-#### SEC-007 — L'algorithme JWT est configurable et le secret de signature est partagé entre deux usages
+#### SEC-007 — The JWT algorithm is configurable and the signing secret is shared between two uses
 
-**Sévérité :** Élevée
-**Fichiers :** `.env.example:29-35`
+**Severity:** High
+**Files:** `.env.example`, the "Security" block (`CHAUDRON_SECRET_KEY`,
+`CHAUDRON_JWT_TTL_MINUTES`, `CHAUDRON_JWT_ALGORITHM`) ·
+`backend/src/chaudron/config.py` → `Settings.jwt_algorithm`,
+`Settings.jwt_ttl_minutes`
 
-**Description.** Deux défauts distincts au même endroit.
+> Both settings have since been **removed** rather than typed, from
+> `.env.example` and from `Settings`: no JWT is issued or verified anywhere in
+> the codebase, so nothing read them. Authentication landed as server-side
+> sessions and hashed machine tokens (`docs/architecture.md` §8.1). The first
+> half of this finding is therefore closed by deletion; the second half — one
+> secret for two uses — no longer applies either, `CHAUDRON_SECRET_KEY` having
+> ended up with a single use (the CalDAV feed key derivation).
 
-`CHAUDRON_JWT_ALGORITHM` est une **variable d'environnement**. Rendre l'algorithme
-de vérification configurable est le point d'entrée classique de la confusion
-d'algorithme : `none`, ou une signature RSA vérifiée comme un HMAC avec la clé
-publique. L'algorithme d'une application est une propriété du code, pas de son
-déploiement — un opérateur n'a aucune raison légitime de le changer, et le rendre
-modifiable ne crée qu'un risque.
+**Description.** Two distinct defects in the same place.
 
-`CHAUDRON_SECRET_KEY` est décrite comme servant *« to sign sessions and JWTs »* :
-un seul secret pour deux mécanismes. Sa fuite compromet les deux, et sa rotation
-invalide les deux.
+`CHAUDRON_JWT_ALGORITHM` is an **environment variable**. Making the verification
+algorithm configurable is the classic entry point for algorithm confusion:
+`none`, or an RSA signature verified as an HMAC with the public key. An
+application's algorithm is a property of the code, not of its deployment — an
+operator has no legitimate reason to change it, and making it modifiable creates
+only a risk.
 
-**Correction.**
+`CHAUDRON_SECRET_KEY` is described as serving *"to sign sessions and JWTs"*: a
+single secret for two mechanisms. Its leak compromises both, and its rotation
+invalidates both.
 
-1. Retirer `CHAUDRON_JWT_ALGORITHM` de `.env.example`. Figer l'algorithme dans le
-   code, et **imposer une liste d'algorithmes acceptés** au décodage
-   (`algorithms=["HS256"]`), jamais celui annoncé par le jeton.
-2. Séparer les secrets : soit deux variables, soit une clé maîtresse et deux
-   sous-clés dérivées par HKDF avec des contextes distincts.
-3. Trancher la stratégie d'authentification (`docs/architecture.md:247-248`)
-   **avant** la première migration : transport (cookie `Secure`, `HttpOnly`,
-   `SameSite=Lax` ou `Strict`), durée, et **mécanisme de révocation** — un JWT
-   sans liste de révocation ne se retire pas avant expiration.
+**Fix.**
 
----
-
-#### SEC-008 — Aucune rétention n'est définie, et le `CASCADE` ne supprime pas les images
-
-**Sévérité :** Élevée
-**Fichiers :** `backend/src/chaudron/domain/models.py:800` (`image_object_key`),
-`:830` (`raw_response`), `:1080` (`stock_snapshot`), `:245-256` (`CASCADE`) ·
-`docs/data-model.md:1265-1267` (question 5) · `docs/architecture.md:223,249`
-
-**Description.** Deux problèmes qui se combinent mal.
-
-**Aucune durée de rétention n'est fixée**, et surtout **aucune colonne ne permet
-de la suivre**. L'architecture recommande *« purge après traitement à
-privilégier »* et le modèle de données classe la question comme à trancher avant
-le premier compte tiers. Sans colonne, il n'y a pas de purge : il y a une
-intention. Cela concerne les trois données les plus sensibles du système : les
-images de tickets, `receipt.raw_response`, et `recipe_suggestion.stock_snapshot`
-— que le modèle qualifie lui-même de *« donnée la plus sensible de la base »*,
-puisque c'est **l'inventaire complet d'un domicile, figé**.
-
-**Le `ON DELETE CASCADE` ne couvre que PostgreSQL.** Il est décrit comme
-répondant à l'effacement RGPD, *« totale et atomique, pas un script de nettoyage
-qui oublie une table »* — et c'est vrai pour la base. Mais supprimer un foyer
-efface les lignes et **laisse tous les objets** du stockage. Un effacement
-partiel présenté comme complet est une non-conformité qui a l'air d'une
-conformité.
-
-**Correction.**
-
-1. Trancher les durées **avant la première migration**, et les inscrire dans le
-   schéma. Proposition à arbitrer : image purgée à la confirmation de la revue
-   (30 jours maximum), `raw_response` 90 jours, `stock_snapshot` **30 jours**,
-   `raw_label` conservé après dissociation du foyer, journaux 30 jours.
-2. Ajouter les colonnes qui rendent la purge vérifiable : `image_purged_at` sur
-   `receipt`, et un `expires_at` (ou une politique dérivée de `created_at`)
-   exploitable par une tâche planifiée.
-3. Écrire la suppression de foyer comme une **opération applicative** :
-   énumération et suppression des objets **avant** le `DELETE` de la ligne
-   `household`, avec vérification et journalisation. Le `CASCADE` reste utile
-   pour l'atomicité en base ; il ne doit plus être présenté comme l'effacement
-   RGPD complet.
-4. Supprimer les métadonnées EXIF (GPS, appareil, horodatage) **à l'ingestion**,
-   avant écriture — sinon la géolocalisation du domicile est conservée et
-   re-servie.
+1. Remove `CHAUDRON_JWT_ALGORITHM` from `.env.example`. Freeze the algorithm in
+   the code, and **enforce a list of accepted algorithms** at decoding
+   (`algorithms=["HS256"]`), never the one announced by the token.
+2. Separate the secrets: either two variables, or a master key and two subkeys
+   derived by HKDF with distinct contexts.
+3. Settle the authentication strategy (`docs/architecture.md` §8, then titled
+   "What is not yet settled") **before**
+   the first migration: transport (`Secure`, `HttpOnly`, `SameSite=Lax` or
+   `Strict` cookie), duration, and **revocation mechanism** — a JWT with no
+   revocation list cannot be withdrawn before expiry.
 
 ---
 
-#### SEC-009 — Aucune limitation de débit n'est conçue, nulle part
+#### SEC-008 — No retention is defined, and the `CASCADE` does not delete the images
 
-**Sévérité :** Élevée
-**Fichiers :** `.env.example` (aucune variable) · `backend/pyproject.toml:15-26`
-(aucune dépendance) · `docs/architecture.md:216-227` (absent du tableau
-sécurité) · `SECURITY.md:142-148`
+**Severity:** High
+**Files:** `backend/src/chaudron/domain/models.py` → `Receipt.image_object_key`,
+`Receipt.raw_response`, `RecipeSuggestion.stock_snapshot`, and the `CASCADE`
+carried by `HouseholdScopedMixin` ·
+`docs/data-model.md` §11, open question 5 (retention) · `docs/architecture.md` §6
+(receipt images) and §8
 
-**Description.** Aucun des quatre endpoints qui en ont besoin n'a de limitation
-de débit décrite :
+> `Receipt.image_object_key` has since acquired a `COMMENT ON COLUMN` stating
+> that it is **always** `NULL` — the image is read in memory and discarded
+> (migration `0012`, `docs/architecture.md` §6). The storage half of this finding
+> is answered by never writing an object rather than by purging one; the
+> retention question on `raw_response` and `stock_snapshot`, and the fact that
+> `CASCADE` covers only PostgreSQL, are untouched by that.
 
-- **connexion** — bourrage d'identifiants et force brute, l'attaque par défaut
-  d'un visiteur non authentifié sur une instance auto-hébergée sans WAF ni
-  fail2ban ;
-- **webhook email** — endpoint public, amplification et saturation ;
-- **upload de ticket** — coût CPU, disque, et appel de modèle **facturé** ;
-- **génération de recette** — chaque appel coûte de l'argent au foyer, ou à
-  l'exploitant en mode `instance_owner`, où `CHAUDRON_LLM_MONTHLY_BUDGET_USD`
-  n'est qu'un plafond **global** : atteint, il coupe la fonction pour tout le
-  monde.
+**Description.** Two problems that combine badly.
 
-S'y ajoute le plafond Open Food Facts : 15 requêtes/minute **par IP**, donc
-global à l'instance, avec bannissement à la clé — un seul foyer qui scanne en
-rafale peut couper la résolution produit pour tous les autres. Le client sortant
-est limité à 10 req/min (ADR-0008), ce qui protège Open Food Facts d'une
-surcharge mais ne protège pas les autres foyers de la monopolisation du quota.
+**No retention period is fixed**, and above all **no column allows tracking it**.
+The architecture recommends *"purge after processing to be preferred"* and the
+data model classes the question as one to settle before the first third-party
+account. Without a column there is no purge: there is an intention. This concerns
+the three most sensitive pieces of data in the system: the receipt images,
+`receipt.raw_response`, and `recipe_suggestion.stock_snapshot` — which the model
+itself calls the *"most sensitive data in the database"*, since it is **a home's
+complete inventory, frozen**.
 
-**Correction.**
+**The `ON DELETE CASCADE` covers only PostgreSQL.** It is described as answering
+GDPR erasure, *"total and atomic, not a cleanup script that forgets a table"* —
+and that is true for the database. But deleting a household erases the rows and
+**leaves all the objects** in storage. A partial erasure presented as complete is
+a non-compliance that looks like compliance.
 
-1. Décider maintenant le mécanisme (compteur PostgreSQL avec fenêtre glissante,
-   suffisant à cette échelle et sans dépendance nouvelle) et l'inscrire au
-   modèle de menace.
-2. Limites par identité **et** par IP sur la connexion, avec verrouillage
-   temporaire progressif et journalisation.
-3. Quota par foyer sur la génération de recette et l'import de ticket,
-   configurable, avec un message honnête plutôt qu'un 429 nu.
-4. File d'attente équitable par foyer devant le client Open Food Facts, pour
-   qu'un foyer ne puisse pas consommer tout le quota d'instance.
-5. Réponses et délais identiques à la connexion pour un email connu et inconnu
-   (anti-énumération).
+**Fix.**
 
----
-
-### Moyenne
-
----
-
-#### SEC-010 — Le démarrage rapide du README publie PostgreSQL sur toutes les interfaces
-
-**Sévérité :** Moyenne
-**Fichier :** `README.md:166-169`
-
-**Description.** Le bloc de démarrage rapide contient `-p 5432:5432`, qui publie
-la base sur **toutes** les interfaces de l'hôte. C'est le bloc le plus copié-collé
-d'un dépôt public, et il contredit directement `ops/README.md:96`
-(`-p 127.0.0.1:8000:8000`) et `ops/chaudron-db.container:26-28`, qui insiste à juste
-titre : *« The database is never published to the host »*. Le mot de passe
-aléatoire (`openssl rand -hex 16`) limite le dommage sans supprimer l'exposition
-(scan, empreinte de version, vulnérabilités futures du démon).
-
-**Correction.** Remplacer par `-p 127.0.0.1:5432:5432`, et ajouter la même note
-d'une ligne que dans `ops/` expliquant pourquoi la boucle est le défaut.
+1. Settle the periods **before the first migration**, and record them in the
+   schema. Proposal to be arbitrated: image purged on review confirmation (30 days
+   maximum), `raw_response` 90 days, `stock_snapshot` **30 days**, `raw_label`
+   retained after dissociation from the household, logs 30 days.
+2. Add the columns that make the purge verifiable: `image_purged_at` on `receipt`,
+   and an `expires_at` (or a policy derived from `created_at`) usable by a
+   scheduled task.
+3. Write household deletion as an **application-level operation**: enumeration and
+   deletion of the objects **before** the `DELETE` of the `household` row, with
+   verification and logging. The `CASCADE` remains useful for atomicity in the
+   database; it must no longer be presented as complete GDPR erasure.
+4. Strip the EXIF metadata (GPS, device, timestamp) **at ingestion**, before
+   writing — otherwise the home's geolocation is retained and re-served.
 
 ---
 
-#### SEC-011 — Les actions GitHub tierces ne sont pas épinglées par empreinte
+#### SEC-009 — No rate limiting is designed, anywhere
 
-**Sévérité :** Moyenne
-**Fichier :** `.github/workflows/ci.yml:36,68,117,179` (`astral-sh/setup-uv@v7`),
+**Severity:** High
+**Files:** `.env.example` (no variable) · `backend/pyproject.toml:15-26`
+(no dependency) · `docs/architecture.md` §6 (absent from the security
+table) · `SECURITY.md:142-148`
+
+**Description.** None of the four endpoints that need it has any rate limiting
+described:
+
+- **login** — credential stuffing and brute force, the default attack of an
+  unauthenticated visitor against a self-hosted instance with no WAF and no
+  fail2ban;
+- **email webhook** — public endpoint, amplification and saturation;
+- **receipt upload** — CPU cost, disk, and a **billed** model call;
+- **recipe generation** — every call costs the household money, or the operator in
+  `instance_owner` mode, where `CHAUDRON_LLM_MONTHLY_BUDGET_USD` is only a
+  **global** ceiling: once reached, it cuts the feature off for everybody.
+
+On top of that comes the Open Food Facts ceiling: 15 requests/minute **per IP**,
+hence global to the instance, with a ban as the penalty — a single household
+scanning in bursts can cut off product resolution for all the others. The
+outbound client is limited to 10 req/min (ADR-0008), which protects Open Food
+Facts from overload but does not protect the other households from monopolisation
+of the quota.
+
+**Fix.**
+
+1. Decide the mechanism now (a PostgreSQL counter with a sliding window,
+   sufficient at this scale and requiring no new dependency) and record it in the
+   threat model.
+2. Per-identity **and** per-IP limits on login, with progressive temporary
+   lockout and logging.
+3. Per-household quota on recipe generation and receipt import, configurable, with
+   an honest message rather than a bare 429.
+4. A fair per-household queue in front of the Open Food Facts client, so that one
+   household cannot consume the whole instance quota.
+5. Identical responses and delays at login for a known and an unknown email
+   (anti-enumeration).
+
+---
+
+### Medium
+
+---
+
+#### SEC-010 — The README quick start publishes PostgreSQL on all interfaces
+
+**Severity:** Medium
+**File:** `README.md:166-169`
+
+**Description.** The quick-start block contains `-p 5432:5432`, which publishes
+the database on **all** of the host's interfaces. It is the most copy-pasted block
+of a public repository, and it directly contradicts `ops/README.md:96`
+(`-p 127.0.0.1:8000:8000`) and `ops/chaudron-db.container:26-28`, which rightly
+insists: *"The database is never published to the host"*. The random password
+(`openssl rand -hex 16`) limits the damage without removing the exposure
+(scanning, version fingerprinting, future vulnerabilities in the daemon).
+
+**Fix.** Replace with `-p 127.0.0.1:5432:5432`, and add the same one-line note as
+in `ops/` explaining why loopback is the default.
+
+---
+
+#### SEC-011 — Third-party GitHub Actions are not pinned by digest
+
+**Severity:** Medium
+**File:** `.github/workflows/ci.yml:36,68,117,179` (`astral-sh/setup-uv@v7`),
 `:204` (`gitleaks/gitleaks-action@v2`), `:33,65,114,148,176,198,218`
 (`actions/checkout@v5`), `:134`, `:232`
 
-**Description.** Toutes les actions sont référencées par **tag de version
-majeure**. Un tag est mutable : son déplacement par un mainteneur compromis ou
-malveillant exécute du code arbitraire dans le runner, avec accès au dépôt en
-lecture et au cache de dépendances. Le risque est plus élevé sur les deux actions
-**tierces** (`astral-sh/setup-uv`, `gitleaks/gitleaks-action`) que sur celles de
-l'organisation `actions`.
+**Description.** All the actions are referenced by **major version tag**. A tag is
+mutable: its being moved by a compromised or malicious maintainer executes
+arbitrary code in the runner, with read access to the repository and to the
+dependency cache. The risk is higher on the two **third-party** actions
+(`astral-sh/setup-uv`, `gitleaks/gitleaks-action`) than on those of the `actions`
+organisation.
 
-**Correction.** Épingler par SHA de commit complet, avec le tag en commentaire :
+**Fix.** Pin by full commit SHA, with the tag in a comment:
 
 ```yaml
-uses: astral-sh/setup-uv@<sha-40-caractères>  # v7.x.y
-uses: gitleaks/gitleaks-action@<sha-40-caractères>  # v2.x.y
+uses: astral-sh/setup-uv@<40-character-sha>  # v7.x.y
+uses: gitleaks/gitleaks-action@<40-character-sha>  # v2.x.y
 ```
 
-Ajouter un `.github/dependabot.yml` avec l'écosystème `github-actions`, qui
-proposera les montées de SHA en pull request plutôt que de les subir en silence.
+Add a `.github/dependabot.yml` with the `github-actions` ecosystem, which will
+propose SHA bumps as pull requests rather than having them applied silently.
 
 ---
 
-#### SEC-012 — Images de base épinglées par tag, et mise à jour automatique de la base de données depuis le registre
+#### SEC-012 — Base images pinned by tag, and automatic database update from the registry
 
-**Sévérité :** Moyenne
-**Fichiers :** `backend/Containerfile:14,36` · `ops/chaudron-db.container:19-20`
+**Severity:** Medium
+**Files:** `backend/Containerfile:14,36` · `ops/chaudron-db.container:19-20`
 
-**Description.** Deux écarts avec la discipline appliquée partout ailleurs dans
-le projet, où les dépendances Python sont épinglées **exactement** avec un
-lockfile et `UV_FROZEN`.
+**Description.** Two divergences from the discipline applied everywhere else in
+the project, where the Python dependencies are pinned **exactly** with a lockfile
+and `UV_FROZEN`.
 
-1. Les images de base (`ghcr.io/astral-sh/uv:python3.14-bookworm-slim`,
-   `python:3.14-slim-bookworm`) sont épinglées par tag mutable. Le commentaire de
-   tête du `Containerfile` revendique *« bump deliberately, never implicitly »* —
-   un tag ne permet pas de tenir cette promesse.
-2. `AutoUpdate=registry` sur `docker.io/library/postgres:16` fait **tirer
-   automatiquement** une nouvelle image de base de données dès qu'elle est
-   publiée, sans revue, sans fenêtre de maintenance, et sans sauvegarde vérifiée
-   au préalable. C'est un redémarrage non planifié du composant le plus difficile
-   à restaurer, déclenché par un tiers. Le quadlet de l'API utilise
-   `AutoUpdate=local` (ligne 21), plus prudent — l'asymétrie n'est pas justifiée.
+1. The base images (`ghcr.io/astral-sh/uv:python3.14-bookworm-slim`,
+   `python:3.14-slim-bookworm`) are pinned by mutable tag. The header comment of
+   the `Containerfile` claims *"bump deliberately, never implicitly"* — a tag does
+   not allow keeping that promise.
+2. `AutoUpdate=registry` on `docker.io/library/postgres:16` causes a new database
+   image to be **pulled automatically** as soon as it is published, without
+   review, without a maintenance window, and without a verified prior backup. It
+   is an unplanned restart of the component that is hardest to restore, triggered
+   by a third party. The API quadlet uses `AutoUpdate=local` (line 21), which is
+   more prudent — the asymmetry is not justified.
 
-**Correction.**
+**Fix.**
 
-1. Épingler les trois images par `@sha256:…`, tag en commentaire, montée
-   explicite. Confier le suivi à Dependabot (écosystème `docker`, qui gère les
-   `Containerfile`).
-2. Remplacer `AutoUpdate=registry` par `AutoUpdate=local` sur
-   `chaudron-db.container`, ou le retirer. Une montée de version de base de données
-   est une opération planifiée, précédée d'une sauvegarde vérifiée —
-   `ops/README.md` §4 décrit déjà la bonne procédure.
+1. Pin the three images by `@sha256:…`, tag in a comment, explicit bumps. Hand the
+   tracking to Dependabot (`docker` ecosystem, which handles `Containerfile`s).
+2. Replace `AutoUpdate=registry` with `AutoUpdate=local` on
+   `chaudron-db.container`, or remove it. A database version bump is a planned
+   operation, preceded by a verified backup — `ops/README.md` §4 already describes
+   the right procedure.
 
 ---
 
-#### SEC-013 — `.gitignore` n'exclut ni les sauvegardes, ni les clés, ni le fichier d'environnement de production
+#### SEC-013 — `.gitignore` excludes neither backups, nor keys, nor the production environment file
 
-**Sévérité :** Moyenne
-**Fichiers :** `.gitignore:14-21` · `ops/README.md:257` · `ops/chaudron.container:32`
+**Severity:** Medium
+**Files:** `.gitignore:14-21` · `ops/README.md:257` · `ops/chaudron.container:32`
 
-**Description.** Trois manques, dont un directement induit par la documentation.
+**Description.** Three gaps, one of them directly induced by the documentation.
 
-1. **Aucun motif de sauvegarde.** `ops/README.md:257` propose
-   `pg_dump … > chaudron-$(date -I).dump` **dans le répertoire courant**. Exécutée
-   depuis le dépôt — ce qui est le réflexe naturel —, la commande dépose une
-   copie complète de la base (A3, A4, A1 chiffrés) dans un répertoire de travail
-   git non ignoré.
-2. **Aucun motif de matériel cryptographique** : `*.pem`, `*.key`, `*.p12`,
-   `*.pfx`, `id_rsa*`.
-3. **`chaudron.env` n'est pas couvert.** Les règles ignorent `.env` et `.env.*`,
-   mais le fichier d'environnement de production s'appelle `chaudron.env`
-   (`ops/chaudron.container:32`) et ne correspond à aucun motif.
+1. **No backup pattern.** `ops/README.md:257` proposes
+   `pg_dump … > chaudron-$(date -I).dump` **in the current directory**. Run from
+   the repository — which is the natural reflex — the command drops a complete
+   copy of the database (A3, A4, encrypted A1) into a non-ignored git working
+   directory.
+2. **No cryptographic material pattern**: `*.pem`, `*.key`, `*.p12`, `*.pfx`,
+   `id_rsa*`.
+3. **`chaudron.env` is not covered.** The rules ignore `.env` and `.env.*`, but the
+   production environment file is called `chaudron.env`
+   (`ops/chaudron.container:32`) and matches no pattern.
 
-**Correction.** Ajouter à la section « Secrets and local environment » :
+**Fix.** Add to the "Secrets and local environment" section:
 
 ```gitignore
 *.env
@@ -687,586 +699,578 @@ chaudron.env
 id_rsa*
 ```
 
-et modifier `ops/README.md:257` pour écrire la sauvegarde dans un répertoire
-dédié hors dépôt (`~/chaudron/backups/`), avec un rappel sur son chiffrement et sa
-séparation d'avec la clé de chiffrement (voir SEC-002).
+and modify `ops/README.md:257` to write the backup into a dedicated directory
+outside the repository (`~/chaudron/backups/`), with a reminder about encrypting
+it and keeping it separate from the encryption key (see SEC-002).
 
 ---
 
-#### SEC-014 — Le contenu Open Food Facts est stocké brut et rendu comme s'il était fiable
+#### SEC-014 — Open Food Facts content is stored raw and rendered as if it were trustworthy
 
-**Sévérité :** Moyenne
-**Fichiers :** `backend/src/chaudron/domain/models.py:419-438` (`gtin`, `name`,
+**Severity:** Medium
+**Files:** `backend/src/chaudron/domain/models.py` → `Product` (`gtin`, `name`,
 `brand`, `category_tag`, `image_url`, `off_payload`) ·
-`docs/architecture.md:208-209`
+`docs/architecture.md` §5, the "model output treated as untrusted input" bullet
 
-**Description.** L'architecture pose la bonne règle — *« sortie de modèle traitée
-comme entrée non fiable »* — mais ne l'applique qu'aux modèles. Or les champs
-issus d'Open Food Facts sont **rédigés par des contributeurs anonymes** : `name`,
-`brand`, `category_tag` sont du texte libre tiers, `off_payload` est un instantané
-brut conservé en JSONB, et `image_url` est une URL tierce.
+**Description.** The architecture states the right rule — *"model output treated as
+untrusted input"* — but applies it only to models. Yet the fields coming from Open
+Food Facts are **written by anonymous contributors**: `name`, `brand`,
+`category_tag` are third-party free text, `off_payload` is a raw snapshot kept in
+JSONB, and `image_url` is a third-party URL.
 
-C'est exactement la même classe de risque, sur un chemin qu'on ne surveille pas
-parce qu'il n'a pas l'air d'être de l'IA : XSS stocké si un nom de produit est
-rendu en HTML, chargement de ressource distante non maîtrisée si `image_url` est
-utilisée telle quelle par le client. Le projet a par ailleurs déjà identifié que
-les données Open Food Facts sont peu fiables (*« no assurances that the data is
-accurate »*), mais côté **qualité**, pas côté **innocuité**.
+It is exactly the same risk class, on a path nobody watches because it does not
+look like AI: stored XSS if a product name is rendered as HTML, loading of an
+uncontrolled remote resource if `image_url` is used as is by the client. The
+project has moreover already identified that Open Food Facts data is unreliable
+(*"no assurances that the data is accurate"*), but on the **quality** side, not on
+the **harmlessness** side.
 
-**Correction.**
+**Fix.**
 
-1. Ajouter explicitement les données Open Food Facts au périmètre de la règle
-   « entrée non fiable » dans `docs/architecture.md` §5.
-2. Validation Pydantic stricte à l'entrée : longueurs bornées, jeu de caractères
-   contrôlé, `image_url` restreinte au schéma `https` et au domaine
-   `images.openfoodfacts.org`.
-3. Rendu en **texte pur** côté PWA, jamais en HTML ni en Markdown avec liens
-   actifs, plus une CSP stricte sans `unsafe-inline`.
-4. Ne pas charger `image_url` depuis le client : proxy et cache côté serveur,
-   comme déjà recommandé pour la charge (`technical-notes-scanning.md` §3.5,
-   point 6). La raison sécurité s'ajoute à la raison de courtoisie.
-5. Borner la taille de `off_payload` avant persistance.
-
----
-
-#### SEC-015 — CORS : aucun garde-fou contre l'association origine générique et identifiants
-
-**Sévérité :** Moyenne
-**Fichier :** `.env.example:103-109`
-
-**Description.** `CHAUDRON_CORS_ORIGINS` est une liste explicite, ce qui est
-correct. Mais `CHAUDRON_CORS_ALLOW_CREDENTIALS` existe sans aucune contrainte
-documentée. L'association `*` + `allow_credentials=True` est le défaut de
-configuration CORS le plus courant et le plus destructeur : n'importe quel site
-lit alors les réponses authentifiées de l'API.
-
-**Correction.**
-
-1. Faire **échouer le démarrage** — et non produire un avertissement — si
-   `CHAUDRON_CORS_ORIGINS` contient `*` alors que
-   `CHAUDRON_CORS_ALLOW_CREDENTIALS=true`. C'est cohérent avec la règle fail-fast
-   déjà annoncée en tête de `.env.example`.
-2. Ne **jamais** refléter l'en-tête `Origin` dans `Access-Control-Allow-Origin` :
-   seule une valeur de la liste configurée est émise.
-3. Le documenter dans le commentaire de `.env.example`, où un opérateur le lira.
+1. Explicitly add Open Food Facts data to the scope of the "untrusted input" rule
+   in `docs/architecture.md` §5.
+2. Strict Pydantic validation at the input: bounded lengths, controlled character
+   set, `image_url` restricted to the `https` scheme and the
+   `images.openfoodfacts.org` domain.
+3. Rendering as **plain text** on the PWA side, never as HTML nor as Markdown with
+   active links, plus a strict CSP without `unsafe-inline`.
+4. Do not load `image_url` from the client: proxy and cache server-side, as
+   already recommended for load reasons (`technical-notes-scanning.md` §3.5,
+   point 6). The security reason adds to the courtesy reason.
+5. Bound the size of `off_payload` before persisting it.
 
 ---
 
-#### SEC-016 — L'algorithme de hachage des mots de passe n'est ni décidé ni outillé
+#### SEC-015 — CORS: no guard rail against pairing a wildcard origin with credentials
 
-**Sévérité :** Moyenne
-**Fichiers :** `backend/src/chaudron/domain/models.py:301` · `backend/pyproject.toml:15-26`
+**Severity:** Medium
+**File:** `.env.example:103-109`
 
-**Description.** `user_account.password_hash` est un `text` nullable. Aucun
-document ne dit avec quoi il est produit, et **aucune dépendance de hachage n'est
-présente** dans `pyproject.toml` (ni `argon2-cffi`, ni `passlib`, ni `bcrypt`).
-En l'absence de décision, le premier développeur qui implémente la connexion
-choisira sous pression — et c'est ainsi qu'on obtient du SHA-256 salé à la main.
+**Description.** `CHAUDRON_CORS_ORIGINS` is an explicit list, which is correct. But
+`CHAUDRON_CORS_ALLOW_CREDENTIALS` exists with no documented constraint. The pairing
+of `*` + `allow_credentials=True` is the most common and most destructive CORS
+misconfiguration: any site can then read the API's authenticated responses.
 
-Manquent également : le suivi des tentatives échouées, le re-hachage à la
-connexion quand les paramètres évoluent, et la longueur maximale acceptée (une
-absence de borne est un déni de service sur un algorithme lent).
+**Fix.**
 
-**Correction.**
-
-1. Trancher **Argon2id**, avec des paramètres explicites et versionnés, et
-   ajouter `argon2-cffi` en dépendance épinglée.
-2. Stocker le hachage au format PHC (`$argon2id$v=19$m=…`), qui porte ses propres
-   paramètres et rend le re-hachage progressif possible sans colonne
-   supplémentaire.
-3. Re-hacher à la connexion réussie quand les paramètres stockés diffèrent des
-   paramètres courants.
-4. Borner la longueur du mot de passe accepté (par exemple 4096 octets).
+1. Make startup **fail** — not produce a warning — if `CHAUDRON_CORS_ORIGINS`
+   contains `*` while `CHAUDRON_CORS_ALLOW_CREDENTIALS=true`. This is consistent
+   with the fail-fast rule already announced at the head of `.env.example`.
+2. **Never** reflect the `Origin` header into `Access-Control-Allow-Origin`: only a
+   value from the configured list is emitted.
+3. Document it in the `.env.example` comment, where an operator will read it.
 
 ---
 
-#### SEC-017 — Les contrôles de sécurité de la CI ne bloquent rien et ne s'exécutent jamais d'eux-mêmes
+#### SEC-016 — The password hashing algorithm is neither decided nor tooled
 
-**Sévérité :** Moyenne
-**Fichier :** `.github/workflows/ci.yml:1-7,169-206` · absence de
-`.github/dependabot.yml` · absence de `.github/CODEOWNERS`
+**Severity:** Medium
+**Files:** `backend/src/chaudron/domain/models.py` → `UserAccount.password_hash` ·
+`backend/pyproject.toml:15-26`
 
-**Description.** Les deux jobs de sécurité existent et sont bien choisis
-(`pip-audit --strict` sur les dépendances verrouillées, `gitleaks` sur
-l'historique complet). Trois faiblesses les rendent moins efficaces qu'ils n'en
-ont l'air :
+**Description.** `user_account.password_hash` is a nullable `text`. No document
+says what produces it, and **no hashing dependency is present** in
+`pyproject.toml` (neither `argon2-cffi`, nor `passlib`, nor `bcrypt`). In the
+absence of a decision, the first developer who implements login will choose under
+pressure — and that is how you end up with hand-salted SHA-256.
 
-1. **Ils ne sont pas déclarés obligatoires.** Aucun `needs:` ne les chaîne aux
-   autres jobs, et rien dans le dépôt ne documente une protection de branche ni
-   une liste de vérifications requises. Un scan que l'on peut fusionner en échec
-   ne protège de rien. `SECURITY.md:165-167` et `CONTRIBUTING.md:313-314`
-   affirment pourtant que la CI les impose.
-2. **Aucune exécution planifiée.** Les déclencheurs sont `push` sur `main`,
-   `pull_request` et `workflow_dispatch`. Sur un projet à faible fréquence de
-   commits, une CVE publiée le lendemain d'une fusion dort jusqu'à la pull
-   request suivante — potentiellement des mois.
-3. **Aucun `dependabot.yml`, aucun `CODEOWNERS`.** Les montées de version sont
-   entièrement manuelles, et aucune revue n'est requise sur les chemins
-   sensibles.
+Also missing: tracking of failed attempts, re-hashing at login when the parameters
+change, and the maximum accepted length (an absent bound is a denial of service on
+a slow algorithm).
 
-**Correction.**
+**Fix.**
 
-1. Activer la protection de branche sur `main` : pull request obligatoire,
-   `security-deps` et `security-secrets` en vérifications requises, historique
-   linéaire.
-2. Ajouter `schedule: - cron: "0 6 * * 1"` au workflow pour une exécution
-   hebdomadaire de l'audit de dépendances.
-3. Ajouter `.github/dependabot.yml` couvrant `github-actions`, `uv` (ou `pip`) et
+1. Settle on **Argon2id**, with explicit and versioned parameters, and add
+   `argon2-cffi` as a pinned dependency.
+2. Store the hash in PHC format (`$argon2id$v=19$m=…`), which carries its own
+   parameters and makes progressive re-hashing possible without an extra column.
+3. Re-hash on successful login when the stored parameters differ from the current
+   ones.
+4. Bound the accepted password length (for example 4096 bytes).
+
+---
+
+#### SEC-017 — The CI security controls block nothing and never run on their own
+
+**Severity:** Medium
+**File:** `.github/workflows/ci.yml:1-7,169-206` · absence of
+`.github/dependabot.yml` · absence of `.github/CODEOWNERS`
+
+**Description.** The two security jobs exist and are well chosen (`pip-audit
+--strict` on the locked dependencies, `gitleaks` over the full history). Three
+weaknesses make them less effective than they look:
+
+1. **They are not declared required.** No `needs:` chains them to the other jobs,
+   and nothing in the repository documents branch protection or a list of required
+   checks. A scan that can be merged while failing protects nothing.
+   `SECURITY.md:165-167` and `CONTRIBUTING.md:313-314` nonetheless assert that CI
+   enforces them.
+2. **No scheduled run.** The triggers are `push` on `main`, `pull_request` and
+   `workflow_dispatch`. On a project with a low commit frequency, a CVE published
+   the day after a merge sleeps until the next pull request — potentially months.
+3. **No `dependabot.yml`, no `CODEOWNERS`.** Version bumps are entirely manual,
+   and no review is required on the sensitive paths.
+
+**Fix.**
+
+1. Enable branch protection on `main`: mandatory pull request, `security-deps` and
+   `security-secrets` as required checks, linear history.
+2. Add `schedule: - cron: "0 6 * * 1"` to the workflow for a weekly run of the
+   dependency audit.
+3. Add `.github/dependabot.yml` covering `github-actions`, `uv` (or `pip`) and
    `docker`.
-4. Ajouter `.github/CODEOWNERS` sur `ops/`, `.github/`, `docs/adr/` et
+4. Add `.github/CODEOWNERS` on `ops/`, `.github/`, `docs/adr/` and
    `backend/src/chaudron/domain/`.
-5. Vérifier que `gitleaks/gitleaks-action@v2` ne requiert pas de licence pour ce
-   dépôt : ce point conditionne le fonctionnement réel du job, et il est
-   silencieux s'il échoue à s'initialiser.
+5. Check that `gitleaks/gitleaks-action@v2` does not require a licence for this
+   repository: this point conditions the job's actual operation, and it is silent
+   if it fails to initialise.
 
 ---
 
-#### SEC-018 — Aucune borne sur les uploads HTTP, face à un `/tmp` de 64 Mo
+#### SEC-018 — No bound on HTTP uploads, against a 64 MB `/tmp`
 
-**Sévérité :** Moyenne
-**Fichiers :** `ops/chaudron.container:60-62` · `.env.example:100-101` ·
+**Severity:** Medium
+**Files:** `ops/chaudron.container:60-62` · `.env.example:100-101` ·
 `backend/pyproject.toml:25` (`python-multipart`)
 
-**Description.** Le conteneur est en `ReadOnly=true` avec un unique
-`Tmpfs=/tmp:rw,size=64M`. C'est un bon durcissement. Mais `python-multipart`
-déverse sur disque au-delà d'un seuil, et **aucune borne de taille n'existe pour
-l'upload HTTP d'un ticket** : `CHAUDRON_INBOUND_EMAIL_MAX_BYTES` ne couvre que la
-voie email. Un upload volumineux remplit les 64 Mo et fait échouer tout ce qui a
-besoin d'écrire.
+**Description.** The container is `ReadOnly=true` with a single
+`Tmpfs=/tmp:rw,size=64M`. That is good hardening. But `python-multipart` spills to
+disk beyond a threshold, and **no size bound exists for the HTTP upload of a
+receipt**: `CHAUDRON_INBOUND_EMAIL_MAX_BYTES` covers only the email path. A large
+upload fills the 64 MB and makes everything that needs to write fail.
 
-Manquent également : un plafond de volume total par foyer, et une pagination
-obligatoire sur les listes potentiellement longues (`stock_movement`,
-`receipt_line`).
+Also missing: a total volume ceiling per household, and mandatory pagination on
+potentially long lists (`stock_movement`, `receipt_line`).
 
-**Correction.**
+**Fix.**
 
-1. Ajouter `CHAUDRON_RECEIPT_MAX_UPLOAD_BYTES`, appliquée **avant** la lecture du
-   corps (refus sur `Content-Length`, plus vérification en flux), et refuser au
-   niveau du reverse proxy également.
-2. Configurer explicitement le seuil de déversement de `python-multipart` et le
-   répertoire temporaire utilisé.
-3. Dimensionner `Tmpfs` en conséquence, ou monter un volume dédié aux uploads en
-   cours.
-4. Pagination obligatoire et plafonnée sur toute liste, dès la première route.
+1. Add `CHAUDRON_RECEIPT_MAX_UPLOAD_BYTES`, applied **before** reading the body
+   (rejection on `Content-Length`, plus streaming verification), and refuse at the
+   reverse proxy level as well.
+2. Explicitly configure `python-multipart`'s spill threshold and the temporary
+   directory it uses.
+3. Size `Tmpfs` accordingly, or mount a volume dedicated to in-progress uploads.
+4. Mandatory and capped pagination on every list, from the very first route.
 
 ---
 
-#### SEC-019 — `docs/technical-notes-ingestion.md` est référencé deux fois et n'existe pas
+#### SEC-019 — `docs/technical-notes-ingestion.md` is referenced twice and does not exist
 
-**Sévérité :** Moyenne
-**Fichiers :** `README.md:206` · `docs/architecture.md:163`
+**Severity:** Medium
+**Files:** `README.md:206` · `docs/architecture.md` §3.4 (the closing link to the
+note)
 
-**Description.** Le document est présenté comme couvrant *« Inbound email,
-receipt OCR, shopping list export »*, et `docs/architecture.md` y renvoie pour le
-détail du webhook. Il est absent. Ce n'est pas seulement un lien mort dans un
-dépôt public : **c'est la note de conception de la surface la plus sensible et la
-plus sous-spécifiée du projet** (voir SEC-005). Son absence explique en grande
-partie pourquoi le rejeu, la devinabilité de l'adresse et l'énumération ne sont
-traités nulle part.
+> The note has since been **written**. `docs/technical-notes-ingestion.md` exists,
+> and both links resolve. The finding is kept for the record; the "Fix" below is
+> what was done.
 
-**Correction.** Écrire la note avant d'implémenter la fonction, en y traitant
-nommément les cinq points de SEC-005. À défaut et à très court terme, retirer les
-deux liens plutôt que de publier un dépôt qui promet un document inexistant.
+**Description.** The document is presented as covering *"Inbound email, receipt
+OCR, shopping list export"*, and `docs/architecture.md` points to it for the
+webhook details. It is absent. This is not merely a dead link in a public
+repository: **it is the design note for the most sensitive and most
+under-specified surface of the project** (see SEC-005). Its absence largely
+explains why replay, address guessability and enumeration are handled nowhere.
 
----
-
-#### SEC-020 — Aucune journalisation d'audit des accès aux actifs sensibles
-
-**Sévérité :** Moyenne
-**Fichiers :** `backend/src/chaudron/domain/models.py` (aucune table d'audit) ·
-`docs/architecture.md:229-239`
-
-**Description.** L'observabilité prévue est bonne pour l'exploitation : logs
-structurés dès le premier commit, `household_id` et identifiant de requête sur
-chaque ligne, trois métriques bien choisies. Mais rien ne trace les **accès aux
-actifs sensibles** : déchiffrement d'une clé, création ou modification d'une
-configuration de fournisseur, export d'un foyer, suppression d'un foyer,
-attribution du mode `instance_owner`, accès à une image de ticket.
-
-Conséquence directe : en cas de violation de données, l'exploitant ne peut ni
-délimiter l'incident ni démontrer qu'il n'y en a pas eu — alors qu'il doit
-notifier sous 72 heures. C'est aussi le seul moyen de détecter un abus par un
-utilisateur légitime, qui par définition ne déclenche aucune alerte
-d'authentification.
-
-**Correction.**
-
-1. Ajouter une table `audit_event` append-only : `occurred_at`, `household_id`
-   (nullable pour les événements d'instance), `actor_user_id`, `action` (enum
-   fermé), `target_type`, `target_id`, `request_id`, `ip_hash`. Pas de contenu,
-   seulement des références — une table d'audit ne doit pas devenir un second
-   entrepôt de données personnelles.
-2. Journaliser au minimum les six événements listés ci-dessus.
-3. Rétention distincte et plus longue que celle des journaux applicatifs (12
-   mois), et exclusion explicite de la purge RGPD ordinaire — un journal d'audit
-   se conserve au titre de l'intérêt légitime, ce qui doit être écrit.
+**Fix.** Write the note before implementing the feature, addressing by name the
+five points of SEC-005. Failing that, and in the very short term, remove the two
+links rather than publishing a repository that promises a nonexistent document.
 
 ---
 
-### Faible
+#### SEC-020 — No audit logging of accesses to sensitive assets
+
+**Severity:** Medium
+**Files:** `backend/src/chaudron/domain/models.py` (no audit table) ·
+`docs/architecture.md` §7 ("Observability")
+
+**Description.** The planned observability is good for operations: structured logs
+from the first commit, `household_id` and request identifier on every line, three
+well-chosen metrics. But nothing traces **accesses to the sensitive assets**:
+decryption of a key, creation or modification of a provider configuration, export
+of a household, deletion of a household, assignment of `instance_owner` mode,
+access to a receipt image.
+
+Direct consequence: in the event of a data breach, the operator can neither
+delimit the incident nor demonstrate that there has not been one — while having to
+notify within 72 hours. It is also the only way to detect abuse by a legitimate
+user, who by definition triggers no authentication alert.
+
+**Fix.**
+
+1. Add an append-only `audit_event` table: `occurred_at`, `household_id` (nullable
+   for instance-level events), `actor_user_id`, `action` (closed enum),
+   `target_type`, `target_id`, `request_id`, `ip_hash`. No content, only
+   references — an audit table must not become a second store of personal data.
+2. Log at minimum the six events listed above.
+3. A distinct retention period, longer than that of the application logs (12
+   months), and explicit exclusion from the ordinary GDPR purge — an audit log is
+   retained under legitimate interest, which must be written down.
 
 ---
 
-#### SEC-021 — Le fichier d'environnement de production est créé avec le mauvais propriétaire
-
-**Sévérité :** Faible
-**Fichier :** `ops/README.md:183-190`
-
-**Description.** `install -m 0600 /dev/null ~chaudron/chaudron.env` figure dans une
-section dont les commandes précédentes s'exécutent en `root` (`useradd`,
-`install -d`). Le fichier sera donc **possédé par root en mode 0600**, et le
-compte `chaudron` — sous lequel tourne le quadlet — ne pourra pas le lire :
-`EnvironmentFile=` échouera au démarrage. Le mode 0600 est le bon réflexe ; le
-propriétaire ne l'est pas.
-
-**Correction.** `install -o chaudron -g chaudron -m 0600 /dev/null ~chaudron/chaudron.env`,
-et préciser sous quel compte chaque bloc de la section §2 doit être exécuté — la
-distinction est déjà bien faite en §2.3, elle manque en §2.4.
+### Low
 
 ---
 
-#### SEC-022 — L'URL du dépôt est incohérente entre les quadlets et le reste du projet
+#### SEC-021 — The production environment file is created with the wrong owner
 
-**Sévérité :** Faible
-**Fichiers :** `ops/chaudron.container:11` · `ops/chaudron-db.container:11`
+**Severity:** Low
+**File:** `ops/README.md:183-190`
+
+**Description.** `install -m 0600 /dev/null ~chaudron/chaudron.env` appears in a
+section whose preceding commands run as `root` (`useradd`, `install -d`). The file
+will therefore be **owned by root in mode 0600**, and the `chaudron` account —
+under which the quadlet runs — will not be able to read it: `EnvironmentFile=`
+will fail at startup. Mode 0600 is the right reflex; the owner is not.
+
+**Fix.** `install -o chaudron -g chaudron -m 0600 /dev/null ~chaudron/chaudron.env`,
+and state under which account each block of section §2 must be run — the
+distinction is already well made in §2.3, it is missing in §2.4.
+
+---
+
+#### SEC-022 — The repository URL is inconsistent between the quadlets and the rest of the project
+
+**Severity:** Low
+**Files:** `ops/chaudron.container:11` · `ops/chaudron-db.container:11`
 (`https://github.com/stackops/chaudron`) · `README.md:11`, `SECURITY.md:35`,
 `CONTRIBUTING.md:75`, `backend/pyproject.toml:29`,
 `.github/ISSUE_TEMPLATE/config.yml:11` (`ClaraVnk/chaudron`)
 
-**Description.** Les deux unités quadlet pointent vers `stackops/chaudron`, tout le
-reste vers `ClaraVnk/chaudron`. Ce n'est pas qu'une coquille : un opérateur qui
-découvre un problème de sécurité en lisant l'unité systemd sur son serveur suivra
-le lien `Documentation=` et atterrira sur un dépôt qui n'est pas celui du projet.
-Le canal de signalement décrit dans `SECURITY.md` est alors contourné avant même
-d'avoir été lu.
+**Description.** The two quadlet units point to `stackops/chaudron`, everything
+else to `ClaraVnk/chaudron`. This is not just a typo: an operator who discovers a
+security problem while reading the systemd unit on their server will follow the
+`Documentation=` link and land on a repository that is not the project's. The
+reporting channel described in `SECURITY.md` is then bypassed before it has even
+been read.
 
-**Correction.** Aligner sur l'URL canonique définitive **avant** le premier push
-public — c'est le moment où le choix est encore gratuit — et vérifier
-l'ensemble des occurrences d'un coup.
-
----
-
-#### SEC-023 — `DAC_OVERRIDE` sur le conteneur de base de données
-
-**Sévérité :** Faible
-**Fichier :** `ops/chaudron-db.container:52-53`
-
-**Description.** Le quadlet applique `DropCapability=ALL` puis réintroduit
-`CHOWN,DAC_OVERRIDE,FOWNER,SETGID,SETUID`. La démarche est la bonne, et ces
-capacités sont effectivement nécessaires au point d'entrée de l'image `postgres`
-officielle, qui ajuste les permissions puis abandonne ses privilèges.
-`DAC_OVERRIDE` reste néanmoins la plus large de la liste : elle contourne toutes
-les vérifications de permissions de fichiers dans le conteneur.
-
-**Correction.** Optionnel et à mesurer, pas à appliquer les yeux fermés : fixer
-l'appartenance du répertoire de données sur l'hôte
-(`podman unshare chown -R 999:999 ~/chaudron/data/postgres`, la technique est déjà
-documentée pour les uploads en `ops/README.md:247`), puis retirer `DAC_OVERRIDE`
-et `FOWNER` et vérifier que `initdb` **et** un redémarrage passent. Si l'un des
-deux échoue, conserver la configuration actuelle et l'annoter — une capacité
-justifiée par écrit vaut mieux qu'une capacité retirée qui casse au troisième
-démarrage.
+**Fix.** Align on the definitive canonical URL **before** the first public push —
+that is the moment when the choice is still free — and check all the occurrences
+in one pass.
 
 ---
 
-#### SEC-024 — La CI construit une image à partir d'un `Containerfile` contrôlé par la pull request
+#### SEC-023 — `DAC_OVERRIDE` on the database container
 
-**Sévérité :** Faible
-**Fichier :** `.github/workflows/ci.yml:143-164`
+**Severity:** Low
+**File:** `ops/chaudron-db.container:52-53`
 
-**Description.** Le job `backend-build` exécute `podman build` sur le
-`Containerfile` de la branche, y compris pour une pull request venant d'un fork.
-Les instructions `RUN` s'exécutent donc sur le runner avec du code contrôlé par un
-contributeur inconnu.
+**Description.** The quadlet applies `DropCapability=ALL` then reintroduces
+`CHOWN,DAC_OVERRIDE,FOWNER,SETGID,SETUID`. The approach is the right one, and
+those capabilities are indeed necessary for the entrypoint of the official
+`postgres` image, which adjusts permissions then drops its privileges.
+`DAC_OVERRIDE` nonetheless remains the broadest of the list: it bypasses every
+file permission check inside the container.
 
-L'impact est **fortement borné** — et c'est pourquoi la sévérité reste faible :
-le déclencheur est `pull_request` et non `pull_request_target` (le piège classique
-est **correctement évité**), le jeton est en lecture seule
-(`permissions: contents: read`), aucun secret de dépôt n'est exposé aux forks, et
-les caches d'une PR de fork sont isolés de ceux de la branche de base. Restent le
-détournement de calcul et l'accès réseau sortant depuis le runner.
-
-**Correction.** Activer dans les réglages du dépôt *« Require approval for all
-outside collaborators »* sur les exécutions de workflow — un clic, et c'est le
-contrôle proportionné ici. Ne pas ajouter de secret à ce job ; s'il devait un jour
-pousser une image vers un registre, le faire dans un workflow **distinct**
-déclenché uniquement sur `push` de `main` ou sur tag.
+**Fix.** Optional and to be measured, not to be applied blindly: fix the ownership
+of the data directory on the host
+(`podman unshare chown -R 999:999 ~/chaudron/data/postgres`, the technique is
+already documented for uploads in `ops/README.md:247`), then remove `DAC_OVERRIDE`
+and `FOWNER` and check that `initdb` **and** a restart both pass. If either fails,
+keep the current configuration and annotate it — a capability justified in writing
+is better than a removed capability that breaks on the third start.
 
 ---
 
-#### SEC-025 — Identifiants de base de test en clair dans le workflow
+#### SEC-024 — CI builds an image from a `Containerfile` controlled by the pull request
 
-**Sévérité :** Faible
-**Fichier :** `.github/workflows/ci.yml:96-99,111`
+**Severity:** Low
+**File:** `.github/workflows/ci.yml:143-164`
 
-**Description.** `POSTGRES_PASSWORD: chaudron` et le DSN correspondant sont écrits
-en clair. Ce **n'est pas une fuite** : le service conteneurisé naît et meurt avec
-le job, il n'est joignable que depuis le runner, et la ligne 108 le documente
-correctement. Deux inconvénients subsistent : tout scanner de secrets signalera
-cette ligne à perpétuité (bruit qui finit par masquer un vrai signal), et
-l'habitude d'écrire un mot de passe en clair dans un workflow public est celle
-qui produit la fuite suivante.
+**Description.** The `backend-build` job runs `podman build` on the branch's
+`Containerfile`, including for a pull request coming from a fork. The `RUN`
+instructions therefore execute on the runner with code controlled by an unknown
+contributor.
 
-**Correction.** Générer la valeur dans le job
-(`echo "PGPW=$(openssl rand -hex 16)" >> "$GITHUB_ENV"`) et composer le DSN à
-partir d'elle, ou ajouter une exclusion nommée et commentée dans la configuration
-`gitleaks`. La seconde option est la moins coûteuse.
+The impact is **strongly bounded** — and that is why the severity stays low: the
+trigger is `pull_request` and not `pull_request_target` (the classic trap is
+**correctly avoided**), the token is read-only (`permissions: contents: read`), no
+repository secret is exposed to forks, and a fork PR's caches are isolated from
+those of the base branch. What remains is compute hijacking and outbound network
+access from the runner.
 
----
-
-### Informationnel
-
----
-
-#### SEC-026 — `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` est absente de l'environnement de test
-
-**Sévérité :** Informationnel
-**Fichier :** `.github/workflows/ci.yml:107-112`
-
-Le job de tests fournit `CHAUDRON_ENV`, `CHAUDRON_LOG_LEVEL`, `CHAUDRON_DATABASE_URL`
-et `CHAUDRON_SECRET_KEY`, mais pas `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`, pourtant
-marquée **REQUIRED** dans `.env.example:38-44`. Si la validation fail-fast est
-honnête, l'application ne démarrera pas en CI dès qu'un test l'instanciera.
-Ajouter une valeur de test explicite (`ci-only-not-a-real-key`), ce qui aura
-l'effet secondaire utile de vérifier que la variable est bien obligatoire.
+**Fix.** Enable *"Require approval for all outside collaborators"* in the
+repository's workflow run settings — one click, and it is the proportionate
+control here. Do not add a secret to this job; if it should one day push an image
+to a registry, do so in a **separate** workflow triggered only on `push` to `main`
+or on a tag.
 
 ---
 
-#### SEC-027 — `.env.example` porte une valeur, contrairement à sa propre règle
+#### SEC-025 — Test database credentials in cleartext in the workflow
 
-**Sévérité :** Informationnel
-**Fichiers :** `.env.example:61,89` · `CONTRIBUTING.md:84,366`
+**Severity:** Low
+**File:** `.github/workflows/ci.yml:96-99,111`
 
-`CONTRIBUTING.md` affirme que `.env.example` *« never carries a value that
-matters »* et fait de l'ajout d'une valeur réelle un motif de refus de pull
-request. Deux lignes en portent une : `CHAUDRON_LLM_DEFAULT_MODEL=claude-opus-5` et
-`CHAUDRON_OFF_BASE_URL=https://world.openfoodfacts.org`. Aucune n'est un secret, et
-ce sont des valeurs par défaut légitimes — mais la règle telle qu'écrite est déjà
-violée par le fichier qu'elle décrit. Soit préciser la règle (« aucune valeur
-**secrète** »), soit déplacer ces défauts dans le code de configuration, où ils
-ont davantage leur place.
+**Description.** `POSTGRES_PASSWORD: chaudron` and the corresponding DSN are
+written in cleartext. This is **not a leak**: the containerised service is born
+and dies with the job, it is reachable only from the runner, and line 108
+documents it correctly. Two drawbacks remain: any secret scanner will flag this
+line in perpetuity (noise that eventually masks a real signal), and the habit of
+writing a cleartext password into a public workflow is the one that produces the
+next leak.
 
----
-
-#### SEC-028 — Documents de cadrage périmés par rapport aux ADR acceptés
-
-**Sévérité :** Informationnel
-**Fichiers :** `docs/architecture.md:245-250,68-69,220`
-
-Le §8 « Ce qui n'est pas encore tranché » liste *« La licence du projet »*, alors
-que `LICENSE` est AGPL-3.0 et que `CONTRIBUTING.md` §7 en détaille les
-conséquences. Il liste aussi *« La topologie Ollama retenue pour la v1 »*, que
-l'ADR-0007 a tranchée (cas colocalisé uniquement). Le tableau des ports (lignes
-68-69) ne mentionne qu'Anthropic et Ollama alors que l'ADR-0005 en retient cinq,
-et le tableau sécurité (ligne 220) parle de *« la clé de chiffrement »* sans la
-nommer.
-
-Un document de cadrage périmé est lu comme s'il était à jour, et c'est ainsi
-qu'une décision se retrouve re-litigée. À rafraîchir avant publication — c'est
-la première chose qu'un lecteur externe ouvrira (`README.md:28-29` l'y envoie).
+**Fix.** Generate the value inside the job
+(`echo "PGPW=$(openssl rand -hex 16)" >> "$GITHUB_ENV"`) and compose the DSN from
+it, or add a named and commented exclusion to the `gitleaks` configuration. The
+second option is the cheaper.
 
 ---
 
-#### SEC-029 — Identité git incohérente avec l'auteur déclaré du projet
+### Informational
 
-**Sévérité :** Informationnel
-**Fichier :** `.git/config` (`user.email = kevin@stackops.ch`) ·
+---
+
+#### SEC-026 — `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` is absent from the test environment
+
+**Severity:** Informational
+**File:** `.github/workflows/ci.yml:107-112`
+
+The test job provides `CHAUDRON_ENV`, `CHAUDRON_LOG_LEVEL`, `CHAUDRON_DATABASE_URL`
+and `CHAUDRON_SECRET_KEY`, but not `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`, which is
+nonetheless marked **REQUIRED** in `.env.example:38-44`. If the fail-fast
+validation is honest, the application will not start in CI as soon as a test
+instantiates it. Add an explicit test value (`ci-only-not-a-real-key`), which will
+have the useful side effect of verifying that the variable really is mandatory.
+
+---
+
+#### SEC-027 — `.env.example` carries a value, contrary to its own rule
+
+**Severity:** Informational
+**Files:** `.env.example:61,89` · `CONTRIBUTING.md:84,366`
+
+`CONTRIBUTING.md` asserts that `.env.example` *"never carries a value that
+matters"* and makes adding a real value a ground for rejecting a pull request. Two
+lines carry one: `CHAUDRON_LLM_DEFAULT_MODEL=claude-opus-5` and
+`CHAUDRON_OFF_BASE_URL=https://world.openfoodfacts.org`. Neither is a secret, and
+they are legitimate default values — but the rule as written is already violated
+by the file it describes. Either refine the rule ("no **secret** value"), or move
+these defaults into the configuration code, where they belong better.
+
+---
+
+#### SEC-028 — Scoping documents stale relative to the accepted ADRs
+
+**Severity:** Informational
+**Files:** `docs/architecture.md` §8 (then titled "What is not yet settled"), §2
+(the "Ports defined by the domain" table) and §6 (the security table)
+
+Section §8 "What is not yet settled" lists *"The project licence"*, whereas
+`LICENSE` is AGPL-3.0 and `CONTRIBUTING.md` §7 details its consequences. It also
+lists *"The Ollama topology chosen for v1"*, which ADR-0007 settled (co-located
+case only). The `RecipeGenerator` row of the ports table mentions only Anthropic
+and Ollama whereas ADR-0005 retains five, and the security table speaks of *"the
+encryption key"* without naming it.
+
+> Half of this is closed. `docs/architecture.md` §8 has been rewritten as
+> "Authentication, and what is still open", and §8.2 now records that the licence
+> and the Ollama topology were moved into the body of the document. The two
+> remaining points stand as written: the ports table still names only two
+> implementations for `RecipeGenerator`, and §6 still says "encryption key"
+> without naming `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`.
+
+A stale scoping document is read as if it were up to date, and that is how a
+decision ends up relitigated. To be refreshed before publication — it is the first
+thing an external reader will open (`README.md:28-29` sends them there).
+
+---
+
+#### SEC-029 — Git identity inconsistent with the project's declared author
+
+**Severity:** Informational
+**File:** `.git/config` (`user.email`, redacted — see below) ·
 `backend/pyproject.toml:11` (`authors = [{ name = "ClaraVnk" }]`) ·
 `CONTRIBUTING.md:440`
 
-Le dépôt n'a **aucun commit** : le premier push figera cette identité dans
-l'historique public de chaque commit initial. L'adresse configurée n'est pas
-celle de l'auteur déclaré. Ce n'est pas un problème de sécurité applicative, mais
-une divulgation d'adresse et une incohérence d'attribution que l'on ne corrige
-plus proprement après publication. Vérifier `user.name` et `user.email` **avant**
-le premier commit, et envisager une adresse de type `noreply` si l'exposition
-n'est pas souhaitée.
+> The address originally quoted here has been removed. This finding is *about*
+> address disclosure, and this document ships in a public repository: quoting the
+> address to report the problem published it a second time. The finding stands
+> without it — what matters is that the configured identity was not the declared
+> author's, not which address it was.
+
+The repository has **no commit**: the first push will freeze this identity in the
+public history of every initial commit. The configured address is not that of the
+declared author. This is not an application security problem, but it is an address
+disclosure and an attribution inconsistency that cannot be cleanly corrected after
+publication. Check `user.name` and `user.email` **before** the first commit, and
+consider a `noreply`-style address if the exposure is not wanted.
 
 ---
 
-#### SEC-030 — Pas de politique de signature, pas de SBOM, pas de signature d'image
+#### SEC-030 — No signing policy, no SBOM, no image signature
 
-**Sévérité :** Informationnel
+**Severity:** Informational
 
-Ni signature des commits ou des tags, ni génération de SBOM à la construction, ni
-signature des images publiées. **Rien de tout cela n'est nécessaire aujourd'hui**
-— le projet ne publie pas d'artefact — et l'ajouter maintenant serait de la
-cérémonie. À réévaluer au premier tag de version : c'est le moment où des tiers
-commenceront à exécuter des binaires produits par ce dépôt, et où une chaîne
-vérifiable cesse d'être décorative.
-
----
-
-#### SEC-031 — L'exigence sur les allergènes n'a aucun mécanisme
-
-**Sévérité :** Informationnel
-**Fichier :** `docs/architecture.md:225`
-
-Le tableau sécurité contient une ligne juste et importante : *« Une erreur ici a
-des conséquences physiques. Ne jamais présenter une information allergène issue
-d'un modèle comme faisant autorité »*. C'est la seule menace du projet dont
-l'impact soit corporel, et elle n'existe que sous forme de ligne de tableau —
-aucun mécanisme, aucune contrainte de schéma, aucun test.
-
-Une phrase dans un document ne survit pas jusqu'à l'écran de recette. À
-transformer en contrainte : les allergènes proviennent d'`allergens_tags`
-d'Open Food Facts ou d'une saisie humaine, **jamais** d'un champ produit par un
-modèle ; le schéma de sortie du modèle ne comporte aucun champ d'allergène ; et
-l'affichage porte un avertissement non désactivable. À traiter comme une
-exigence produit, pas comme une note.
+Neither commit or tag signing, nor SBOM generation at build time, nor signing of
+the published images. **None of this is necessary today** — the project publishes
+no artefact — and adding it now would be ceremony. To be reassessed at the first
+version tag: that is the moment when third parties will start executing binaries
+produced by this repository, and when a verifiable chain stops being decorative.
 
 ---
 
-## 4. Tableau de synthèse
+#### SEC-031 — The allergen requirement has no mechanism
 
-| ID | Sévérité | Constat | Fichier principal |
+**Severity:** Informational
+**File:** `docs/architecture.md` §6, the "Allergens" row of the security table
+
+The security table contains a line that is correct and important: *"An error here
+has physical consequences. Never present model-sourced allergen information as
+authoritative"*. It is the project's only threat whose impact is bodily, and it
+exists only as a table row — no mechanism, no schema constraint, no test.
+
+A sentence in a document does not survive as far as the recipe screen. To be
+turned into a constraint: allergens come from Open Food Facts' `allergens_tags` or
+from human entry, **never** from a model-produced field; the model's output schema
+contains no allergen field; and the display carries a warning that cannot be
+dismissed. To be treated as a product requirement, not as a note.
+
+---
+
+## 4. Summary table
+
+| ID | Severity | Finding | Main file |
 |---|---|---|---|
-| SEC-001 | **Critique** | Isolation entre foyers laissée à la convention applicative ; RLS reporté sur une prémisse fausse pour la pile choisie | `docs/adr/0006-…:49` |
-| SEC-002 | Élevée | `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` non provisionnée en secret Podman ; finit en clair à côté des sauvegardes | `ops/chaudron.container:32,40-42` |
-| SEC-003 | Élevée | `last_error` / `parse_error` / `raw_response` peuvent recevoir et afficher une clé d'API en clair | `models.py:978,831,830` |
-| SEC-004 | Élevée | Deux sources de vérité pour l'autorisation `instance_owner` | `.env.example:52` / `models.py:273` |
-| SEC-005 | Élevée | Webhook email : rejeu, adresse de foyer devinable, énumération, aucune modélisation | `docs/architecture.md:153-163` |
-| SEC-006 | Élevée | SSRF : TOCTOU DNS, port libre, notations alternatives, pas de plancher de refus | `docs/adr/0007-…:47` |
-| SEC-007 | Élevée | Algorithme JWT configurable par l'environnement ; secret de signature partagé | `.env.example:31-35` |
-| SEC-008 | Élevée | Aucune rétention définie ; le `CASCADE` ne supprime pas les images | `models.py:800,830,1080` |
-| SEC-009 | Élevée | Aucune limitation de débit conçue (connexion, webhook, upload, génération) | `.env.example` (absent) |
-| SEC-010 | Moyenne | Le démarrage rapide du README publie PostgreSQL sur toutes les interfaces | `README.md:169` |
-| SEC-011 | Moyenne | Actions GitHub tierces épinglées par tag mutable | `ci.yml:36,204` |
-| SEC-012 | Moyenne | Images de base par tag ; `AutoUpdate=registry` sur la base de données | `Containerfile:14,36` / `chaudron-db.container:20` |
-| SEC-013 | Moyenne | `.gitignore` n'exclut ni dumps, ni clés, ni `chaudron.env` | `.gitignore:14-21` |
-| SEC-014 | Moyenne | Contenu Open Food Facts stocké brut et rendu comme fiable | `models.py:419-438` |
-| SEC-015 | Moyenne | CORS : pas de garde-fou origine générique + identifiants | `.env.example:109` |
-| SEC-016 | Moyenne | Hachage de mot de passe ni décidé ni outillé | `models.py:301` |
-| SEC-017 | Moyenne | Jobs de sécurité non bloquants, pas de scan planifié, pas de Dependabot | `ci.yml:169-206` |
-| SEC-018 | Moyenne | Aucune borne d'upload HTTP face à un `/tmp` de 64 Mo | `chaudron.container:62` |
-| SEC-019 | Moyenne | `docs/technical-notes-ingestion.md` référencé deux fois, inexistant | `README.md:206` |
-| SEC-020 | Moyenne | Aucune journalisation d'audit des accès aux actifs sensibles | `models.py` (absent) |
-| SEC-021 | Faible | `chaudron.env` créé avec le mauvais propriétaire | `ops/README.md:189` |
-| SEC-022 | Faible | URL de dépôt incohérente entre quadlets et reste du projet | `ops/*.container:11` |
-| SEC-023 | Faible | `DAC_OVERRIDE` sur le conteneur de base de données | `chaudron-db.container:53` |
-| SEC-024 | Faible | `podman build` d'un `Containerfile` contrôlé par une PR de fork | `ci.yml:143-164` |
-| SEC-025 | Faible | Identifiants de base de test en clair dans le workflow | `ci.yml:96-99,111` |
-| SEC-026 | Info | `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` absente de l'environnement de test | `ci.yml:107-112` |
-| SEC-027 | Info | `.env.example` porte des valeurs, contrairement à sa propre règle | `.env.example:61,89` |
-| SEC-028 | Info | Documents de cadrage périmés par rapport aux ADR acceptés | `docs/architecture.md:245-250` |
-| SEC-029 | Info | Identité git incohérente avec l'auteur déclaré | `.git/config` |
-| SEC-030 | Info | Pas de signature de commits, de SBOM, ni de signature d'image | — |
-| SEC-031 | Info | L'exigence sur les allergènes n'a aucun mécanisme | `docs/architecture.md:225` |
+| SEC-001 | **Critical** | Tenant isolation between households left to an application convention; RLS deferred on a premise that is false for the chosen stack | `docs/adr/0006-…:49` |
+| SEC-002 | High | `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` not provisioned as a Podman secret; ends up in cleartext next to the backups | `ops/chaudron.container:32,40-42` |
+| SEC-003 | High | `last_error` / `parse_error` / `raw_response` can receive and display an API key in cleartext | `models.py` → `LlmProviderConfig.last_error` |
+| SEC-004 | High | Two sources of truth for `instance_owner` authorisation | `.env.example:52` / `models.py` → `Household.is_instance_owner` |
+| SEC-005 | High | Email webhook: replay, guessable household address, enumeration, no modelling | `docs/architecture.md` §3.4 |
+| SEC-006 | High | SSRF: DNS TOCTOU, free port, alternative notations, no refusal floor | `docs/adr/0007-…:47` |
+| SEC-007 | High | JWT algorithm configurable from the environment; signing secret shared | `.env.example:31-35` |
+| SEC-008 | High | No retention defined; the `CASCADE` does not delete the images | `models.py` → `Receipt.image_object_key` |
+| SEC-009 | High | No rate limiting designed (login, webhook, upload, generation) | `.env.example` (absent) |
+| SEC-010 | Medium | The README quick start publishes PostgreSQL on all interfaces | `README.md:169` |
+| SEC-011 | Medium | Third-party GitHub Actions pinned by mutable tag | `ci.yml:36,204` |
+| SEC-012 | Medium | Base images by tag; `AutoUpdate=registry` on the database | `Containerfile:14,36` / `chaudron-db.container:20` |
+| SEC-013 | Medium | `.gitignore` excludes neither dumps, nor keys, nor `chaudron.env` | `.gitignore:14-21` |
+| SEC-014 | Medium | Open Food Facts content stored raw and rendered as trustworthy | `models.py` → `Product` |
+| SEC-015 | Medium | CORS: no guard rail for wildcard origin + credentials | `.env.example:109` |
+| SEC-016 | Medium | Password hashing neither decided nor tooled | `models.py` → `UserAccount.password_hash` |
+| SEC-017 | Medium | Security jobs non-blocking, no scheduled scan, no Dependabot | `ci.yml:169-206` |
+| SEC-018 | Medium | No HTTP upload bound against a 64 MB `/tmp` | `chaudron.container:62` |
+| SEC-019 | Medium | `docs/technical-notes-ingestion.md` referenced twice, nonexistent | `README.md:206` |
+| SEC-020 | Medium | No audit logging of accesses to sensitive assets | `models.py` (absent) |
+| SEC-021 | Low | `chaudron.env` created with the wrong owner | `ops/README.md:189` |
+| SEC-022 | Low | Repository URL inconsistent between quadlets and the rest of the project | `ops/*.container:11` |
+| SEC-023 | Low | `DAC_OVERRIDE` on the database container | `chaudron-db.container:53` |
+| SEC-024 | Low | `podman build` of a `Containerfile` controlled by a fork PR | `ci.yml:143-164` |
+| SEC-025 | Low | Test database credentials in cleartext in the workflow | `ci.yml:96-99,111` |
+| SEC-026 | Info | `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` absent from the test environment | `ci.yml:107-112` |
+| SEC-027 | Info | `.env.example` carries values, contrary to its own rule | `.env.example:61,89` |
+| SEC-028 | Info | Scoping documents stale relative to the accepted ADRs | `docs/architecture.md` §8 |
+| SEC-029 | Info | Git identity inconsistent with the declared author | `.git/config` |
+| SEC-030 | Info | No commit signing, no SBOM, no image signature | — |
+| SEC-031 | Info | The allergen requirement has no mechanism | `docs/architecture.md` §6 |
 
-**Répartition :** 1 Critique · 8 Élevées · 11 Moyennes · 5 Faibles · 6
-Informationnels — **31 constats**.
-
----
-
-## 5. À corriger avant le premier push public
-
-Le classement est celui du **coût de la correction après publication**, pas celui
-de la sévérité. Un dépôt public sans commit est dans une situation qui ne se
-reproduira pas : tout ce qui est corrigé maintenant n'a jamais existé.
-
-### Bloquant — ne pas pousser sans
-
-Ces cinq points sont soit très bon marché maintenant et coûteux ensuite, soit
-susceptibles d'induire un lecteur en erreur dès la première heure de publication.
-
-1. **SEC-029 — vérifier `user.name` et `user.email`.** Cinq secondes. Après le
-   premier push, l'identité est dans chaque commit de l'historique public, pour
-   toujours.
-2. **SEC-013 — compléter `.gitignore`** (`*.dump`, `*.sql`, `chaudron.env`, `*.pem`,
-   `*.key`) **et** corriger `ops/README.md:257` pour écrire les sauvegardes hors
-   du dépôt. C'est la seule correction qui empêche une fuite *future* par simple
-   copier-coller de la documentation.
-3. **SEC-010 — corriger `-p 5432:5432` en `-p 127.0.0.1:5432:5432`.** Une ligne.
-   C'est le bloc le plus copié d'un dépôt public, et il expose une base de
-   données.
-4. **SEC-022 — aligner l'URL du dépôt.** Un canal de signalement de vulnérabilité
-   qui pointe vers le mauvais dépôt est pire qu'absent.
-5. **SEC-019 / SEC-028 — soit écrire les documents manquants, soit retirer les
-   liens morts et rafraîchir `docs/architecture.md` §8.** Le README envoie tout
-   lecteur externe vers ces documents ; c'est la première impression du projet.
-
-### Avant la première ligne de code de fonctionnalité
-
-Ces décisions se prennent une fois et se paient en migration si on les prend
-tard. Aucune n'exige d'écrire du code — seulement de trancher et de le consigner.
-
-6. **SEC-001 — trancher le RLS**, et le consigner dans un ADR remplaçant
-   l'ADR-0006. La première migration Alembic doit contenir le rôle non
-   propriétaire, `FORCE ROW LEVEL SECURITY` et les politiques.
-7. **SEC-008 — trancher les durées de rétention** et ajouter les colonnes
-   correspondantes à la première migration. Ajouter une colonne à un schéma vide
-   est gratuit.
-8. **SEC-005 — ajouter `household.inbound_email_token`** au modèle, et écrire
-   `docs/technical-notes-ingestion.md` avec le rejeu, l'énumération et les bornes
-   de pièces jointes.
-9. **SEC-004 — choisir la source de vérité unique** pour `instance_owner`, et
-   transformer la variable d'environnement en assertion de démarrage.
-10. **SEC-007 / SEC-016 — trancher l'authentification** : Argon2id, algorithme
-    JWT figé dans le code, secrets séparés, mécanisme de révocation.
-11. **SEC-002 — compléter les secrets Podman** dans le quadlet et la procédure
-    d'exploitation. Un quadlet incomplet publié devient le modèle que tout le
-    monde recopie.
-
-### Dans les premières semaines
-
-12. **SEC-003** — règle de redaction et test dédié, à écrire **en même temps** que
-    le premier adaptateur de fournisseur, pas après.
-13. **SEC-006** — écrire `resolve_and_validate` et sa suite de tests **avant** le
-    premier appel sortant vers un hôte fourni par l'utilisateur.
-14. **SEC-009, SEC-018** — limitation de débit et bornes d'upload, dès la première
-    route qui accepte un corps.
-15. **SEC-011, SEC-012, SEC-017** — épinglage par SHA, `dependabot.yml`,
-    protection de branche avec les jobs de sécurité en vérifications requises.
-16. **SEC-014, SEC-015, SEC-020** — contenu externe traité comme non fiable,
-    garde-fou CORS au démarrage, table `audit_event`.
-17. **SEC-021, SEC-023, SEC-024, SEC-025, SEC-026, SEC-027, SEC-031** — nettoyage
-    au fil de l'eau.
+**Breakdown:** 1 Critical · 8 High · 11 Medium · 5 Low · 6 Informational — **31
+findings**.
 
 ---
 
-## 6. Ce que cet audit reconnaît comme bien fait
+## 5. To fix before the first public push
 
-Un rapport qui n'énumère que des défauts donne une image fausse du baseline, et
-il rend le prochain arbitrage plus difficile. Les points suivants sont
-au-dessus de ce qu'on voit habituellement à ce stade, et **doivent être
-préservés** lors des corrections ci-dessus :
+The ranking is by **cost of fixing after publication**, not by severity. A public
+repository with no commit is in a situation that will not occur again: everything
+fixed now has never existed.
 
-- **Les FK composites** `(household_id, x_id)` sur chaque référence intra-foyer.
-  C'est peu coûteux, c'est appliqué par la base, et cela élimine toute une classe
-  de fuites par confusion d'identifiant. Sur `llm_purpose_binding`, c'est
-  explicitement un contrôle de sécurité, et il est correct.
-- **`api_key_ciphertext` déclarée `deferred=True`**, avec un `COMMENT ON COLUMN`
-  et une contrainte `CHECK` de cohérence du triplet de secret. Trois dispositifs
-  qui agissent sur le développeur qui n'a rien lu — c'est le bon niveau de
-  paranoïa, et le modèle à généraliser (voir SEC-003).
-- **`ck_llm_provider_config_mode_requirements`**, qui rend vérifiable *par la base
-  elle-même* la règle « la clé de l'instance n'est jamais recopiée en base ».
-- **Le chiffrement authentifié avec AAD** `(household_id, config_id)` : un chiffré
-  recopié sur une autre ligne ne se déchiffre pas. Peu de projets à ce stade y
-  pensent.
-- **Le durcissement des conteneurs** : rootless, UID fixe, `NoNewPrivileges`,
-  `DropCapability=ALL`, `ReadOnly=true`, base jamais publiée, API sur la boucle
-  locale.
-- **Le traitement de SELinux** : `:Z` avec sa justification, interdiction
-  explicite de `setenforce 0`, piège `:U` documenté avec son remède. C'est de la
-  documentation d'exploitation de qualité rare.
-- **Les procédures de secrets** : saisie masquée, stdin, `unset` final, et le
-  piège du saut de ligne documenté.
-- **La CI évite `pull_request_target`**, restreint les permissions du jeton,
-  utilise `--locked` / `UV_FROZEN`, teste contre un vrai PostgreSQL, et exécute
-  `gitleaks` sur l'historique complet.
-- **`SECURITY.md`** : périmètre par surface, hors-périmètre explicite, délais
-  annoncés comme des engagements d'effort et non de service, et l'instruction de
-  ne jamais inclure de secret réel dans un rapport. Le fait d'y déclarer les
-  **défauts de conception** dans le périmètre est exactement la bonne posture à
-  ce stade du projet.
-- **`CONTRIBUTING.md` §6**, dont plusieurs motifs de refus sont directement des
-  contrôles de sécurité : pas de `household_id` retiré, pas de tenant dérivé
-  d'une entrée client, pas d'affaiblissement de l'allowlist SSRF. Une convention
-  écrite ne remplace pas un contrôle moteur (SEC-001), mais elle vaut mieux que
-  son absence.
-- **La revue humaine obligatoire avant toute écriture en stock**, présentée non
-  comme une protection contre les hallucinations mais comme le produit lui-même.
-  C'est le contrôle le plus solide du projet contre l'injection de prompt, et il
-  tient parce qu'il est aligné avec l'intérêt de l'utilisateur plutôt que contre
-  lui.
+### Blocking — do not push without these
+
+These five points are either very cheap now and expensive later, or liable to
+mislead a reader from the first hour of publication.
+
+1. **SEC-029 — check `user.name` and `user.email`.** Five seconds. After the first
+   push, the identity is in every commit of the public history, forever.
+2. **SEC-013 — complete `.gitignore`** (`*.dump`, `*.sql`, `chaudron.env`, `*.pem`,
+   `*.key`) **and** fix `ops/README.md:257` to write the backups outside the
+   repository. It is the only fix that prevents a *future* leak by simple
+   copy-paste of the documentation.
+3. **SEC-010 — change `-p 5432:5432` to `-p 127.0.0.1:5432:5432`.** One line. It is
+   the most copied block of a public repository, and it exposes a database.
+4. **SEC-022 — align the repository URL.** A vulnerability reporting channel that
+   points at the wrong repository is worse than none.
+5. **SEC-019 / SEC-028 — either write the missing documents, or remove the dead
+   links and refresh `docs/architecture.md` §8.** The README sends every external
+   reader to these documents; it is the project's first impression.
+
+### Before the first line of feature code
+
+These decisions are taken once and are paid for in a migration if taken late. None
+requires writing code — only settling the matter and recording it.
+
+6. **SEC-001 — settle RLS**, and record it in an ADR superseding ADR-0006. The
+   first Alembic migration must contain the non-owner role,
+   `FORCE ROW LEVEL SECURITY` and the policies.
+7. **SEC-008 — settle the retention periods** and add the corresponding columns to
+   the first migration. Adding a column to an empty schema is free.
+8. **SEC-005 — add `household.inbound_email_token`** to the model, and write
+   `docs/technical-notes-ingestion.md` with replay, enumeration and attachment
+   bounds.
+9. **SEC-004 — choose the single source of truth** for `instance_owner`, and turn
+   the environment variable into a startup assertion.
+10. **SEC-007 / SEC-016 — settle authentication**: Argon2id, JWT algorithm frozen
+    in the code, separate secrets, revocation mechanism.
+11. **SEC-002 — complete the Podman secrets** in the quadlet and in the operating
+    procedure. An incomplete quadlet, once published, becomes the template
+    everybody copies.
+
+### In the first few weeks
+
+12. **SEC-003** — redaction rule and dedicated test, to be written **at the same
+    time as** the first provider adapter, not after.
+13. **SEC-006** — write `resolve_and_validate` and its test suite **before** the
+    first outbound call toward a user-supplied host.
+14. **SEC-009, SEC-018** — rate limiting and upload bounds, from the first route
+    that accepts a body.
+15. **SEC-011, SEC-012, SEC-017** — SHA pinning, `dependabot.yml`, branch
+    protection with the security jobs as required checks.
+16. **SEC-014, SEC-015, SEC-020** — external content treated as untrusted, CORS
+    guard rail at startup, `audit_event` table.
+17. **SEC-021, SEC-023, SEC-024, SEC-025, SEC-026, SEC-027, SEC-031** — cleanup as
+    you go.
+
+---
+
+## 6. What this audit recognises as well done
+
+A report that enumerates only defects gives a false picture of the baseline, and
+it makes the next arbitration harder. The following points are above what one
+usually sees at this stage, and **must be preserved** during the fixes above:
+
+- **The composite FKs** `(household_id, x_id)` on every intra-household reference.
+  It is cheap, it is enforced by the database, and it eliminates a whole class of
+  leaks through identifier confusion. On `llm_purpose_binding`, it is explicitly a
+  security control, and it is correct.
+- **`api_key_ciphertext` declared `deferred=True`**, with a `COMMENT ON COLUMN` and
+  a `CHECK` constraint for the consistency of the secret triplet. Three mechanisms
+  that act on the developer who has read nothing — that is the right level of
+  paranoia, and the model to generalise (see SEC-003).
+- **`ck_llm_provider_config_mode_requirements`**, which makes the rule "the
+  instance's key is never copied into the database" verifiable *by the database
+  itself*.
+- **Authenticated encryption with AAD** `(household_id, config_id)`: a ciphertext
+  copied onto another row does not decrypt. Few projects at this stage think of it.
+- **Container hardening**: rootless, fixed UID, `NoNewPrivileges`,
+  `DropCapability=ALL`, `ReadOnly=true`, database never published, API on
+  loopback.
+- **The handling of SELinux**: `:Z` with its justification, explicit ban on
+  `setenforce 0`, the `:U` pitfall documented with its remedy. This is operations
+  documentation of rare quality.
+- **The secret procedures**: masked entry, stdin, final `unset`, and the newline
+  pitfall documented.
+- **CI avoids `pull_request_target`**, restricts the token's permissions, uses
+  `--locked` / `UV_FROZEN`, tests against a real PostgreSQL, and runs `gitleaks`
+  over the full history.
+- **`SECURITY.md`**: scope by surface, explicit out-of-scope, timelines announced
+  as best-effort commitments rather than service levels, and the instruction never
+  to include a real secret in a report. Declaring **design defects** to be in scope
+  there is exactly the right posture at this stage of the project.
+- **`CONTRIBUTING.md` §6**, several of whose grounds for rejection are directly
+  security controls: no `household_id` removed, no tenant derived from a client
+  input, no weakening of the SSRF allowlist. A written convention does not replace
+  an engine-level control (SEC-001), but it is better than its absence.
+- **Mandatory human review before any write to stock**, presented not as a
+  protection against hallucinations but as the product itself. It is the project's
+  most solid control against prompt injection, and it holds because it is aligned
+  with the user's interest rather than against it.

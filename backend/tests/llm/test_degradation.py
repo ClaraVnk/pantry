@@ -25,10 +25,12 @@ from chaudron.domain.llm_ports import (
     ProviderResponseInvalid,
     RecipeRequest,
     RecipeSuggestions,
+    TokenUsage,
 )
 from chaudron.infra.llm.base import (
     DEGRADED_INVENTORY_LIMIT,
     EMULATION_ATTEMPTS,
+    Completion,
     CompletionRequest,
     ModelReceiptParser,
     ModelRecipeGenerator,
@@ -55,18 +57,30 @@ def _capabilities(
 
 
 class _ScriptedTransport(ProviderTransport):
-    """Replays a fixed list of answers and records what it was asked."""
+    """Replays a fixed list of answers and records what it was asked.
 
-    def __init__(self, capabilities: ProviderCapabilities, answers: list[str]) -> None:
+    ``usage`` is what every scripted answer claims to have consumed. ``None`` stands
+    in for a provider that reported nothing, which is a case the accumulation has to
+    handle rather than round down to zero.
+    """
+
+    def __init__(
+        self,
+        capabilities: ProviderCapabilities,
+        answers: list[str],
+        *,
+        usage: TokenUsage | None = None,
+    ) -> None:
         super().__init__(capabilities)
         self._answers = answers
+        self._usage = usage
         self.requests: list[CompletionRequest] = []
 
-    async def complete(self, request: CompletionRequest) -> str:
+    async def complete(self, request: CompletionRequest) -> Completion:
         self.requests.append(request)
         if not self._answers:
             raise AssertionError("transport called more times than scripted")
-        return self._answers.pop(0)
+        return Completion(text=self._answers.pop(0), usage=self._usage)
 
 
 def _request(items: int) -> RecipeRequest:
@@ -138,6 +152,54 @@ async def test_a_native_provider_does_not_retry() -> None:
     with pytest.raises(ProviderResponseInvalid):
         await ModelRecipeGenerator(transport).suggest(_request(3))
     assert len(transport.requests) == 1
+
+
+# -- what the emulated path costs ------------------------------------------- #
+
+
+async def test_a_retry_is_billed_on_top_rather_than_replacing_the_first_attempt() -> None:
+    """The surcharge of the emulated case, as a number instead of a paragraph.
+
+    ADR-0005 accepts "emulated" on the promise that the loss is a higher failure
+    rate rather than a broken type. It is also a *cost*, and this is where that cost
+    becomes visible: the retry the household paid for is added to the total, not
+    overwritten by it. Reporting only the successful attempt would make the
+    degraded path look exactly as cheap as the native one.
+    """
+    per_call = TokenUsage(input_tokens=1_000, output_tokens=200, cached_input_tokens=50)
+    transport = _ScriptedTransport(
+        _capabilities(structured_output=False),
+        ["Sure! Here are some ideas:", valid_recipe_payload()],
+        usage=per_call,
+    )
+
+    result = await ModelRecipeGenerator(transport).suggest(_request(3))
+
+    assert len(transport.requests) == EMULATION_ATTEMPTS
+    assert isinstance(result, RecipeSuggestions)
+    assert result.usage == TokenUsage(
+        input_tokens=2_000, output_tokens=400, cached_input_tokens=100
+    )
+
+
+async def test_a_single_native_call_reports_exactly_what_it_consumed() -> None:
+    per_call = TokenUsage(input_tokens=1_000, output_tokens=200, cached_input_tokens=50)
+    transport = _ScriptedTransport(_capabilities(), [valid_recipe_payload()], usage=per_call)
+
+    result = await ModelRecipeGenerator(transport).suggest(_request(3))
+
+    assert isinstance(result, RecipeSuggestions)
+    assert result.usage == per_call
+
+
+async def test_a_provider_that_reports_nothing_yields_no_usage_at_all() -> None:
+    """The load-bearing negative: silence must not arrive as a free call."""
+    transport = _ScriptedTransport(_capabilities(), [valid_recipe_payload()], usage=None)
+
+    result = await ModelRecipeGenerator(transport).suggest(_request(3))
+
+    assert isinstance(result, RecipeSuggestions)
+    assert result.usage is None, "unknown usage must stay unknown, never become zero"
 
 
 # -- degraded --------------------------------------------------------------- #

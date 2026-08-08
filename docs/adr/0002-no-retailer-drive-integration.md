@@ -1,66 +1,66 @@
-# 0002. Pas d'intégration aux comptes drive des enseignes
+# 0002. No integration with retailer drive accounts
 
-## Statut
+## Status
 
-Accepté — 2026-08-03
+Accepted — 2026-08-03
 
-## Contexte
+## Context
 
-Le cas d'usage le plus évident de Chaudron est le remplissage automatique du stock après une commande drive : l'utilisateur commande chez Courses U, Intermarché ou Chronodrive, et son stock se met à jour sans saisie. C'est la fonctionnalité que tout utilisateur demandera en premier.
+The most obvious use case for Chaudron is filling the stock automatically after a drive order: the user orders from Courses U, Intermarché or Chronodrive, and their stock updates without any typing. It is the feature every user will ask for first.
 
-Aucune de ces enseignes ne publie d'API partenaire accessible à un développeur individuel. Les seuls chemins techniques sont :
+None of these retailers publishes a partner API accessible to an individual developer. The only technical routes are:
 
-1. **Scraping authentifié** : l'utilisateur confie ses identifiants enseigne à Chaudron, qui se connecte à sa place et récupère l'historique de commandes.
-2. **Automatisation de navigateur** (Playwright headless) côté serveur, variante du précédent avec les mêmes prérequis de credentials.
-3. **Reverse-engineering des API mobiles** des applications enseigne.
+1. **Authenticated scraping**: the user hands their retailer credentials to Chaudron, which logs in on their behalf and retrieves the order history.
+2. **Browser automation** (headless Playwright) server-side, a variant of the above with the same credential prerequisites.
+3. **Reverse-engineering the mobile APIs** of the retailers' apps.
 
-Les trois partagent les mêmes propriétés : ils exigent de stocker des identifiants réutilisables donnant accès à un compte marchand (moyens de paiement enregistrés, adresse, historique d'achats), ils violent les CGU de chaque enseigne, et ils cassent au premier changement de front-end — sans préavis, sans page de statut, sans version pinnable. Multiplié par le nombre d'enseignes françaises, c'est une charge de maintenance permanente et non planifiable.
+All three share the same properties: they require storing reusable credentials that grant access to a merchant account (saved payment methods, address, purchase history), they violate every retailer's terms of service, and they break at the first front-end change — with no notice, no status page, no pinnable version. Multiplied by the number of French retailers, that is a permanent and unplannable maintenance load.
 
-En phase 1 (usage familial), le risque est contenu. En phase 2 (ouverture publique), Chaudron deviendrait un dépôt centralisé de credentials de comptes marchands : une cible dont la valeur pour un attaquant dépasse largement celle de la donnée métier de l'application.
+In phase 1 (family use), the risk is contained. In phase 2 (public opening), Chaudron would become a centralised store of merchant account credentials: a target whose value to an attacker far exceeds that of the application's own business data.
 
-## Décision
+## Decision
 
-Chaudron n'intègre aucun compte drive d'enseigne. Aucune fonctionnalité ne demande, ne stocke ni ne transmet d'identifiant de compte marchand.
+Chaudron integrates with no retailer drive account. No feature asks for, stores or transmits a merchant account credential.
 
-L'alimentation du stock repose sur quatre voies, toutes initiées par l'utilisateur :
+Stock is filled through four routes, all initiated by the user:
 
-1. **Saisie manuelle** — le socle, toujours disponible.
-2. **Scan de code-barres** — résolution EAN via Open Food Facts (API publique, licence ODbL, pas d'authentification).
-3. **Photo de ticket de caisse** — parsée par un modèle multimodal (cf. ADR-0005). Fonctionne pour les achats en magasin comme pour le drive (ticket remis au retrait).
-4. **Capture d'e-mail de confirmation transférée** — l'utilisateur transfère son e-mail de confirmation de commande à une adresse dédiée par foyer (`<household_token>@inbox.<domain>`). Le contenu est parsé pour en extraire les lignes de commande.
+1. **Manual entry** — the foundation, always available.
+2. **Barcode scanning** — EAN resolution via Open Food Facts (public API, ODbL licence, no authentication).
+3. **Receipt photo** — parsed by a multimodal model (see ADR-0005). Works for in-store purchases as well as drive orders (receipt handed over at pickup).
+4. **Forwarded confirmation e-mail capture** — the user forwards their order confirmation e-mail to a per-household address (`<household_token>@inbox.<domain>`). The content is parsed to extract the order lines.
 
-La voie 4 obtient une large part du bénéfice de l'intégration drive sans aucun de ses prérequis : c'est l'utilisateur qui pousse la donnée, il n'y a rien à authentifier chez l'enseigne, et l'e-mail de confirmation est un format bien plus stable qu'un DOM de site marchand. Le transfert reste un geste manuel — mais un geste par commande, pas par article.
+Route 4 obtains a large share of the benefit of drive integration with none of its prerequisites: it is the user who pushes the data, there is nothing to authenticate against the retailer, and a confirmation e-mail is a far more stable format than a merchant site's DOM. Forwarding stays a manual gesture — but one gesture per order, not per item.
 
-## Conséquences
+## Consequences
 
-### Positives
+### Positive
 
-- Aucun credential de compte marchand dans la base : la surface d'attaque la plus coûteuse du produit n'existe pas.
-- Aucune dépendance à des surfaces non contractuelles : pas de casse silencieuse au prochain redesign d'une enseigne.
-- Pas de risque juridique lié à la violation de CGU, ni de blocage de compte utilisateur pour usage automatisé.
-- Le périmètre ne croît pas avec le nombre d'enseignes : ajouter une enseigne coûte au plus un parseur d'e-mail, jamais un pipeline d'authentification.
-- La phase 2 reste ouverte : pas de dette de sécurité à purger avant d'ouvrir au public.
+- No merchant account credential in the database: the product's costliest attack surface simply does not exist.
+- No dependency on non-contractual surfaces: no silent breakage at a retailer's next redesign.
+- No legal exposure from breaching terms of service, and no user account suspension for automated use.
+- The scope does not grow with the number of retailers: adding a retailer costs at most an e-mail parser, never an authentication pipeline.
+- Phase 2 stays open: no security debt to clear before opening to the public.
 
-### Négatives
+### Negative
 
-- **On perd la fonctionnalité la plus attendue.** Un utilisateur qui compare Chaudron à un concurrent intégré au drive verra un produit en retrait, et l'argument « c'est plus sûr » ne compense pas en démonstration.
-- Le transfert d'e-mail est un geste manuel à chaque commande. Une friction faible mais réelle, et le taux d'oubli sera élevé.
-- L'OCR de ticket et le parsing d'e-mail sont **approximatifs par nature** : libellés enseigne tronqués ou abrégés (`PAT SABL BEURRE 250G`), absence de code EAN sur le ticket, quantités implicites. Le rapprochement avec un référentiel produit exigera une étape de correction manuelle, elle-même une friction.
-- Chaque format d'e-mail de confirmation est un parseur à écrire et à maintenir. La charge est plus faible qu'un scraper, elle n'est pas nulle.
-- La couverture des produits frais et de la vente en vrac restera médiocre quelle que soit la voie retenue (pas d'EAN, pesée au ticket).
-- Recevoir des e-mails utilisateurs crée sa propre surface : la boîte de réception est un point d'entrée non authentifié qu'il faut traiter comme une donnée hostile (validation stricte de l'expéditeur, quotas, pas de désérialisation naïve des pièces jointes).
+- **We lose the most anticipated feature.** A user comparing Chaudron to a drive-integrated competitor will see a lesser product, and "it's safer" does not make up for it in a demo.
+- Forwarding an e-mail is a manual gesture on every order. Low friction, but real, and the forget rate will be high.
+- Receipt OCR and e-mail parsing are **approximate by nature**: truncated or abbreviated retailer labels (`PAT SABL BEURRE 250G`), no EAN code on the receipt, implicit quantities. Matching against a product reference will require a manual correction step, itself friction.
+- Every confirmation e-mail format is a parser to write and maintain. The load is lower than a scraper's; it is not zero.
+- Coverage of fresh produce and loose goods will stay poor whichever route is used (no EAN, weighed at the till).
+- Receiving user e-mails creates its own surface: the inbox is an unauthenticated entry point that must be treated as hostile data (strict sender validation, quotas, no naive deserialisation of attachments).
 
-## Alternatives écartées
+## Rejected alternatives
 
-- **Scraping avec credentials stockés chiffrés** — techniquement faisable, chiffrement au repos disponible. Écarté : le chiffrement au repos ne protège pas d'une compromission applicative, puisque l'application doit pouvoir déchiffrer pour s'authentifier. Le risque de fuite reste entier ; seule l'absence de secret l'élimine.
-- **Extension navigateur côté client** — le credential ne quitte pas la machine de l'utilisateur, ce qui répond à l'objection sécurité. Écarté : c'est une seconde codebase à maintenir, avec ses propres cycles de revue par les stores d'extensions, pour un produit dont le socle est une PWA mobile (cf. ADR-0004) où les extensions n'existent pas.
-- **Attendre une API partenaire officielle** — le chemin propre. Écarté : aucune enseigne française n'en propose à un développeur individuel, et rien n'indique que cela change. Ce n'est pas une alternative, c'est un report indéfini.
-- **Agrégateur tiers** (service commercial exposant les historiques d'achat) — externaliserait le problème. Écarté : aucun acteur crédible sur le marché français de la grande distribution alimentaire, et cela reviendrait à déplacer le stockage des credentials chez un tiers sans en réduire le risque pour l'utilisateur.
+- **Scraping with credentials stored encrypted** — technically feasible, encryption at rest available. Rejected: encryption at rest does not protect against an application compromise, since the application must be able to decrypt in order to authenticate. The leak risk remains intact; only the absence of a secret removes it.
+- **Client-side browser extension** — the credential never leaves the user's machine, which answers the security objection. Rejected: it is a second codebase to maintain, with its own review cycles at the extension stores, for a product whose foundation is a mobile PWA (see ADR-0004) where extensions do not exist.
+- **Waiting for an official partner API** — the clean path. Rejected: no French retailer offers one to an individual developer, and nothing suggests that will change. This is not an alternative, it is an indefinite deferral.
+- **A third-party aggregator** (a commercial service exposing purchase histories) — would outsource the problem. Rejected: no credible player in the French grocery retail market, and it would amount to moving credential storage to a third party without reducing the risk to the user.
 
-## Révision
+## Revisiting
 
-Rouvrir la décision si l'un de ces signaux apparaît :
+Reopen the decision if one of these signals appears:
 
-- Une enseigne publie une **API partenaire documentée avec OAuth** (délégation par jeton révocable, sans partage d'identifiant). C'est le seul changement qui invalide le raisonnement de fond.
-- Un standard interprofessionnel d'export d'historique d'achat émerge (typiquement dans le sillage du droit à la portabilité RGPD, article 20).
-- Les mesures d'usage montrent que le transfert d'e-mail est utilisé pour moins de 20 % des commandes malgré une UX aboutie : le compromis ne tient alors plus, et il faudra soit accepter la saisie manuelle comme voie principale, soit reconsidérer l'extension navigateur.
+- A retailer publishes a **documented partner API with OAuth** (delegation by revocable token, no credential sharing). That is the only change that invalidates the underlying reasoning.
+- An inter-industry standard for exporting purchase history emerges (typically in the wake of the GDPR right to portability, article 20).
+- Usage measurements show that e-mail forwarding is used for fewer than 20% of orders despite a polished UX: the trade-off no longer holds, and we will have to either accept manual entry as the primary route or reconsider the browser extension.

@@ -1,7 +1,10 @@
 [project]
 name = "chaudron"
 version = "0.1.0"
-description = "Household food stock management API with AI recipe suggestions and receipt OCR."
+# "Receipt import", not "receipt OCR": there is no OCR engine here, and saying so
+# invited an operator to install one. A PDF recap is read as text (`pypdf`); a
+# photograph is read by a vision model the household configures, or not at all.
+description = "Household food stock management API with AI recipe suggestions and receipt import."
 # No `readme` key on purpose: the repository README lives outside this build
 # context, and referencing it would break the wheel build inside the container.
 requires-python = ">=3.14"
@@ -29,11 +32,18 @@ dependencies = [
     "httpx==0.28.1",
     "anthropic==0.120.2",
     "python-multipart==0.0.32",
+    # Text extraction from an uploaded shopping-list PDF (api contract 7.3).
+    # BSD-3-Clause, no runtime dependency on Python 3.14, and -- the property
+    # that decided it -- no network stack at all: `grep -E '^(import|from)
+    # (urllib|requests|socket|http|ssl)' pypdf/` is empty, so a PDF referencing a
+    # remote URL cannot make this process fetch it. See infra/documents/pdf.py.
+    "pypdf==6.15.0",
     # AES-256-GCM for the household provider keys at rest (docs/data-model.md
     # section 9.2). The only cryptography this project performs itself, and the
     # reason it uses a maintained binding rather than an implementation of its
     # own: a hand-rolled AEAD is the classic way to lose the authentication tag.
     "cryptography==50.0.0",
+    "argon2-cffi==25.1.0",
 ]
 
 [project.urls]
@@ -59,6 +69,17 @@ dev = [
     # Spins up a real PostgreSQL 16 container for integration tests.
     # SQLite is never used, not even in tests.
     "testcontainers[postgres]==4.15.0",
+    # Test-only, and the reason they are here is that a CalDAV server verified
+    # against its own assertions is verified against nothing. `caldav` is the
+    # reference Python client (GPL-3.0, released 2026-05) and drives the real
+    # discovery conversation -- well-known, principal, calendar-home-set,
+    # calendar-query -- against the application. `icalendar` (BSD-2-Clause,
+    # released 2026-07) re-parses what comes back, so the VTODO bytes are
+    # checked by a parser this project did not write. Neither ships in the
+    # runtime image: they are in the dev group, and `pyproject.toml`'s
+    # `dependencies` list is untouched.
+    "caldav==3.2.1",
+    "icalendar==7.2.2",
 ]
 
 # ---------------------------------------------------------------------------
@@ -131,6 +152,17 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["testcontainers.*"]
 ignore_missing_imports = true
+
+# `icalendar` and `caldav` are test-only, and both type a parsed property as a
+# union of every iCalendar value type there is. Every access to `.dt` on a DUE
+# therefore has to be narrowed against thirty alternatives, which would bury the
+# assertion it belongs to. Skipping their imports makes them `Any` inside the
+# tests: what those tests check is *behaviour of this application*, verified by a
+# third-party parser, not the third party's own annotations.
+[[tool.mypy.overrides]]
+module = ["icalendar.*", "caldav.*"]
+follow_imports = "skip"
+follow_untyped_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

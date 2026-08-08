@@ -67,6 +67,14 @@ _COLUMN_OVERRIDES: Final[Mapping[str, Mapping[str, Any]]] = {
     # ck_shopping_list_item_target_present: a line points at a product or carries
     # a label, and the generator leaves nullable foreign keys alone.
     "shopping_list_item": {"label": "row-level security fixture"},
+    # ck_budget_target_currency_iso_4217: the generator's synthetic string is
+    # not three upper-case letters. Not this table's test, but the fixture
+    # covers every tenant table and one refusal fails all of them.
+    "budget_target": {"currency": "CHF"},
+    # ck_machine_token_scopes_present: a token with no scope can do nothing, so
+    # the empty array the generator would produce is refused. `_synthesise` has
+    # no rule for an array column either, which this override makes moot.
+    "machine_token": {"scopes": ["inventory:read"]},
 }
 
 

@@ -29,6 +29,8 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -42,16 +44,31 @@ from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from chaudron.api.deps import get_session
-from chaudron.api.main import create_app
+from chaudron.api.deps import CSRF_HEADER, SESSION_COOKIE, get_session
+from chaudron.api.main import build_throttles, create_app
 from chaudron.config import Settings
 from chaudron.domain.models import (
     Household,
     HouseholdMember,
     MembershipRole,
     UserAccount,
+    UserSession,
 )
 from chaudron.infra.crypto import CredentialCipher
+from chaudron.infra.passwords import Passwords
+from chaudron.services.auth import hash_token, new_token
+
+
+@lru_cache(maxsize=1)
+def _shared_passwords() -> Passwords:
+    """One :class:`Passwords` for the whole run.
+
+    Its constructor computes a placeholder Argon2 digest -- 64 MiB and three
+    passes. Building one per test would add that cost to every database test in
+    the suite for no benefit: the object is stateless once built.
+    """
+    return Passwords()
+
 
 # --------------------------------------------------------------------------- #
 # Container runtime
@@ -238,7 +255,12 @@ async def db_session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
 class MakeHousehold(Protocol):
     async def __call__(
-        self, *, name: str | None = None, is_instance_owner: bool = False
+        self,
+        *,
+        name: str | None = None,
+        is_instance_owner: bool = False,
+        member: bool = True,
+        role: MembershipRole = MembershipRole.OWNER,
     ) -> Household: ...
 
 
@@ -264,9 +286,27 @@ def _unique_suffix() -> str:
 
 
 @pytest.fixture
-def make_household(db_session: AsyncSession) -> MakeHousehold:
+def make_household(db_session: AsyncSession, signed_in_user: UserAccount) -> MakeHousehold:
+    """A household, with the signed-in test account as a member of it by default.
+
+    The default is what keeps three hundred existing tests meaning what they
+    meant. They create a household and send ``X-Household-Id``; under
+    authentication that header is a *selector* checked against the caller's
+    memberships (``api/deps.py``), so a household the test account does not belong
+    to now answers ``403`` -- correctly, and uselessly for a test about inventory
+    paging.
+
+    ``member=False`` is the deliberate opposite, and
+    ``tests/api/test_authentication.py`` uses it to build the household a caller
+    must *not* be able to open.
+    """
+
     async def _make_household(
-        *, name: str | None = None, is_instance_owner: bool = False
+        *,
+        name: str | None = None,
+        is_instance_owner: bool = False,
+        member: bool = True,
+        role: MembershipRole = MembershipRole.OWNER,
     ) -> Household:
         household = Household(
             name=name if name is not None else f"Household {_unique_suffix()}",
@@ -274,6 +314,11 @@ def make_household(db_session: AsyncSession) -> MakeHousehold:
         )
         db_session.add(household)
         await db_session.flush()
+        if member:
+            db_session.add(
+                HouseholdMember(household_id=household.id, user_id=signed_in_user.id, role=role)
+            )
+            await db_session.flush()
         return household
 
     return _make_household
@@ -377,6 +422,40 @@ def build_test_settings(database_url: str) -> Settings:
         secret_key=SecretStr(_TEST_SECRET_KEY),
         credential_encryption_key=SecretStr(_TEST_ENCRYPTION_KEY),
         cors_origins=["http://localhost:5173"],
+        # Required now that the session is a cookie: `Settings` refuses a listed
+        # origin without it, because a cross-origin browser client could never
+        # send one (`config.py`).
+        cors_allow_credentials=True,
+    )
+
+
+def isolate_rate_limit_buckets(app: FastAPI) -> None:
+    """Give this application its own scopes in the shared ``rate_limit_bucket`` table.
+
+    Not tidiness, and not optional. The rate caps are rows in PostgreSQL now
+    (``infra/rate_limits.py``), written on a connection of the limiter's own and
+    committed there, precisely so the caller's rollback cannot reach them -- which
+    is exactly why they also survive the test that wrote them. The buckets keyed
+    on a household are unique by accident, since every test makes a new
+    household; the ones keyed on the *source address* are not, and every test in
+    the suite arrives from the same one. Without this, five registrations spread
+    over five unrelated tests would exhaust one hourly budget and the sixth test
+    would fail on whatever it happened to be checking.
+
+    A prefix rather than a truncation between tests, and rather than a rollback:
+    both of those would undo the property the class exists for. Call this on any
+    application a test drives over HTTP.
+
+    Short on purpose: ``rate_limit_bucket.scope`` is 48 characters
+    (:data:`chaudron.infra.rate_limits.MAX_SCOPE_LENGTH`), and the longest scope
+    it has to leave room for is ``login_attempts_by_account`` under a further
+    per-file segment. Forty-eight bits of randomness is far more than a test run
+    needs to avoid a collision.
+    """
+    prefix = f"t{uuid.uuid4().hex[:12]}:"
+    app.state.rate_limit_scope_prefix = prefix
+    app.state.throttles = build_throttles(
+        app.state.settings, app.state.database.limiter_engine, scope_prefix=prefix
     )
 
 
@@ -384,16 +463,23 @@ def build_test_settings(database_url: str) -> Settings:
 def api_app(initialised_database: str, db_session: AsyncSession) -> Iterator[FastAPI]:
     """The real application, with only its database session replaced.
 
-    Exactly one dependency is overridden. The household resolution is **not**:
-    ADR-0006 requires the tenant to be derived server-side, so a fixture that
-    injected ``household_id`` directly would bypass the one piece of code the
-    isolation tests exist to exercise. Tests send ``X-Household-Id`` like a real
-    client and get the real 401 when they do not.
+    Exactly one dependency is overridden, and it is the transaction. Neither
+    authentication nor household resolution is: ADR-0006 requires the tenant to
+    be derived server-side, and a fixture that injected ``household_id`` -- or a
+    :class:`Principal` -- directly would bypass the one piece of code the
+    isolation and authentication tests exist to exercise. The suite signs in with
+    a real cookie against a real session row (:func:`signed_in`) and gets the real
+    ``401`` when it does not.
 
     Overriding the session also gives every request the test's transaction, so
     what a handler writes is rolled back with the test.
     """
     app = create_app(build_test_settings(initialised_database))
+    isolate_rate_limit_buckets(app)
+    # Not a behaviour change: the same class the factory just built, shared so
+    # that the placeholder Argon2 digest its constructor computes is paid once
+    # for the run rather than once per test.
+    app.state.passwords = _shared_passwords()
 
     async def _use_test_session() -> AsyncIterator[AsyncSession]:
         yield db_session
@@ -403,11 +489,95 @@ def api_app(initialised_database: str, db_session: AsyncSession) -> Iterator[Fas
     app.dependency_overrides.clear()
 
 
+# --------------------------------------------------------------------------- #
+# The signed-in caller
+# --------------------------------------------------------------------------- #
+
+#: The password behind :func:`signed_in_user`. Long enough to satisfy
+#: ``MIN_PASSWORD_LENGTH``, and a constant rather than a fixture argument so a
+#: test that wants to sign in over HTTP can quote it.
+TEST_PASSWORD: Final = "correct-horse-battery-staple"
+
+
 @pytest.fixture
-async def api_client(api_app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
-    """An HTTP client speaking to the application in-process, over ASGI."""
+def passwords() -> Passwords:
+    """One hasher for the whole session: constructing one costs a full Argon2 hash."""
+    return _shared_passwords()
+
+
+@pytest.fixture
+async def signed_in_user(db_session: AsyncSession, passwords: Passwords) -> UserAccount:
+    """The account every authenticated fixture below belongs to."""
+    suffix = _unique_suffix()
+    user = UserAccount(
+        email=f"signed-in-{suffix}@example.test",
+        display_name=f"Signed In {suffix}",
+        password_hash=passwords.hash(TEST_PASSWORD),
+    )
+    db_session.add(user)
+    await db_session.flush()
+    return user
+
+
+@dataclass(frozen=True, slots=True)
+class SignedIn:
+    """A live session for :func:`signed_in_user`: the cookie and the CSRF token."""
+
+    user: UserAccount
+    token: str
+    csrf_token: str
+
+
+@pytest.fixture
+async def signed_in(db_session: AsyncSession, signed_in_user: UserAccount) -> SignedIn:
+    """Insert a real ``user_session`` row and hand back the credentials for it.
+
+    Built by writing the row rather than by calling ``POST /v1/auth/login``,
+    for one reason: a fixture that issued an HTTP request would make every test
+    in the suite depend on the login endpoint working, and the failure of one
+    would be reported as the failure of all of them. The *login endpoint itself*
+    is tested against the real thing in ``tests/api/test_authentication.py``,
+    including that the cookie it sets is accepted by this same code path.
+    """
+    token = new_token()
+    now = datetime.now(UTC)
+    record = UserSession(
+        user_id=signed_in_user.id,
+        token_hash=hash_token(token),
+        csrf_token=new_token(),
+        expires_at=now + timedelta(days=30),
+        idle_expires_at=now + timedelta(days=7),
+    )
+    db_session.add(record)
+    await db_session.flush()
+    return SignedIn(user=signed_in_user, token=token, csrf_token=record.csrf_token)
+
+
+@pytest.fixture
+async def api_client(api_app: FastAPI, signed_in: SignedIn) -> AsyncIterator[httpx.AsyncClient]:
+    """An HTTP client speaking to the application in-process, signed in.
+
+    Two details are not incidental.
+
+    ``https://testserver`` -- the session cookie is ``Secure`` and
+    ``__Host-``-prefixed, and ``http.cookiejar`` (which httpx uses) refuses to
+    send a ``Secure`` cookie over ``http``. On an ASGI transport the scheme costs
+    nothing and buys a client that exercises the cookie exactly as a browser
+    would, ``Set-Cookie`` from a login included.
+
+    The CSRF token is a **default header**, so it rides on every request
+    including the safe ones, where it is ignored. That is what keeps the three
+    hundred existing tests unchanged. The tests that prove the check actually
+    refuses something build their own client without it
+    (``tests/api/test_authentication.py``).
+    """
     transport = httpx.ASGITransport(app=api_app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="https://testserver",
+        cookies={SESSION_COOKIE: signed_in.token},
+        headers={CSRF_HEADER: signed_in.csrf_token},
+    ) as client:
         yield client
     # The factory builds these eagerly; the lifespan that would normally release
     # them does not run under an ASGI transport.
@@ -415,8 +585,28 @@ async def api_client(api_app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     await api_app.state.database.dispose()
 
 
+@pytest.fixture
+async def anonymous_client(api_app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
+    """The same application, with no cookie and no CSRF token.
+
+    What an unauthenticated stranger sees, and the client the sign-in and
+    sign-up tests drive.
+    """
+    transport = httpx.ASGITransport(app=api_app)
+    async with httpx.AsyncClient(transport=transport, base_url="https://testserver") as client:
+        yield client
+    await api_app.state.catalog.aclose()
+    await api_app.state.database.dispose()
+
+
 def household_headers(household: Household) -> dict[str, str]:
-    """The header the provisional tenant resolution reads (api-contract-v1)."""
+    """Select which of the caller's households a request addresses.
+
+    Still ``X-Household-Id``, and no longer a credential: since authentication
+    landed the header is accepted only when the signed-in account is a member of
+    the household it names (``api/deps.py``). Tests keep sending it because a
+    household the caller belongs to is exactly what it selects.
+    """
     return {"X-Household-Id": str(household.id)}
 
 
@@ -437,6 +627,9 @@ _DATABASE_FIXTURES: Final = frozenset(
         "tenant_pair",
         "api_app",
         "api_client",
+        "anonymous_client",
+        "signed_in",
+        "signed_in_user",
     }
 )
 

@@ -29,6 +29,7 @@ from chaudron.domain.llm_ports import (
     RecipeRequest,
     RecipeSuggestion,
     RecipeSuggestions,
+    TokenUsage,
 )
 from chaudron.infra.llm.payloads import (
     RECEIPT_SCHEMA,
@@ -46,6 +47,7 @@ from chaudron.infra.llm.prompts import (
 )
 
 __all__ = [
+    "Completion",
     "CompletionRequest",
     "ModelReceiptParser",
     "ModelRecipeGenerator",
@@ -98,6 +100,20 @@ class CompletionRequest:
     max_output_tokens: int = 4096
 
 
+@dataclass(frozen=True, slots=True)
+class Completion:
+    """One model answer: the text, and what obtaining it consumed.
+
+    ``usage`` is ``None`` when the provider reported nothing -- an older Ollama, a
+    gateway that strips the block, a response shape that moved. It is never
+    fabricated: see :class:`~chaudron.domain.llm_ports.TokenUsage` for why a zero
+    would be worse than a blank.
+    """
+
+    text: str
+    usage: TokenUsage | None = None
+
+
 class ProviderTransport(abc.ABC):
     """What a provider must supply: one call, and its failures already translated.
 
@@ -108,10 +124,24 @@ class ProviderTransport(abc.ABC):
 
     def __init__(self, capabilities: ProviderCapabilities) -> None:
         self._capabilities = capabilities
+        self._secrets: tuple[str, ...] = ()
 
     @property
     def capabilities(self) -> ProviderCapabilities:
         return self._capabilities
+
+    @property
+    def secrets(self) -> tuple[str, ...]:
+        """The credential this transport authenticates with, if it holds one.
+
+        Exposed so that the *readers* -- which quote the model's answer when it
+        cannot be parsed -- can remove it by literal match. A pattern cannot be
+        relied on here: a key with no published prefix (Mistral AI's is 32 bare
+        alphanumerics, a self-hosted gateway's is whatever it chose) is recognised
+        by shape only approximately, and the excerpt is exactly the place where a
+        gateway that echoes ``Authorization`` puts one.
+        """
+        return self._secrets
 
     def context(self, failure_mode: str | None = None) -> ProviderContext:
         return ProviderContext(
@@ -121,8 +151,14 @@ class ProviderTransport(abc.ABC):
         )
 
     @abc.abstractmethod
-    async def complete(self, request: CompletionRequest) -> str:
-        """Return the model's answer as raw text (expected to contain the JSON)."""
+    async def complete(self, request: CompletionRequest) -> Completion:
+        """Return the model's answer, with the usage the provider reported alongside.
+
+        The answer is raw text (expected to contain the JSON). Reporting usage is
+        part of the contract precisely because it is *optional data*: an adapter
+        that cannot obtain it returns ``usage=None`` rather than zeros, and the
+        absence travels intact to the interface.
+        """
 
 
 class ModelRecipeGenerator:
@@ -151,14 +187,22 @@ class ModelRecipeGenerator:
             system += emulation_clause(RECIPE_SCHEMA)
 
         user = recipe_user_prompt(request, inventory)
-        raw = await self._complete_with_retry(
+        completion = await self._complete_with_retry(
             system=system,
             user=user,
             schema=RECIPE_SCHEMA if native_schema else None,
             native_schema=native_schema,
         )
-        suggestions = read_recipes(raw, context=self._transport.context("schema_violation"))
-        return RecipeSuggestions(suggestions[: request.max_suggestions], degradation_notice=notice)
+        suggestions = read_recipes(
+            completion.text,
+            context=self._transport.context("schema_violation"),
+            secrets=self._transport.secrets,
+        )
+        return RecipeSuggestions(
+            suggestions[: request.max_suggestions],
+            degradation_notice=notice,
+            usage=completion.usage,
+        )
 
     async def _complete_with_retry(
         self,
@@ -167,22 +211,35 @@ class ModelRecipeGenerator:
         user: str,
         schema: Mapping[str, Any] | None,
         native_schema: bool,
-    ) -> str:
+    ) -> Completion:
+        """The answer, and the usage of **every** attempt it took to get it.
+
+        Totalling the attempts rather than reporting the last one is the honest
+        reading: a household on a model without native structured output pays for
+        the retry too, and that surcharge is the concrete form of the abstract
+        "emulated" case in ``DEGRADATION_POLICY``.
+        """
         attempts = 1 if native_schema else EMULATION_ATTEMPTS
         last: ProviderResponseInvalid | None = None
+        spent: list[TokenUsage | None] = []
         for attempt in range(attempts):
             body = user if attempt == 0 else user + _RETRY_REMINDER
-            raw = await self._transport.complete(
+            completion = await self._transport.complete(
                 CompletionRequest(system=system, user=body, schema=schema)
             )
+            spent.append(completion.usage)
             if attempt == attempts - 1:
-                return raw
+                return Completion(text=completion.text, usage=TokenUsage.total(spent))
             try:
-                read_recipes(raw, context=self._transport.context("schema_violation"))
+                read_recipes(
+                    completion.text,
+                    context=self._transport.context("schema_violation"),
+                    secrets=self._transport.secrets,
+                )
             except ProviderResponseInvalid as exc:
                 last = exc
                 continue
-            return raw
+            return Completion(text=completion.text, usage=TokenUsage.total(spent))
         raise (
             last
             if last is not None
@@ -222,7 +279,7 @@ class ModelReceiptParser:
             user = receipt_user_prompt()
             if attempt:
                 user += _RETRY_REMINDER
-            raw = await self._transport.complete(
+            completion = await self._transport.complete(
                 CompletionRequest(
                     system=system,
                     user=user,
@@ -231,7 +288,15 @@ class ModelReceiptParser:
                 )
             )
             try:
-                return read_receipt(raw, context=self._transport.context("schema_violation"))
+                # Receipt usage is measured by the transport but not carried into
+                # `ParsedReceipt`: the receipt-import flow has no column and no
+                # contract field to put it in yet, and widening a domain type for a
+                # reader that does not exist is the abstraction to postpone.
+                return read_receipt(
+                    completion.text,
+                    context=self._transport.context("schema_violation"),
+                    secrets=self._transport.secrets,
+                )
             except ProviderResponseInvalid as exc:
                 failure = exc
         raise (

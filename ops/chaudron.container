@@ -19,26 +19,108 @@ Wants=chaudron-db.service
 ContainerName=chaudron
 Image=ghcr.io/claravnk/chaudron:latest
 
-# Continuous deployment. `podman-auto-update.timer` (overridden to every 15
-# minutes, see ops/README.md) compares the local digest against the registry and
-# restarts this service when `:latest` has moved.
+# `AutoUpdate=` is DELIBERATELY ABSENT. Read this before adding it back.
 #
-# Podman rolls back to the previous image automatically when the new container
-# fails to become healthy — which is why the HealthCmd below is load-bearing
-# infrastructure, not a nicety. Note what that does NOT catch: an image that
-# starts cleanly, answers /healthz, and is functionally wrong still ships.
-AutoUpdate=registry
+# This unit used to carry `AutoUpdate=registry`, and `ops/verified-auto-update.sh`
+# finished by calling `podman auto-update`. That sequence did not close the
+# window its own comment claimed to close, and podman-auto-update(1) on this
+# host says why in as many words:
+#
+#   "registry: ... Podman reaches out to the corresponding registry to check if
+#    the image has been updated. An image is considered updated if the digest in
+#    the local storage is different than the one of the remote image. If an image
+#    must be updated, Podman pulls it down and restarts the systemd unit."
+#
+# So `podman auto-update` re-queried the REGISTRY and pulled again — it did not
+# act on the bytes the gate had just verified. The script pulled D1 and verified
+# it, which costs a round trip to Rekor; an attacker holding the tag pushed D2
+# during that round trip, timing it off the script's own pull; `auto-update` then
+# saw D2 ≠ D0, pulled D2 and restarted. D2 was never verified by anything.
+#
+# What replaces it: the gate now ends with `systemctl --user restart
+# chaudron.service`. The verified image is already in the local store under
+# `:latest`, quadlet emits no `--pull` flag (confirmed with
+# `/usr/libexec/podman/quadlet -dryrun -user`), and podman-run(1) documents the
+# default pull policy as `missing` — so a restart starts exactly the bytes that
+# were verified, with no registry involved.
+#
+# THE PRICE, stated because it is real: podman's automatic rollback goes with it.
+# `podman auto-update --rollback` (default true) restores the previous image when
+# the restarted unit fails; a plain `systemctl restart` does not. What stands in
+# for it:
+#
+#   * `Restart=always` + `RestartSec=5` below — a container that starts and then
+#     dies is restarted rather than left down.
+#   * The HealthCmd below still marks a broken image unhealthy, and
+#     verified-auto-update.sh WAITS for `healthy` after the restart and fails the
+#     unit if it never arrives. So the failure is loud instead of silently
+#     reverted.
+#   * `systemctl --user is-failed chaudron-verified-update.service` is therefore
+#     the signal to monitor. It is not optional — see ops/README.md §5.1.
+#   * Rolling back is a documented manual step: ops/README.md §5.3.
+#
+# Removing the label — rather than keeping it and simply not calling
+# auto-update — is what makes the ungated path stop EXISTING. With no
+# `AutoUpdate=` on any unit, `podman auto-update` has no candidates at all, so a
+# stray invocation or an unmasked stock timer cannot deploy an unchecked digest.
+# Masking that timer remains belt and braces (the gate script asserts it).
 
-# Same user-defined network as the database: podman network create chaudron-net
+# Same user-defined network as the database and the proxy. Create it with a
+# fixed subnet — chaudron-proxy.container needs a static address on it, because
+# FORWARDED_ALLOW_IPS below names that address literally:
+#   podman network create --subnet 10.89.7.0/24 chaudron-net
 Network=chaudron-net
 
-# Bound to loopback: TLS termination and public exposure belong to the
-# reverse proxy, not to this container.
-PublishPort=127.0.0.1:8000:8000
+# NOT published to the host, deliberately — the same choice chaudron-db.container
+# already makes on the line below its own `PublishPort`. Only containers on
+# chaudron-net reach this API, and the only one that does is the proxy.
+#
+# This used to read `PublishPort=127.0.0.1:8000:8000`, "for curl from the host
+# and nothing else". It was a second front door, and it was the unhardened one:
+# no 2 MiB body cap, no filtered access log, none of the nine security headers,
+# and no `X-Real-IP`/`Forwarded` scrubbing — every control in
+# ops/Caddyfile.example lives on the proxy, and this path did not traverse it.
+#
+# The sharper consequence was on rate limiting. `FORWARDED_ALLOW_IPS` names the
+# proxy's address, so a request arriving over loopback is NOT a trusted peer:
+# uvicorn ignores its forwarded headers and attributes it to `127.0.0.1`. Every
+# caller on this port therefore shared ONE bucket across all three limiters —
+# and any local account, or anything that got a shell in any container able to
+# reach host loopback, could exhaust that bucket for everyone or hide inside it.
+#
+# To reach the API from the host for debugging, go through the proxy, or exec
+# into the network namespace rather than reopening the port:
+#   curl -sS https://$CHAUDRON_SITE_HOST/healthz
+#   podman exec chaudron python -c 'import urllib.request;print(urllib.request.urlopen("http://127.0.0.1:8000/healthz").read())'
+#   podman run --rm --network chaudron-net docker.io/library/caddy:2-alpine wget -qO- http://chaudron:8000/readyz
+#
+# Uncomment ONLY for a local debugging session, and comment it back:
+# PublishPort=127.0.0.1:8000:8000
 
 # Non-secret 12-factor configuration. Copy .env.example, fill it in, and keep
 # it out of git. Secrets below override anything set here.
 EnvironmentFile=%h/chaudron/chaudron.env
+
+# Which peer addresses uvicorn will honour `X-Forwarded-For` / `X-Forwarded-Proto`
+# from. This is the address of chaudron-proxy on chaudron-net — pinned there by
+# `Network=chaudron-net:ip=10.89.7.10` in chaudron-proxy.container.
+#
+# It is set explicitly because the value that protected this deployment before
+# was uvicorn's default of `127.0.0.1`, which happened to be correct for the
+# wrong reason: in rootless Podman the peer address the API sees is the network
+# gateway, never loopback, so forwarded headers were silently ignored. Right
+# outcome, accidental cause, and nothing wrote it down — so the first operator
+# to notice that `request.client.host` was wrong would have "fixed" it.
+#
+# NEVER set this to `*`. It tells uvicorn to trust the forwarded headers of
+# whoever connects — every rate limit, audit line and IP-based decision then
+# becomes a header away from being whatever the caller wants. It is also the
+# single most common answer to this problem on the internet. With the port no
+# longer published, `*` would still trust anything that reaches chaudron-net.
+#
+# Verify the value rather than trusting it:
+#   podman inspect chaudron-proxy --format '{{.NetworkSettings.Networks.chaudron-net.IPAddress}}'
+Environment=FORWARDED_ALLOW_IPS=10.89.7.10
 
 # Secrets injected as environment variables by Podman. Nothing secret may live
 # in the EnvironmentFile above: that file sits in $HOME next to the backups, so
@@ -57,7 +139,19 @@ EnvironmentFile=%h/chaudron/chaudron.env
 Secret=chaudron-credential-encryption-key,type=env,target=CHAUDRON_CREDENTIAL_ENCRYPTION_KEY
 
 # Database DSN — carries the password, so it is a secret, not configuration.
-Secret=chaudron-database-url,type=env,target=CHAUDRON_DATABASE_URL
+#
+# THIS MUST BE THE APPLICATION ROLE'S DSN, never the owner's. That is not a
+# preference: migration 0004 deliberately does not set `FORCE ROW LEVEL
+# SECURITY`, so PostgreSQL exempts the table owner from every policy. An API
+# connected as `chaudron` — the role chaudron-db.container creates, and the role
+# `POSTGRES_USER` names — passes every health check, answers every endpoint, and
+# enforces nothing between households. There is no symptom.
+#
+# The name says `-app` so that the mistake has to be typed out. The migrator
+# gets `chaudron-database-url-owner`; see chaudron-migrate.container.
+# Provisioning the role is ops/README.md §2.5 and is NOT optional — the API
+# will not start against a database where it has not been done.
+Secret=chaudron-database-url-app,type=env,target=CHAUDRON_DATABASE_URL
 
 # Session and token signing.
 Secret=chaudron-secret-key,type=env,target=CHAUDRON_SECRET_KEY
@@ -75,9 +169,19 @@ Secret=chaudron-anthropic-api-key,type=env,target=ANTHROPIC_API_KEY
 #Secret=chaudron-gemini-api-key,type=env,target=GEMINI_API_KEY
 #Secret=chaudron-mistral-api-key,type=env,target=MISTRAL_API_KEY
 
-# Uploaded receipt images awaiting OCR. `:Z` is mandatory under SELinux
-# Enforcing; this directory is private to the API container.
-Volume=%h/chaudron/data/uploads:/var/lib/chaudron/uploads:Z
+# No `Volume=` on purpose: this container holds no host state at all.
+#
+# There used to be one, `data/uploads`, described as "receipt images awaiting
+# OCR". Revision `0012` stopped retaining the image -- `services/receipts.py`
+# writes `image_object_key=None` on every path, and only the SHA-256 is kept, as
+# the duplicate guard. Nothing has written to that directory since, so it was a
+# writable mount serving no purpose, and an instruction to create and chown a
+# directory that would stay empty.
+#
+# Keep it that way. An API container with nothing writable from the host cannot
+# leave a receipt on disk for an operator to find later, which is the property
+# `0012` was for. If a volume ever does become necessary here, see "the `:U`
+# trap" in `ops/README.md` before adding it.
 
 # Liveness probe. /healthz answers without touching PostgreSQL, so a database
 # outage does not restart the API. Readiness (/readyz, which does check the
@@ -88,10 +192,11 @@ Volume=%h/chaudron/data/uploads:/var/lib/chaudron/uploads:Z
 #   --health-cmd "python\x20-c\x20\"import…else\x201)"
 # — an unterminated quoted string. Podman runs the probe through `/bin/sh -c`,
 # which answers `Syntax error: Unterminated quoted string` and reports the
-# container unhealthy forever. The whole auto-update story rests on this probe:
-# a permanently unhealthy container means every rolled-out image is rolled back,
-# and it means "the health check catches a broken deploy" was never true.
-# So: single quotes around the program, double quotes inside it. Verified with
+# container unhealthy forever. The deploy gate rests on this probe:
+# verified-auto-update.sh waits for `healthy` after restarting and fails the
+# unit otherwise, so a permanently unhealthy container means every deploy is
+# reported as failed and "the health check catches a broken deploy" is never
+# true. So: single quotes around the program, double quotes inside it. Verified with
 #   QUADLET_UNIT_DIRS=ops /usr/libexec/podman/quadlet -dryrun -user /tmp/out
 HealthCmd=python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=4).status == 200 else 1)'
 HealthInterval=30s
@@ -103,13 +208,49 @@ HealthStartPeriod=20s
 NoNewPrivileges=true
 DropCapability=ALL
 ReadOnly=true
+
 # Writable tmpfs for anything the process needs to scribble at runtime.
-Tmpfs=/tmp:rw,size=64M,mode=1777
+#
+# 64 MiB was too small to be safe. Two paths spool to a temporary file: an
+# inbound receipt e-mail is bounded at CHAUDRON_INBOUND_EMAIL_MAX_BYTES (10 MiB
+# by default), and Starlette spools an uploaded shopping list past
+# CHAUDRON_SHOPPING_IMPORT_MAX_BYTES (1 MiB). Six concurrent receipt imports
+# filled it, and a full /tmp on a ReadOnly= container is an ENOSPC in the middle
+# of a request rather than a clean 413.
+#
+# 256 MiB gives the 10 MiB path a factor of twenty-five. It is charged against
+# MemoryMax below — a tmpfs is memory — which is deliberate: the ceiling is one
+# number, not two that can be set inconsistently.
+Tmpfs=/tmp:rw,size=256M,mode=1777
+
+# Stated rather than inherited. journald IS the rootless default, so this
+# changes nothing today; it makes the choice visible and anchors the retention
+# policy in ops/journald.conf.d/chaudron-retention.conf. Access logging is off
+# in the image (`--no-access-log`), so what lands here is application logs.
+LogDriver=journald
+
+# Resource bounds on the container payload. Without them, one pathological PDF
+# import or a colocated Ollama inference takes the whole machine — PostgreSQL
+# included, which turns a slow request into a database outage.
+PodmanArgs=--memory=1g --memory-reservation=512m --pids-limit=1024
 
 [Service]
 Restart=always
 RestartSec=5
 TimeoutStartSec=120
+
+# systemd-level ceilings on the whole unit cgroup, which is a superset of the
+# container payload bounded above: conmon, the rootless port forwarder and any
+# exec'd process are inside it too.
+#
+# MemoryHigh throttles and reclaims first, so the process degrades before it is
+# killed; MemoryMax is the hard stop. The gap between them is what turns "the
+# API got OOM-killed with a request in flight" into "the API got slow".
+# CPUQuota=150% leaves headroom on a 2-core host for PostgreSQL to answer.
+MemoryHigh=768M
+MemoryMax=1200M
+CPUQuota=150%
+TasksMax=1536
 
 [Install]
 WantedBy=default.target

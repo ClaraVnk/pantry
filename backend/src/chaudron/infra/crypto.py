@@ -4,15 +4,23 @@ Three properties are load-bearing here, and each one closes a specific attack th
 the others do not:
 
 * **The master key comes from the environment, never from the database.** A stolen
-  ``pg_dump`` then contains ciphertext and nothing else. Storing the master key in a
+  ``pg_dump`` then yields no usable provider key or export token, because the only
+  thing that would decrypt them is not in it. Storing the master key in a
   configuration table beside the rows it protects would leave only the appearance of
   encryption.
-* **The ciphertext is bound to its row.** ``(household_id, config_id)`` is the
-  additional authenticated data, so a ciphertext copied from one row onto another --
-  by an attacker with write access, or by a careless data migration -- fails to
-  decrypt instead of silently handing household B the key that household A pays for.
-  Authenticated encryption is what makes that binding enforceable: GCM verifies the
-  AAD before it releases a single plaintext byte.
+
+  Read that sentence narrowly: *these two columns* survive the dump, and nothing
+  else does. The same dump still carries account e-mails, household composition,
+  the art. 9 dietary and allergy columns, and every purchase. This module protects
+  the credentials a household entrusted to the application; what bounds the rest is
+  operational, and lives in ``docs/security-model.md`` §6.8 and §8.4.
+* **The ciphertext is bound to its row *and to what the row is for*.**
+  ``(domain, household_id, config_id)`` is the additional authenticated data, so a
+  ciphertext copied from one row onto another -- by an attacker with write access,
+  or by a careless data migration -- fails to decrypt instead of silently handing
+  household B the key that household A pays for. Authenticated encryption is what
+  makes that binding enforceable: GCM verifies the AAD before it releases a single
+  plaintext byte.
 * **Rotation fails loudly.** The key that produced a ciphertext is identified by
   :attr:`CredentialCipher.key_id`, stored alongside it. When
   ``CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`` changes, the mismatch is detected before any
@@ -43,8 +51,10 @@ from chaudron.domain.llm_ports import CredentialDecryptionError
 
 __all__ = [
     "CREDENTIAL_ENCRYPTION_KEY_ENV_VAR",
+    "EXPORT_TOKEN_DOMAIN",
     "LAST4_LENGTH",
     "MIN_API_KEY_LENGTH",
+    "PROVIDER_KEY_DOMAIN",
     "CredentialCipher",
     "EncryptedCredential",
     "SealedCredential",
@@ -61,10 +71,23 @@ _NONCE_BYTES: Final = 12
 #: The GCM authentication tag, appended to the ciphertext by this backend.
 _TAG_BYTES: Final = 16
 
-#: Domain separation: this key material protects household provider credentials and
-#: nothing else. A second use of the same master key would carry its own prefix, so a
-#: ciphertext cannot be replayed across purposes.
-_AAD_DOMAIN: Final = b"chaudron/llm_provider_config/api_key/v1"
+#: Domain separation. Each purpose the master key serves carries its own prefix in
+#: the AAD, so a ciphertext cannot be replayed across purposes even if the two rows
+#: it names happen to share their identifiers. The prefix is authenticated, not
+#: stored: a ciphertext opened under the wrong domain fails the GCM tag, which is
+#: the same loud failure as a ciphertext moved between households.
+#:
+#: The original use, and therefore the default everywhere the domain is not spelled
+#: out: the API keys households bring for model providers (ADR-0007).
+PROVIDER_KEY_DOMAIN: Final = b"chaudron/llm_provider_config/api_key/v1"
+
+#: The second use: the personal token a household registers to have its shopping
+#: list sent to a task application (ADR-0010 section 6). Introduced with the
+#: ``shopping_export_target`` table, which is what that ADR made its prerequisite --
+#: until then an export token was sealed under the provider domain and cross-purpose
+#: replay was prevented by the row identifiers alone, which held by arithmetic
+#: rather than by design.
+EXPORT_TOKEN_DOMAIN: Final = b"chaudron/shopping_export_target/token/v1"
 
 #: ``api_key_encryption_key_id`` is ``varchar(32)``; 16 hex characters of a keyed
 #: digest identify a key without revealing anything about it.
@@ -74,7 +97,7 @@ _KEY_ID_BYTES: Final = 8
 LAST4_LENGTH: Final = 4
 
 #: Below this, a key could not be scrubbed from a diagnostic by literal match --
-#: :func:`chaudron.infra.llm.redaction.redact` ignores shorter secrets on purpose,
+#: :func:`chaudron.infra.redaction.redact` ignores shorter secrets on purpose,
 #: since blanking two characters would only mangle readable text. No real provider
 #: issues a key this short; refusing one here keeps the redaction guarantee total.
 MIN_API_KEY_LENGTH: Final = 8
@@ -102,21 +125,30 @@ class SealedCredential:
     a ciphertext without the pair it was bound to cannot be decrypted at all, and
     keeping them together makes it impossible to decrypt row A's key while claiming
     row B's identity.
+
+    ``domain`` is the third element of that binding, and it defaults to
+    :data:`PROVIDER_KEY_DOMAIN` because that is the use every existing row was
+    written under. A caller reading a row from another table has to say so -- and a
+    caller that forgets gets an ``InvalidTag``, which is a failed decryption rather
+    than a silent success under the wrong purpose.
     """
 
     household_id: uuid.UUID
     config_id: uuid.UUID
     ciphertext: bytes
     key_id: str
+    domain: bytes = PROVIDER_KEY_DOMAIN
 
 
-def _aad(household_id: uuid.UUID, config_id: uuid.UUID) -> bytes:
+def _aad(household_id: uuid.UUID, config_id: uuid.UUID, domain: bytes) -> bytes:
     """The additional authenticated data binding a ciphertext to exactly one row.
 
     Fixed-width UUID bytes rather than their string form: no separator can be
     smuggled into a component, so no two distinct pairs can produce the same AAD.
+    The domain prefix comes first and is itself fixed and internal, so the same pair
+    of identifiers under two purposes yields two AADs that share no prefix boundary.
     """
-    return _AAD_DOMAIN + household_id.bytes + config_id.bytes
+    return domain + household_id.bytes + config_id.bytes
 
 
 class CredentialCipher:
@@ -166,13 +198,22 @@ class CredentialCipher:
         return f"CredentialCipher(key_id={self._key_id!r})"
 
     def encrypt(
-        self, api_key: str, *, household_id: uuid.UUID, config_id: uuid.UUID
+        self,
+        api_key: str,
+        *,
+        household_id: uuid.UUID,
+        config_id: uuid.UUID,
+        domain: bytes = PROVIDER_KEY_DOMAIN,
     ) -> EncryptedCredential:
-        """Encrypt ``api_key`` for exactly this ``(household, configuration)`` pair.
+        """Encrypt ``api_key`` for exactly this ``(purpose, household, row)`` triple.
 
         The caller is expected to have validated the key already; the length check
         below is an invariant guard, not input validation, and its message quotes a
         count rather than the value.
+
+        ``domain`` defaults to the provider keys this module was written for. A
+        second purpose passes its own constant, and whatever reads the row back has
+        to pass the same one -- see :class:`SealedCredential`.
         """
         if len(api_key) < MIN_API_KEY_LENGTH:
             raise ValueError(
@@ -180,7 +221,9 @@ class CredentialCipher:
                 f"(got {len(api_key)})"
             )
         nonce = os.urandom(_NONCE_BYTES)
-        body = self._aesgcm.encrypt(nonce, api_key.encode("utf-8"), _aad(household_id, config_id))
+        body = self._aesgcm.encrypt(
+            nonce, api_key.encode("utf-8"), _aad(household_id, config_id, domain)
+        )
         return EncryptedCredential(
             ciphertext=nonce + body,
             last4=api_key[-LAST4_LENGTH:],
@@ -211,12 +254,12 @@ class CredentialCipher:
         nonce, body = sealed.ciphertext[:_NONCE_BYTES], sealed.ciphertext[_NONCE_BYTES:]
         try:
             plaintext = self._aesgcm.decrypt(
-                nonce, body, _aad(sealed.household_id, sealed.config_id)
+                nonce, body, _aad(sealed.household_id, sealed.config_id, sealed.domain)
             )
         except InvalidTag:
             # Authentication covers the AAD, so this is also the branch a ciphertext
-            # copied onto another household's row lands in -- exactly the replay
-            # ADR-0007 requires to fail.
+            # copied onto another household's row -- or onto a row serving another
+            # purpose -- lands in: exactly the replay ADR-0007 requires to fail.
             raise CredentialDecryptionError(
                 "the stored API key could not be decrypted: it does not belong to "
                 "this household's configuration, or it was written with a different "

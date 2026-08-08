@@ -154,10 +154,15 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # 4. OCI image build — Podman only, never Docker
+  # 4. OCI image build and vulnerability scan — Podman only, never Docker
   # ---------------------------------------------------------------------------
+  # The scan lives in this job rather than in one of its own so that there is
+  # exactly one build. A separate job would have to rebuild the image — minutes
+  # of runner time, and an artefact that is not bit-for-bit the one this job
+  # blessed — or ship it across as an upload. What is scanned here is the image
+  # that was just built, and nothing else.
   backend-build:
-    name: Backend / build image (podman)
+    name: Backend / build + scan image (podman)
     runs-on: ubuntu-latest
     needs: backend-test
     steps:
@@ -180,6 +185,204 @@ jobs:
 
       - name: Inspect image
         run: podman image inspect "localhost/chaudron-api:${GITHUB_SHA::12}" --format '{{ .Id }} {{ .Config.User }}'
+
+      # Installed the way gitleaks is, and for the same reason: a pinned
+      # release, downloaded to disk, checked against a pinned sha256 before
+      # anything is extracted. A GitHub release asset can be replaced by its
+      # owner without the tag moving, and verifying against the release's own
+      # checksums.txt would not help — that file is replaceable by the same hand.
+      #
+      # To bump: download the new archive, compare its sha256 against
+      # trivy_<version>_checksums.txt, and paste both values here in the same
+      # commit. Nothing renews this automatically.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: "0.72.0"
+          TRIVY_SHA256: "bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea"
+        run: |
+          set -euo pipefail
+          ARCHIVE="$(mktemp -d)/trivy.tar.gz"
+          curl -sSfL -o "$ARCHIVE" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  ${ARCHIVE}" | sha256sum --check --strict -
+          tar -xzf "$ARCHIVE" -C /usr/local/bin trivy
+          trivy --version
+
+      # The vulnerability database unpacks to well over a gigabyte and is pulled
+      # from a registry that rate-limits anonymous clients, so a run that refetches
+      # it every time is both slow and the first thing to flake. Keyed by the
+      # day: fetched once, reused by every run that follows it, and never older
+      # than that — a scanner reading a week-old database reports last week's
+      # truth and says nothing about it.
+      - name: Key the Trivy database cache by day
+        id: trivy-db-day
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Trivy vulnerability database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ steps.trivy-db-day.outputs.day }}
+          restore-keys: trivy-db-
+
+      # Trivy's `image` mode reaches for a Docker or containerd daemon, and
+      # there is deliberately none here. `--input` reads an archive instead, so
+      # no step below assumes a daemon exists. `--format docker-archive` matches
+      # the `--format docker` the image was built with above.
+      - name: Export the image as an archive Trivy can read
+        run: podman save --format docker-archive -o /tmp/chaudron-api.tar "localhost/chaudron-api:${GITHUB_SHA::12}"
+
+      # Reported, never enforced: everything HIGH and above, fixable or not, in
+      # the log and in the job summary. This half cannot fail, which is what
+      # lets the findings nobody can act on today still be visible tomorrow
+      # instead of being silenced along with the gate.
+      - name: Report image vulnerabilities (HIGH and CRITICAL, including unfixed)
+        run: |
+          set -euo pipefail
+          trivy image --input /tmp/chaudron-api.tar \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 \
+            --format table \
+            --output trivy-report.txt
+          {
+            echo "### Image vulnerabilities — HIGH and CRITICAL"
+            echo
+            echo '```'
+            cat trivy-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat trivy-report.txt
+
+      # THE GATE, AND WHY IT IS SET WHERE IT IS
+      # -------------------------------------------------------------------------
+      # It blocks on a CRITICAL that has a published fix, and on nothing else.
+      # Two failure modes were weighed against each other:
+      #
+      #   * a gate on every severity fails on the first unfixable advisory in
+      #     the base image and gets switched off inside a week — which is how a
+      #     scan ends up reporting nothing while the badge stays green;
+      #   * a gate on nothing is decoration.
+      #
+      # `--ignore-unfixed` is what makes *actionable* the criterion rather than
+      # *severe*, and it is not a formality here: measured on this image, the
+      # bookworm layer carries 6 CRITICAL and 18 HIGH advisories that Debian has
+      # published no fix for. A gate that counted those would be red on the day
+      # it merged, for something no commit in this repository can change. Same
+      # reasoning as `npm audit --audit-level=high` in the frontend job.
+      #
+      # **HIGH is a gate too, and it became one the moment it could be.** The
+      # first version of this step stopped at CRITICAL, for a measured reason:
+      # the only HIGH findings with a published fix were msgpack and setuptools,
+      # neither installed by `uv.lock`, both vendored inside the pip that
+      # `python:3.14-slim-bookworm` ships, in code the runtime stage never
+      # imports. The note left here said to drop pip and tighten in the same
+      # commit. `backend/Containerfile` now removes that directory, and the count
+      # was re-measured against a same-day database rather than assumed:
+      #
+      #     fixable CRITICAL,HIGH before: 2   (msgpack 1.1.2, setuptools 70.3.0)
+      #     fixable CRITICAL,HIGH after:  0
+      #
+      # So the gate costs nothing today and catches the next fixable HIGH in a
+      # dependency this repository actually ships. The unfixable bookworm
+      # advisories — 6 CRITICAL, 18 HIGH — are still excluded by
+      # `--ignore-unfixed`, and still cannot be closed from here.
+      #
+      # If this ever goes red on something unfixable, the answer is to move the
+      # base image forward, not to widen the exclusion.
+      #
+      # `--skip-db-update` reuses the database the step above just downloaded.
+      # `--scanners vuln` only: secrets in the repository are gitleaks' job, and
+      # the two scanners disagreeing about the same file helps nobody.
+      - name: Fail the build on a fixable CRITICAL or HIGH
+        run: |
+          trivy image --input /tmp/chaudron-api.tar \
+            --scanners vuln \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --skip-db-update \
+            --exit-code 1 \
+            --quiet
+
+  # ---------------------------------------------------------------------------
+  # 4b. Ops — the proxy configuration is code, and it carries the header posture
+  # ---------------------------------------------------------------------------
+  # `ops/Caddyfile.example` holds every security header on the frontend origin,
+  # the CSP for both documents, the request-body cap and the log filter. It had
+  # no check of any kind: a typo landed on `main` and was discovered by a site
+  # that would not start, or — worse and more likely — by a header that silently
+  # stopped being emitted.
+  #
+  # `caddy validate` catches structural errors, unknown directives, snippets
+  # imported before they are defined, and bad matcher syntax. It does NOT catch
+  # a header that is merely wrong, which is what §7.4's browser check is for.
+  #
+  # Environment variables are supplied with placeholder values because the
+  # adapter resolves `{$VAR}` at load time and an unset one becomes an empty
+  # string — which validates, and would let a genuinely broken interpolation
+  # through.
+  ops-caddyfile:
+    name: Ops / validate Caddyfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # Pinned to the same major version chaudron-proxy.container runs, so this
+      # validates against the adapter that will actually parse the file. Bump
+      # both together.
+      - name: Validate ops/Caddyfile.example
+        env:
+          CHAUDRON_SITE_HOST: chaudron.ci.invalid
+          CHAUDRON_ACME_EMAIL: ci@chaudron.ci.invalid
+          CHAUDRON_API_UPSTREAM: chaudron:8000
+        run: |
+          set -euo pipefail
+          podman run --rm \
+            -e CHAUDRON_SITE_HOST -e CHAUDRON_ACME_EMAIL -e CHAUDRON_API_UPSTREAM \
+            -v "${PWD}/ops/Caddyfile.example:/etc/caddy/Caddyfile:ro" \
+            docker.io/library/caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile
+
+      # A structurally valid file that lost a header is the failure mode this
+      # job exists for, and `validate` cannot see it. Assert the directives that
+      # must survive any edit, against the adapted JSON rather than the source
+      # text — so that a header moved into a block where it no longer applies
+      # still fails.
+      - name: Assert the security headers survive adaptation
+        env:
+          CHAUDRON_SITE_HOST: chaudron.ci.invalid
+          CHAUDRON_ACME_EMAIL: ci@chaudron.ci.invalid
+          CHAUDRON_API_UPSTREAM: chaudron:8000
+        run: |
+          set -euo pipefail
+          podman run --rm \
+            -e CHAUDRON_SITE_HOST -e CHAUDRON_ACME_EMAIL -e CHAUDRON_API_UPSTREAM \
+            -v "${PWD}/ops/Caddyfile.example:/etc/caddy/Caddyfile:ro" \
+            docker.io/library/caddy:2-alpine \
+            caddy adapt --config /etc/caddy/Caddyfile > adapted.json
+
+          fail=0
+          for needle in \
+            Strict-Transport-Security \
+            X-Content-Type-Options \
+            Referrer-Policy \
+            X-Frame-Options \
+            Permissions-Policy \
+            Cross-Origin-Opener-Policy \
+            Cross-Origin-Resource-Policy \
+            Reporting-Endpoints \
+            Content-Security-Policy \
+            X-Real-IP \
+            Forwarded
+          do
+            if ! grep -q -- "$needle" adapted.json; then
+              echo "::error title=Missing directive::'${needle}' is not in the adapted configuration."
+              fail=1
+            fi
+          done
+          exit "$fail"
 
   # ---------------------------------------------------------------------------
   # 5. Security — dependency vulnerabilities and leaked secrets
@@ -306,7 +509,46 @@ jobs:
         working-directory: frontend
         run: npm run lint
 
+      # Checked, never rewritten — the same rule the backend's `ruff format
+      # --check` follows. A CI job that reformats and pushes turns every review
+      # into a diff against a machine.
+      #
+      # This step was missing while `lint` and `build` were both here, and the
+      # gap was not theoretical: a badly formatted `globIgnores` in
+      # `vite.config.ts` reached the tree through it, and was only found when
+      # somebody ran the check by hand. ESLint and Prettier do not overlap here —
+      # one is about what the code does, the other about how it is set out — so
+      # passing `lint` says nothing about this.
+      - name: Check formatting
+        if: steps.detect.outputs.present == 'true'
+        working-directory: frontend
+        run: npm run format:check
+
+      # `VITE_SITE_URL` is mandatory for a build (vite.config.ts fails without
+      # it), because a `dist/` carrying the fallback domain in `canonical`,
+      # `og:url` and `Sitemap:` is a deployment that hands its search ranking to
+      # somebody else's domain. CI is not publishing anything, so it supplies an
+      # RFC 2606 `.invalid` host: enough to satisfy the check, impossible to
+      # mistake for a real deployment if it ever escapes.
       - name: Build
         if: steps.detect.outputs.present == 'true'
         working-directory: frontend
+        env:
+          VITE_SITE_URL: https://chaudron.ci.invalid
         run: npm run build
+
+      # The service worker's registration scope is not the manifest's `scope`,
+      # and the two were silently different for a while — see
+      # docs/public-page-and-indexing.md. Assert the built artefact, not the
+      # config that is supposed to produce it.
+      - name: Assert the service worker is scoped to /app/
+        if: steps.detect.outputs.present == 'true'
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          if ! grep -q "scope: '/app/'" dist/registerSW.js; then
+            echo "::error title=Service worker scope::dist/registerSW.js does not register with scope '/app/'. The public landing page would be served from a cache the application controls."
+            cat dist/registerSW.js
+            exit 1
+          fi
+          echo "registerSW.js scope: /app/ — ok"

@@ -27,6 +27,15 @@ owner DSN for migrations only.
 Idempotent: re-running grants what is missing, resets the password when one is
 supplied, and reports. ``--check`` reports without writing anything, which is
 what a deployment pipeline should run after every migration.
+
+**Since revision ``0014`` this script is not optional after a migration.** That
+revision revokes ``EXECUTE`` from ``PUBLIC`` on the two ``SECURITY DEFINER``
+functions that cross row-level security, and the matching grants live here (see
+:data:`_DEFINER_FUNCTIONS`). A database migrated without re-running this leaves
+the application unable to resolve a session or a machine token: every request
+answers ``401``, and nothing in the logs says why. ``--check`` reports exactly
+that, by name, which is why a pipeline should run it after ``alembic upgrade``
+rather than after a deployment goes wrong.
 """
 
 from __future__ import annotations
@@ -56,6 +65,35 @@ _DEFAULT_ROLE: Final = "chaudron_app"
 #: The function every policy calls. Executable by PUBLIC by default; granted
 #: explicitly so a hardened database that revoked PUBLIC still works.
 _TENANT_FUNCTION: Final = "chaudron_current_household()"
+
+#: The two ``SECURITY DEFINER`` functions that **cross** row-level security by
+#: construction, and the reason this script has to grant anything at all.
+#:
+#: ``chaudron_user_memberships`` answers "which households may this account open?"
+#: before any tenant has been posted (revision ``0009``);
+#: ``chaudron_resolve_machine_token`` answers the same question from a bearer
+#: token (revision ``0011``). Both run as the table owner, both are exempt from
+#: every policy, and both had ``pg_proc.proacl`` of ``NULL`` -- PostgreSQL's
+#: default, which is ``EXECUTE`` to ``PUBLIC`` (audit AUD-027).
+#:
+#: Nothing could exploit that today: the application role was the only non-owner
+#: login and it needs both. It became exploitable the moment anybody added a
+#: second one -- a reporting account, a read-only analyst, a backup user -- which
+#: would inherit the right to read the whole membership map past every policy,
+#: invisibly, because an implicit grant leaves no ACL for a review to notice.
+#:
+#: Revision ``0014`` revokes ``PUBLIC``. **This list is the other half of that
+#: change**: without the grants below, the API cannot resolve a session or a token
+#: and answers ``401`` to every request. Run this script after that migration.
+_DEFINER_FUNCTIONS: Final[tuple[str, ...]] = (
+    "chaudron_user_memberships(uuid)",
+    "chaudron_resolve_machine_token(text)",
+)
+
+#: Everything the role must be able to execute: the three functions above plus the
+#: tenant reader. Used by :func:`provision` to grant and by :func:`report` to
+#: check, from one list, so the two cannot drift.
+_REQUIRED_FUNCTIONS: Final[tuple[str, ...]] = (_TENANT_FUNCTION, *_DEFINER_FUNCTIONS)
 
 
 def _role_name() -> str:
@@ -149,7 +187,14 @@ async def provision(connection: AsyncConnection, role: str, password: str | None
             {"role": role},
         ),
         ("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I", {"role": role}),
-        (f"GRANT EXECUTE ON FUNCTION {_TENANT_FUNCTION} TO %I", {"role": role}),
+        # Not "ON ALL FUNCTIONS IN SCHEMA public": that would grant whatever a
+        # later revision adds, including the next SECURITY DEFINER somebody writes
+        # for a narrower purpose. Three names, enumerated, so widening the list is
+        # a visible edit next to the paragraph explaining what each one crosses.
+        *(
+            (f"GRANT EXECUTE ON FUNCTION {function} TO %I", {"role": role})
+            for function in _REQUIRED_FUNCTIONS
+        ),
         # So the next migration's tables are granted without re-running this.
         (
             "ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public "
@@ -252,6 +297,28 @@ async def report(connection: AsyncConnection, role: str) -> list[str]:
     if missing:
         problems.append(
             f"{role} cannot read {', '.join(missing)}: re-run this script without --check"
+        )
+
+    # The check a deployment pipeline needs most after revision `0014`, because
+    # the failure it catches is total and looks like nothing else: without EXECUTE
+    # on the two SECURITY DEFINER functions the API cannot resolve a session or a
+    # token, so every request answers 401 and the logs say only that nobody is
+    # signed in. `has_function_privilege` is asked per function rather than read
+    # off `proacl`, so a grant inherited through a group role counts -- which is
+    # how some deployments will legitimately hold it.
+    unexecutable = [
+        function
+        for function in _REQUIRED_FUNCTIONS
+        if not await connection.scalar(
+            text("SELECT has_function_privilege(:role, :function, 'EXECUTE')"),
+            {"role": role, "function": function},
+        )
+    ]
+    if unexecutable:
+        problems.append(
+            f"{role} may not execute {', '.join(unexecutable)}: authentication will "
+            f"answer 401 to every request. Re-run this script without --check "
+            f"(revision 0014 revoked these from PUBLIC on purpose)"
         )
     return problems
 

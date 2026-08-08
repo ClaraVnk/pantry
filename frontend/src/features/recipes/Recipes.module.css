@@ -110,6 +110,245 @@
   font-weight: 700;
 }
 
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.blockHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.blockTitle {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.blockLead {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.blockList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: 0.85rem;
+}
+
+.blockList li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.blockLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+/* A hard filter reads as a wall: solid border, filled, square. */
+.filterBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--text);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+/* A preference reads as a note: dashed, unfilled, softer corners. */
+.preferenceBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: transparent;
+}
+
+.applied {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.balance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.balanceDetail {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.balanceFootnote {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+/*
+ * Allergen assessment. The two states must be told apart without colour: shape,
+ * fill and glyph all differ. "Unknown" is never green and never gets a check.
+ */
+.assessment {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  font-size: 0.85rem;
+}
+
+.assessmentHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 700;
+}
+
+.assessmentGlyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  flex: 0 0 auto;
+  border: 2px solid currentcolor;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.assessmentComplete {
+  border: 1px solid var(--ok-text);
+  border-left-width: 5px;
+  border-radius: var(--radius-md);
+  background: var(--ok-subtle);
+  color: var(--ok-text);
+}
+
+/*
+ * Hatching, not a tint: an unverified block must not be mistaken for a quiet
+ * neutral one at a glance, and the stripes survive greyscale.
+ */
+.assessmentUnknown {
+  border: 2px dashed var(--warn-text);
+  border-radius: var(--radius-md);
+  color: var(--warn-text);
+  background-color: var(--warn-subtle);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgb(146 64 14 / 10%) 0,
+    rgb(146 64 14 / 10%) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+}
+
+@media (prefers-color-scheme: dark) {
+  .assessmentUnknown {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      rgb(251 191 36 / 12%) 0,
+      rgb(251 191 36 / 12%) 6px,
+      transparent 6px,
+      transparent 12px
+    );
+  }
+}
+
+.assessmentStatement {
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.assessmentDetail {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.declared {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+}
+
+.divergence {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--warn-text);
+  background: var(--warn-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+
+.pressure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.leftUnused {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--warn-text);
+}
+
+/*
+ * The feedback gesture. Separated from the recipe body by a rule rather than a
+ * box: it is an action on the card, not another fact about the dish, and a
+ * bordered panel would read as one more thing to consider before cooking.
+ */
+.feedback {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.feedbackHint {
+  font-size: 0.78rem;
+  /* AA on the warm background. #6B7280 is 4.47:1 here and is never used. */
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
 .setup {
   display: flex;
   flex-direction: column;

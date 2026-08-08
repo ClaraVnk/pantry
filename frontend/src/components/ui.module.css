@@ -31,19 +31,10 @@
   border-color: var(--accent);
 }
 
-.primary:hover:not(:disabled) {
-  background: var(--amber-600);
-  border-color: var(--amber-600);
-}
-
 .secondary {
   background: var(--surface);
   color: var(--text);
   border-color: var(--border-strong);
-}
-
-.secondary:hover:not(:disabled) {
-  background: var(--bg-subtle);
 }
 
 .ghost {
@@ -53,19 +44,10 @@
   padding: 0 var(--space-2);
 }
 
-.ghost:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--bg-subtle);
-}
-
 .danger {
   background: transparent;
   color: var(--danger);
   border-color: var(--border-strong);
-}
-
-.danger:hover:not(:disabled) {
-  background: var(--danger-subtle);
 }
 
 .block {
@@ -118,6 +100,93 @@
 
 .invalid {
   border-color: var(--danger);
+}
+
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.legend {
+  padding: 0 var(--space-2);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-height: var(--tap-target);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.choiceInput {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  flex: 0 0 auto;
+  align-self: center;
+  accent-color: var(--accent);
+}
+
+.choiceText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: center;
+  font-size: 0.95rem;
+}
+
+.choiceDetail {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.classTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.2em 0.6em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* A filter is a hard edge: solid border, solid fill, square corners. */
+.classFilter {
+  border: 1px solid var(--text);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.classComputed {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+/* A preference is not a boundary: dashed, pill-shaped, unfilled. */
+.classPreference {
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-style: italic;
 }
 
 .chipRow {
@@ -256,4 +325,62 @@
   padding: var(--space-5);
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+/* ------------------------------------------------------------------------ *
+ * Input device
+ *
+ * These two queries ask about the pointer, never about the width — a
+ * touchscreen laptop is 1440 px wide and has no hover, and a phone plugged into
+ * a monitor is narrow and has one. Using `min-width` as a stand-in for "mouse"
+ * gets both of those wrong.
+ * ------------------------------------------------------------------------ */
+
+@media (hover: hover) {
+  /*
+   * Held back from touch on purpose: a tap fires :hover and the state stays
+   * painted until something else is touched, which reads as "still selected".
+   */
+  .primary:hover:not(:disabled) {
+    background: var(--amber-600);
+    border-color: var(--amber-600);
+  }
+
+  .secondary:hover:not(:disabled) {
+    background: var(--bg-subtle);
+  }
+
+  .ghost:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--bg-subtle);
+  }
+
+  .danger:hover:not(:disabled) {
+    background: var(--danger-subtle);
+  }
+
+  .choice:hover {
+    background: var(--bg-subtle);
+  }
+}
+
+@media (pointer: coarse) {
+  /*
+   * A finger has no tip. Icon-only and short-labelled controls are wide enough
+   * to read but not always wide enough to hit, so the floor applies on both
+   * axes, and neighbouring targets get more air between them.
+   */
+  .button,
+  .chip {
+    min-width: var(--tap-target);
+  }
+
+  .chipRow {
+    gap: var(--space-3);
+  }
+
+  .choiceInput {
+    width: 24px;
+    height: 24px;
+  }
 }

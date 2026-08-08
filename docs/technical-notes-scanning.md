@@ -1,209 +1,211 @@
-# Note technique de faisabilité — scan de code-barres et résolution EAN
+# Technical feasibility note — barcode scanning and EAN resolution
 
-**Projet :** Chaudron (PWA React + Vite / backend FastAPI) — gestion de stock alimentaire domestique
-**Date :** 3 août 2026
-**Statut :** note de cadrage, à relire avant de figer l'architecture du module « scan »
+**Project:** Chaudron (React + Vite PWA / FastAPI backend) — household food stock management
+**Date:** 3 August 2026
+**Status:** scoping note, to be re-read before freezing the architecture of the "scan" module
 
 ---
 
-## Méthode et niveau de confiance
+## Method and confidence level
 
-Cette note distingue trois niveaux :
+This note distinguishes three levels:
 
-| Marqueur | Signification |
+| Marker | Meaning |
 |---|---|
-| **[V]** | Vérifié le 3 août 2026 par requête directe (curl / registre npm / API GitHub) ou lecture de la source primaire (spec, doc officielle, bug tracker). La commande ou l'URL est donnée. |
-| **[S]** | Sourcé sur une page tierce crédible mais non reproduit en propre. |
-| **[NV]** | **Non vérifié.** Affirmation plausible mais que je n'ai pas pu confirmer — typiquement parce qu'elle exige un appareil physique, un compte payant, ou qu'elle a été bloquée par un rate limit. Traiter comme une hypothèse à tester. |
+| **[V]** | Verified on 3 August 2026 by direct request (curl / npm registry / GitHub API) or by reading the primary source (spec, official documentation, bug tracker). The command or the URL is given. |
+| **[S]** | Sourced on a credible third-party page but not reproduced first-hand. |
+| **[NV]** | **Not verified.** A plausible claim that I was unable to confirm — typically because it requires a physical device, a paid account, or because it was blocked by a rate limit. Treat as a hypothesis to be tested. |
 
-Les mesures locales (tailles de fichiers, comptages OFF) ont été faites depuis le poste de dev le 3 août 2026 ; elles bougeront.
+The local measurements (file sizes, OFF counts) were made from the dev machine on 3 August 2026; they will move.
 
 ---
 
-## 1. Lecture de code-barres dans le navigateur
+## 1. Barcode reading in the browser
 
-### 1.1 L'API native `BarcodeDetector` : l'état réel
+### 1.1 The native `BarcodeDetector` API: the real state of things
 
-La conclusion tient en une phrase : **`BarcodeDetector` est inutilisable comme socle unique.** Elle n'est disponible ni sur iOS, ni sur Firefox, ni sur Chrome/Windows, ni sur Chrome/Linux.
+The conclusion fits in one sentence: **`BarcodeDetector` is unusable as the sole foundation.** It is available neither on iOS, nor on Firefox, nor on Chrome/Windows, nor on Chrome/Linux.
 
-Données de compatibilité, extraites de la source primaire (`mdn/browser-compat-data`, fichier `api/BarcodeDetector.json`) **[V]** :
+Compatibility data, extracted from the primary source (`mdn/browser-compat-data`, file `api/BarcodeDetector.json`) **[V]**:
 
-| Navigateur | Support | Restriction |
+| Browser | Support | Restriction |
 |---|---|---|
-| Chrome desktop | 88+ | **ChromeOS et macOS uniquement** (83–87 : macOS seul) |
-| Chrome Android | 83+ | OK — cible principale |
-| Edge | 83+ | **macOS uniquement** |
-| Opera | 69+ | **macOS uniquement** |
+| Chrome desktop | 88+ | **ChromeOS and macOS only** (83–87: macOS alone) |
+| Chrome Android | 83+ | OK — the main target |
+| Edge | 83+ | **macOS only** |
+| Opera | 69+ | **macOS only** |
 | Firefox / Firefox Android | ❌ | `version_added: false` |
-| Safari (macOS) | 17+ | **derrière un feature flag** (« Shape Detection API ») |
-| Safari iOS | 17+ | idem — flag, et voir ci-dessous |
-| Samsung Internet | 83+ | aligné sur Chrome Android |
-| WebView Android | 83+ | aligné sur Chrome Android |
+| Safari (macOS) | 17+ | **behind a feature flag** ("Shape Detection API") |
+| Safari iOS | 17+ | ditto — a flag, and see below |
+| Samsung Internet | 83+ | aligned on Chrome Android |
+| WebView Android | 83+ | aligned on Chrome Android |
 
-Source : <https://github.com/mdn/browser-compat-data/blob/main/api/BarcodeDetector.json>
+Source: <https://github.com/mdn/browser-compat-data/blob/main/api/BarcodeDetector.json>
 
-La documentation Chrome le confirme en toutes lettres : *« Barcode detection is available on macOS, ChromeOS, and Android »*, et *« Google Play Services are required on Android »* — l'implémentation délègue aux bibliothèques de l'OS, elle n'embarque pas son propre décodeur **[V]** (<https://developer.chrome.com/docs/capabilities/shape-detection>).
+The Chrome documentation confirms it in so many words: *"Barcode detection is available on macOS, ChromeOS, and Android"*, and *"Google Play Services are required on Android"* — the implementation delegates to the OS libraries, it does not embed its own decoder **[V]** (<https://developer.chrome.com/docs/capabilities/shape-detection>).
 
-MDN classe l'API en **« Limited availability »** et **« Experimental »**, avec exigence de contexte sécurisé (HTTPS) **[V]** (<https://developer.mozilla.org/en-US/docs/Web/API/BarcodeDetector>).
+MDN classifies the API as **"Limited availability"** and **"Experimental"**, requiring a secure context (HTTPS) **[V]** (<https://developer.mozilla.org/en-US/docs/Web/API/BarcodeDetector>).
 
-caniuse donne 76,36 % d'usage global « support ou support partiel », mais ce chiffre est trompeur : il agrège les « partial support » de Chrome desktop, qui sont en réalité des non-support sur Windows et Linux **[V]** (<https://caniuse.com/mdn-api_barcodedetector>).
+caniuse gives 76.36% of global usage as "support or partial support", but that figure is misleading: it aggregates the "partial support" of Chrome desktop, which is in reality non-support on Windows and Linux **[V]** (<https://caniuse.com/mdn-api_barcodedetector>).
 
-#### Le cas iOS : le flag existe, il ne sert à rien
+#### The iOS case: the flag exists, it is useless
 
-Point le plus important de cette section. Sur iOS, le flag « Shape Detection API » est bien présent dans Réglages > Safari > Avancé > Feature Flags, **mais l'activer ne rend pas la détection fonctionnelle**. Le bug WebKit **#281848** (« Shape Detection API doesn't work on iOS ») est ouvert depuis le 21 octobre 2024 et **toujours au statut NEW** ; les commentaires signalent l'échec sur Safari 17.6.x, 18.3, 18.4, 18.5, puis sur les bêtas iOS 26 (juin 2025), le dernier commentaire datant de juillet 2026 **[V]** (<https://bugs.webkit.org/show_bug.cgi?id=281848>).
+The most important point of this section. On iOS, the "Shape Detection API" flag is indeed present under Settings > Safari > Advanced > Feature Flags, **but enabling it does not make detection work**. WebKit bug **#281848** ("Shape Detection API doesn't work on iOS") has been open since 21 October 2024 and is **still at status NEW**; the comments report failure on Safari 17.6.x, 18.3, 18.4, 18.5, then on the iOS 26 betas (June 2025), the last comment dating from July 2026 **[V]** (<https://bugs.webkit.org/show_bug.cgi?id=281848>).
 
-Rien dans les notes de version WebKit de Safari 26.0 à 26.6 n'annonce l'activation par défaut de Shape Detection **[S]** (<https://webkit.org/blog/17333/webkit-features-in-safari-26-0/>, <https://webkit.org/blog/18178/webkit-features-for-safari-26-6/>).
+Nothing in the WebKit release notes from Safari 26.0 to 26.6 announces Shape Detection being enabled by default **[S]** (<https://webkit.org/blog/17333/webkit-features-in-safari-26-0/>, <https://webkit.org/blog/18178/webkit-features-for-safari-26-6/>).
 
-> **Conséquence de conception :** ne pas écrire de code qui suppose `BarcodeDetector` présent. Et surtout, ne pas se contenter d'un `if ('BarcodeDetector' in window)` : sur macOS, l'objet peut exister sans être fiable. Le test de disponibilité doit être `await BarcodeDetector.getSupportedFormats()` et vérifier que `ean_13` en fait partie.
+> **Design consequence:** do not write code that assumes `BarcodeDetector` is present. And above all, do not settle for an `if ('BarcodeDetector' in window)`: on macOS, the object can exist without being reliable. The availability test must be `await BarcodeDetector.getSupportedFormats()` and must check that `ean_13` is among them.
 
-#### Piège pour la boucle de dev locale
+#### A trap for the local dev loop
 
-Le poste de développement tourne sous Linux. **`BarcodeDetector` n'y existe dans aucun navigateur** (Chrome : macOS/ChromeOS/Android seulement ; Firefox : jamais). Le chemin « natif » ne sera donc **jamais exercé en dev local** — uniquement sur un téléphone Android réel. C'est exactement le genre de branche qui pourrit sans qu'on s'en aperçoive. Argument de plus pour ne pas maintenir deux chemins de code.
+The development machine runs Linux. **`BarcodeDetector` exists there in no browser** (Chrome: macOS/ChromeOS/Android only; Firefox: never). The "native" path will therefore **never be exercised in local dev** — only on a real Android phone. That is exactly the kind of branch that rots without anyone noticing. One more argument for not maintaining two code paths.
 
-### 1.2 Bibliothèques de repli — comparatif
+### 1.2 Fallback libraries — comparison
 
-Toutes les métadonnées ci-dessous ont été relevées **le 3 août 2026** sur `registry.npmjs.org` et l'API GitHub **[V]**.
+All the metadata below was collected **on 3 August 2026** from `registry.npmjs.org` and the GitHub API **[V]**.
 
-| Paquet | Version / date | Licence | Deps | Repo (⭐ / dernier push / issues) | Nature |
+| Package | Version / date | Licence | Deps | Repo (⭐ / last push / issues) | Nature |
 |---|---|---|---|---|---|
-| **`zxing-wasm`** | 3.1.2 — 2026-07-18 | MIT | `@types/emscripten`, `type-fest` | Sec-ant/zxing-wasm — 246 ⭐ / 2026-08-01 / 9 | ZXing-C++ compilé en WASM |
-| **`barcode-detector`** | 3.2.1 — 2026-07-12 | MIT | `zxing-wasm` | Sec-ant/barcode-detector — 227 ⭐ / 2026-08-03 | Poly/ponyfill de l'API standard, adossé à `zxing-wasm` |
-| **`@zxing/library`** | 0.23.0 — 2026-04-29 | Apache-2.0 | `ts-custom-error` | zxing-js/library — 2 923 ⭐ / 2026-07-25 / **170 issues** | Port TypeScript pur de ZXing |
-| **`html5-qrcode`** | 2.3.8 — **2023-04-15** | Apache-2.0 | aucune | mebjas/html5-qrcode — 6 191 ⭐ / 2025-12-01 / **441 issues** | Composant UI complet, embarque `@zxing/library` |
-| **`@ericblade/quagga2`** | 1.12.1 — 2025-12-20 | MIT | `gl-matrix` | ericblade/quagga2 — 908 ⭐ / 2026-07-25 | Décodeur 1D en JS pur |
+| **`zxing-wasm`** | 3.1.2 — 2026-07-18 | MIT | `@types/emscripten`, `type-fest` | Sec-ant/zxing-wasm — 246 ⭐ / 2026-08-01 / 9 | ZXing-C++ compiled to WASM |
+| **`barcode-detector`** | 3.2.1 — 2026-07-12 | MIT | `zxing-wasm` | Sec-ant/barcode-detector — 227 ⭐ / 2026-08-03 | Poly/ponyfill of the standard API, backed by `zxing-wasm` |
+| **`@zxing/library`** | 0.23.0 — 2026-04-29 | Apache-2.0 | `ts-custom-error` | zxing-js/library — 2,923 ⭐ / 2026-07-25 / **170 issues** | Pure TypeScript port of ZXing |
+| **`html5-qrcode`** | 2.3.8 — **2023-04-15** | Apache-2.0 | none | mebjas/html5-qrcode — 6,191 ⭐ / 2025-12-01 / **441 issues** | Complete UI component, bundles `@zxing/library` |
+| **`@ericblade/quagga2`** | 1.12.1 — 2025-12-20 | MIT | `gl-matrix` | ericblade/quagga2 — 908 ⭐ / 2026-07-25 | Pure-JS 1D decoder |
 
 #### Maintenance
 
-- **`zxing-wasm` / `barcode-detector`** : cadence soutenue et régulière. Pour `zxing-wasm` : 3.0.1 (2026-03-09), 3.0.2 (04-01), 3.0.3 (05-04), 3.1.0 (06-01), 3.1.1 (07-12), 3.1.2 (07-18) **[V]**. Même mainteneur (Sec-ant) pour les deux, ce qui est à la fois une garantie de cohérence et un **risque de bus factor = 1** — à noter au registre des risques.
-- **`@zxing/library`** : à surveiller. Historique des publications : 0.21.3 le **2024-08-21**, puis plus rien jusqu'à 0.22.0 le **2026-04-27** **[V]** — soit **20 mois sans release**. Le projet est reparti, mais 170 issues ouvertes sur un port JS manuel de ZXing, ça veut dire des divergences accumulées avec l'amont C++.
-- **`html5-qrcode`** : **dernière publication npm le 15 avril 2023**, soit plus de trois ans **[V]**. Le README annonce explicitement le mode maintenance (*« the author shall not be able to make any bug fixes or improvements for the time-being. Pull requests also won't be merged »*) et 441 issues sont ouvertes **[S]** (<https://github.com/mebjas/html5-qrcode>). **À écarter.** C'est d'autant plus vrai qu'il embarque `@zxing/library` : on hériterait d'une version figée en 2023 d'une dépendance déjà en retard.
-- **`@ericblade/quagga2`** : vivant, mais **1D uniquement** et décodeur JS pur. Pertinent seulement si on veut zéro WASM.
+- **`zxing-wasm` / `barcode-detector`**: a sustained and regular cadence. For `zxing-wasm`: 3.0.1 (2026-03-09), 3.0.2 (04-01), 3.0.3 (05-04), 3.1.0 (06-01), 3.1.1 (07-12), 3.1.2 (07-18) **[V]**. The same maintainer (Sec-ant) for both, which is at once a guarantee of consistency and a **bus factor = 1 risk** — to be noted in the risk register.
+- **`@zxing/library`**: to be watched. Publication history: 0.21.3 on **2024-08-21**, then nothing until 0.22.0 on **2026-04-27** **[V]** — that is **20 months without a release**. The project has restarted, but 170 open issues on a manual JS port of ZXing means accumulated divergence from the C++ upstream.
 
-#### Taille de bundle — mesures réelles
+  > *The table above says 0.23.0 (2026-04-29) and this bullet says 0.22.0 (2026-04-27); both come from the same npm pull, and nothing else in this note reconciles them.* They describe different things rather than disagreeing: 0.22.0 is the release that **ended** the silence, which is why the 20-month arithmetic is computed from it, while 0.23.0 is simply the **latest** version two days later, which is what a comparison table should report. The maintenance conclusion is the same either way. None of it reaches the build: `@zxing/library` is ruled out below and is not a dependency of this project — the frontend ships `barcode-detector` on top of `zxing-wasm`.
+- **`html5-qrcode`**: **last npm publication on 15 April 2023**, i.e. more than three years ago **[V]**. The README explicitly announces maintenance mode (*"the author shall not be able to make any bug fixes or improvements for the time-being. Pull requests also won't be merged"*) and 441 issues are open **[S]** (<https://github.com/mebjas/html5-qrcode>). **To be ruled out.** All the more so since it bundles `@zxing/library`: we would inherit a version of an already-lagging dependency frozen in 2023.
+- **`@ericblade/quagga2`**: alive, but **1D only** and a pure-JS decoder. Relevant only if we want zero WASM.
 
-L'archive `zxing-wasm@3.1.2` fait 3,77 Mo décompressée, mais ce chiffre est un épouvantail : elle contient **trois binaires WASM alternatifs** dont on n'en charge qu'un **[V]**.
+#### Bundle size — real measurements
 
-| Artefact | Brut | gzip -9 (mesuré) |
+The `zxing-wasm@3.1.2` archive is 3.77 MB uncompressed, but that figure is a scarecrow: it contains **three alternative WASM binaries**, of which we load only one **[V]**.
+
+| Artefact | Raw | gzip -9 (measured) |
 |---|---|---|
-| `dist/reader/zxing_reader.wasm` | 1 065 866 o | **448 787 o** |
-| `dist/full/zxing_full.wasm` (lecture + écriture) | 1 511 909 o | — |
-| `dist/writer/zxing_writer.wasm` | 648 328 o | — |
-| `dist/es/reader/index.js` (colle JS) | 42 595 o | — |
+| `dist/reader/zxing_reader.wasm` | 1,065,866 B | **448,787 B** |
+| `dist/full/zxing_full.wasm` (read + write) | 1,511,909 B | — |
+| `dist/writer/zxing_writer.wasm` | 648,328 B | — |
+| `dist/es/reader/index.js` (JS glue) | 42,595 B | — |
 
-Donc : **~450 Ko gzip pour le décodeur lecture seule**, à charger une fois puis à mettre en cache dans le service worker. Brotli ferait sensiblement mieux — non mesuré, `brotli` n'est pas installé sur le poste **[NV]**.
+So: **~450 kB gzip for the read-only decoder**, to be loaded once then cached in the service worker. Brotli would do appreciably better — not measured, `brotli` is not installed on the machine **[NV]**.
 
-C'est un coût réel mais acceptable pour une PWA d'inventaire : le WASM n'est chargé **qu'à l'ouverture de l'écran de scan**, pas au démarrage de l'app, et il est ensuite servi depuis le cache y compris hors ligne.
+That is a real cost but an acceptable one for an inventory PWA: the WASM is loaded **only when the scan screen opens**, not at app start-up, and it is then served from cache, including offline.
 
-`barcode-detector@3.2.1` n'ajoute que 260 Ko décompressés de colle JS, le WASM venant de `zxing-wasm` **[V]**.
+`barcode-detector@3.2.1` adds only 260 kB uncompressed of JS glue, the WASM coming from `zxing-wasm` **[V]**.
 
-#### Formats supportés
+#### Supported formats
 
-`zxing-wasm` / `barcode-detector` couvrent largement au-delà du besoin. Pour le commerce de détail, sont lisibles : `EAN13`, `EAN8`, `UPCA`, `UPCE`, `ISBN`, ainsi que toute la famille `DataBar` (Omni, Stacked, Limited, Expanded) — cette dernière compte, on la trouve sur les petits conditionnements et les produits frais **[V]** (README de `zxing-wasm@3.1.2`). À noter : `EAN5` et `EAN2` (les add-ons) sont en écriture seule, pas en lecture.
+`zxing-wasm` / `barcode-detector` cover well beyond the need. For retail, the readable ones are: `EAN13`, `EAN8`, `UPCA`, `UPCE`, `ISBN`, as well as the whole `DataBar` family (Omni, Stacked, Limited, Expanded) — that last one matters, it is found on small packaging and fresh produce **[V]** (README of `zxing-wasm@3.1.2`). Note: `EAN5` and `EAN2` (the add-ons) are write-only, not read.
 
-L'API native Chrome, elle, expose 13 formats (`aztec`, `code_128`, `code_39`, `code_93`, `codabar`, `data_matrix`, `ean_13`, `ean_8`, `itf`, `pdf417`, `qr_code`, `upc_a`, `upc_e`) — **pas de DataBar** **[V]**. Le repli WASM est donc, sur ce point précis, *plus capable* que le natif.
+The native Chrome API, for its part, exposes 13 formats (`aztec`, `code_128`, `code_39`, `code_93`, `codabar`, `data_matrix`, `ean_13`, `ean_8`, `itf`, `pdf417`, `qr_code`, `upc_a`, `upc_e`) — **no DataBar** **[V]**. The WASM fallback is therefore, on this precise point, *more capable* than the native one.
 
-#### Performance mobile
+#### Mobile performance
 
-Je n'ai **pas** pu mesurer le débit de décodage sur téléphone réel **[NV]** — cela demande un appareil et un protocole de test. Ce qu'on peut affirmer :
+I was **not** able to measure decoding throughput on a real phone **[NV]** — that requires a device and a test protocol. What can be asserted:
 
-- ZXing-C++ compilé en WASM est structurellement plus rapide que le port JS `@zxing/library`, qui réimplémente le même algorithme dans un langage plus lent et sans SIMD.
-- L'API native déléguant au décodeur de l'OS (voire au silicium du module caméra selon la doc Chrome **[V]**), elle reste la plus rapide là où elle existe.
-- Le vrai levier de perf en pratique n'est pas le décodeur mais **la boucle d'acquisition** : décoder à ~10 fps sur une région d'intérêt réduite plutôt qu'à 60 fps sur l'image pleine, et faire tourner le décodage dans un **Web Worker** pour ne pas bloquer le thread principal (`zxing-wasm` fonctionne en worker, l'API `BarcodeDetector` est également exposée aux Web Workers selon MDN **[V]**).
+- ZXing-C++ compiled to WASM is structurally faster than the JS port `@zxing/library`, which reimplements the same algorithm in a slower language and without SIMD.
+- Since the native API delegates to the OS decoder (or even to the camera module's silicon according to the Chrome documentation **[V]**), it remains the fastest where it exists.
+- The real performance lever in practice is not the decoder but **the acquisition loop**: decoding at ~10 fps on a reduced region of interest rather than at 60 fps on the full image, and running the decoding in a **Web Worker** so as not to block the main thread (`zxing-wasm` works in a worker, and the `BarcodeDetector` API is likewise exposed to Web Workers according to MDN **[V]**).
 
-#### Alternatives commerciales
+#### Commercial alternatives
 
-STRICH, Scandit, Scanbot, Dynamsoft proposent des SDK web propriétaires réputés plus robustes sur codes abîmés et éclairage difficile. **Je n'ai pas vérifié leurs tarifs** **[NV]**. À garder en plan B *uniquement* si les tests terrain montrent un taux d'échec de lecture rédhibitoire — pour un projet domestique, le coût de licence est vraisemblablement disqualifiant.
+STRICH, Scandit, Scanbot and Dynamsoft offer proprietary web SDKs reputed to be more robust on damaged codes and difficult lighting. **I have not checked their pricing** **[NV]**. To be kept as a plan B *only* if field tests show a prohibitive read failure rate — for a household project, the licence cost is in all likelihood disqualifying.
 
-### 1.3 Recommandation
+### 1.3 Recommendation
 
-> **Utiliser `barcode-detector` (le ponyfill de Sec-ant), pas `zxing-wasm` directement, et pas de branche « natif si disponible ».**
+> **Use `barcode-detector` (Sec-ant's ponyfill), not `zxing-wasm` directly, and no "native if available" branch.**
 
-Justification :
+Justification:
 
-1. **Une seule API, un seul chemin de code.** Le ponyfill expose exactement l'interface standard `BarcodeDetector`. Le jour où Safari répare #281848 et où Chrome/Linux s'aligne, on passe du ponyfill au polyfill (ou on supprime l'import) sans toucher au code applicatif.
-2. **Un seul comportement à tester.** Voir le piège de la §1.1 : la branche « natif » ne serait jamais exercée en dev local. Deux chemins dont un jamais testé, c'est un chemin cassé qui s'ignore. Le gain de perf du natif ne justifie pas ce risque sur une app d'inventaire domestique où l'on scanne quelques dizaines d'articles par semaine.
-3. **Meilleure couverture de formats** que le natif (DataBar).
-4. **Licence MIT**, compatible avec tout ; maintenance active et fréquente.
-5. **Fonctionne hors ligne** une fois le WASM précaché — contrairement à toute solution serveur.
+1. **One API, one code path.** The ponyfill exposes exactly the standard `BarcodeDetector` interface. The day Safari fixes #281848 and Chrome/Linux falls into line, we move from the ponyfill to the polyfill (or remove the import) without touching application code.
+2. **One behaviour to test.** See the trap in §1.1: the "native" branch would never be exercised in local dev. Two paths, one of them never tested, is a broken path that does not know it. The native performance gain does not justify that risk on a household inventory app where a few dozen items are scanned per week.
+3. **Better format coverage** than the native one (DataBar).
+4. **MIT licence**, compatible with everything; active and frequent maintenance.
+5. **Works offline** once the WASM is precached — unlike any server-side solution.
 
-Import : `import { BarcodeDetector } from "barcode-detector/ponyfill"`, restreint aux formats utiles :
+Import: `import { BarcodeDetector } from "barcode-detector/ponyfill"`, restricted to the useful formats:
 
 ```ts
 const detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "databar", "databar_expanded"] });
 ```
 
-Restreindre les formats n'est pas cosmétique : ça réduit le travail par image et surtout **le taux de faux positifs**.
+Restricting the formats is not cosmetic: it reduces the work per image and above all **the false positive rate**.
 
 ---
 
-## 2. Accès caméra en PWA
+## 2. Camera access in a PWA
 
-### 2.1 `getUserMedia` — contraintes
+### 2.1 `getUserMedia` — constraints
 
-- **HTTPS obligatoire.** `navigator.mediaDevices` n'est exposé qu'en contexte sécurisé ; `http://localhost` est traité comme sécurisé pour le dev **[V]** (<https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia>). En pratique : le dev sur un téléphone via l'IP du LAN (`http://192.168.x.x:5173`) **ne marchera pas**. Il faut soit un tunnel HTTPS, soit un certificat local, soit tester via déploiement. À prévoir dans la boucle de dev dès le départ, ça bloque tôt.
-- **Caméra arrière** : `video: { facingMode: { ideal: "environment" } }`. Utiliser `ideal` et non `exact` — avec `exact`, l'appel échoue purement et simplement sur les appareils sans caméra arrière (webcams de bureau), ce qui casse le dev desktop.
-- **Piège Android multi-caméras** : `facingMode: "environment"` ne garantit pas de tomber sur le *bon* capteur arrière. Sur les téléphones à trois objectifs, le navigateur peut sélectionner l'ultra-grand-angle, qui n'a souvent pas de mise au point rapprochée — résultat : un code-barres à 10 cm reste flou et ne décode jamais. Repli : `enumerateDevices()` après autorisation, puis laisser l'utilisateur choisir la caméra, avec mémorisation du choix. **[NV]** sur la fréquence réelle du problème, mais le mécanisme est certain.
-- **Résolution** : demander `width: { ideal: 1280 }` au minimum. Un EAN-13 comporte des barres de 1 à 4 modules ; pour un décodage fiable il faut au moins 2 px par module, ce qui implique un code occupant environ 190 px de large dans l'image **[S]** (<https://www.scandit.com/blog/make-barcode-scanner-app-performant/>). Sur un flux 640×480 avec un code occupant un tiers de la largeur, on est en dessous. 1280×720 est un bon compromis charge CPU / lisibilité.
-- **Mise au point, torche, zoom** : Chrome Android expose `focusMode`, `focusDistance`, `torch` et `zoom` via `track.getCapabilities()` puis `applyConstraints()`. **Safari iOS n'expose pas ces contraintes** **[S]** (<https://www.dynamsoft.com/codepool/camera-focus-control-on-web.html>). Non vérifié sur appareil **[NV]**. Conséquence concrète : **pas de bouton torche sur iPhone**, alors que c'est le remède numéro un aux échecs de lecture en lumière basse. À intégrer dans l'UX : le bouton torche doit être conditionné à `"torch" in track.getCapabilities()` et simplement absent sinon, pas grisé.
-- Toujours `track.stop()` sur toutes les pistes en quittant l'écran de scan. Un flux laissé ouvert garde la LED allumée, vide la batterie, et sur iOS contribue aux blocages décrits ci-dessous.
+- **HTTPS mandatory.** `navigator.mediaDevices` is only exposed in a secure context; `http://localhost` is treated as secure for development **[V]** (<https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia>). In practice: developing on a phone via the LAN IP (`http://192.168.x.x:5173`) **will not work**. It takes either an HTTPS tunnel, a local certificate, or testing via a deployment. To be planned into the dev loop from the start; it blocks early.
+- **Rear camera**: `video: { facingMode: { ideal: "environment" } }`. Use `ideal` and not `exact` — with `exact`, the call fails outright on devices with no rear camera (desktop webcams), which breaks desktop development.
+- **Android multi-camera trap**: `facingMode: "environment"` does not guarantee landing on the *right* rear sensor. On three-lens phones, the browser may select the ultra-wide, which often has no close focus — the result: a barcode at 10 cm stays blurred and never decodes. Fallback: `enumerateDevices()` after authorisation, then let the user pick the camera, remembering the choice. **[NV]** on the real frequency of the problem, but the mechanism is certain.
+- **Resolution**: request `width: { ideal: 1280 }` at minimum. An EAN-13 has bars of 1 to 4 modules; for reliable decoding at least 2 px per module are needed, which implies a code occupying roughly 190 px of width in the image **[S]** (<https://www.scandit.com/blog/make-barcode-scanner-app-performant/>). On a 640×480 stream with a code occupying a third of the width, we are below that. 1280×720 is a good CPU-load / legibility compromise.
+- **Focus, torch, zoom**: Chrome Android exposes `focusMode`, `focusDistance`, `torch` and `zoom` via `track.getCapabilities()` then `applyConstraints()`. **Safari iOS does not expose these constraints** **[S]** (<https://www.dynamsoft.com/codepool/camera-focus-control-on-web.html>). Not verified on a device **[NV]**. Concrete consequence: **no torch button on iPhone**, even though it is the number one remedy for read failures in low light. To be built into the UX: the torch button must be conditioned on `"torch" in track.getCapabilities()` and simply absent otherwise, not greyed out.
+- Always `track.stop()` on every track when leaving the scan screen. A stream left open keeps the LED on, drains the battery, and on iOS contributes to the freezes described below.
 
-### 2.2 Le cas iOS/Safari — le point qui décide
+### 2.2 The iOS/Safari case — the deciding point
 
-**Réponse courte : oui, la caméra fonctionne dans une PWA installée sur l'écran d'accueil, depuis iOS 13.4 (mars 2020). Mais la fiabilité reste discutable en 2026, et c'est le principal risque du projet.**
+**Short answer: yes, the camera works in a PWA installed on the home screen, since iOS 13.4 (March 2020). But reliability remains questionable in 2026, and this is the main risk of the project.**
 
-Le détail, sourcé sur le bug tracker WebKit :
+The detail, sourced from the WebKit bug tracker:
 
-**a) Le support de base existe.** Le bug **#185448** (« getUserMedia not working in apps added to home screen that run in standalone mode ») est **RESOLVED FIXED**. La correction est confirmée dans iOS 13.4 bêta 1 (février 2020), livrée publiquement en mars 2020 **[V]** (<https://bugs.webkit.org/show_bug.cgi?id=185448>). Le plancher de version est donc iOS 13.4 — non contraignant en 2026.
+**a) Basic support exists.** Bug **#185448** ("getUserMedia not working in apps added to home screen that run in standalone mode") is **RESOLVED FIXED**. The fix is confirmed in iOS 13.4 beta 1 (February 2020), shipped publicly in March 2020 **[V]** (<https://bugs.webkit.org/show_bug.cgi?id=185448>). The version floor is therefore iOS 13.4 — not constraining in 2026.
 
-**b) Mais les permissions ne persistent pas.** Le bug **#215884** porte sur les redemandes d'autorisation caméra en mode standalone. Il est marqué RESOLVED/CONFIGURATION CHANGED, **mais le fil continue de recevoir des rapports** : amélioration partielle en iOS 14.5 bêta (l'autorisation ne se réinitialise plus à chaque page, mais ne survit pas à la fermeture de l'app), et des commentaires jusqu'en **janvier 2026** signalant que le problème persiste sur iOS 18.5+ **[V]** (<https://bugs.webkit.org/show_bug.cgi?id=215884>). Deux symptômes distincts et tous deux gênants :
-   - l'autorisation accordée **dans Safari** ne se transmet **pas** à la PWA installée ;
-   - l'autorisation est **redemandée après chaque redémarrage** de la PWA.
+**b) But the permissions do not persist.** Bug **#215884** concerns repeated camera authorisation prompts in standalone mode. It is marked RESOLVED/CONFIGURATION CHANGED, **but the thread keeps receiving reports**: partial improvement in the iOS 14.5 beta (authorisation no longer resets on every page, but does not survive closing the app), and comments up to **January 2026** reporting that the problem persists on iOS 18.5+ **[V]** (<https://bugs.webkit.org/show_bug.cgi?id=215884>). Two distinct symptoms, both of them annoying:
+   - authorisation granted **in Safari** is **not** carried over to the installed PWA;
+   - authorisation is **requested again after every restart** of the PWA.
 
-**c) Et le flux vidéo peut être noir.** Le bug **#252465** décrit un `getUserMedia()` qui rend un `<video>` noir ou vide en mode PWA, alors que le même code fonctionne dans Safari. Marqué RESOLVED FIXED, mais avec des régressions signalées de façon récurrente sur iOS 18.0.1, 18.1, 18.4.1 et 18.5 jusqu'en juin 2025 **[V]** (<https://bugs.webkit.org/show_bug.cgi?id=252465>).
+**c) And the video stream can be black.** Bug **#252465** describes a `getUserMedia()` that renders a `<video>` black or empty in PWA mode, while the same code works in Safari. Marked RESOLVED FIXED, but with regressions reported recurrently on iOS 18.0.1, 18.1, 18.4.1 and 18.5 up to June 2025 **[V]** (<https://bugs.webkit.org/show_bug.cgi?id=252465>).
 
-**d) Ce que recommande l'écosystème.** La base de connaissances de STRICH (éditeur d'un SDK de scan web, donc bien placé) recommande : vérifier qu'on est sur la dernière version d'iOS et redémarrer le téléphone ; utiliser l'app dans Safari plutôt qu'installée ; ou **retirer la balise `apple-mobile-web-app-capable`** pour forcer l'exécution dans Safari tout en gardant l'icône sur l'écran d'accueil **[V]** (<https://kb.strich.io/article/29-camera-access-issues-in-ios-pwa>).
+**d) What the ecosystem recommends.** The STRICH knowledge base (publisher of a web scanning SDK, hence well placed) recommends: check you are on the latest iOS version and restart the phone; use the app in Safari rather than installed; or **remove the `apple-mobile-web-app-capable` tag** to force execution in Safari while keeping the icon on the home screen **[V]** (<https://kb.strich.io/article/29-camera-access-issues-in-ios-pwa>).
 
-Ce dernier conseil est un arbitrage à faire consciemment : retirer `apple-mobile-web-app-capable`, c'est **renoncer au mode standalone** (barre Safari visible, pas de plein écran) en échange d'un accès caméra fiable. Pour une app d'inventaire domestique, l'esthétique plein écran vaut probablement moins que « le scan marche ». À garder comme **interrupteur de secours**, pas comme choix par défaut.
+That last piece of advice is a trade-off to be made consciously: removing `apple-mobile-web-app-capable` means **giving up standalone mode** (Safari bar visible, no full screen) in exchange for reliable camera access. For a household inventory app, full-screen aesthetics are probably worth less than "scanning works". To be kept as an **emergency switch**, not as the default choice.
 
-**e) Ce que je n'ai pas pu vérifier.** **[NV]** Le comportement réel sur **iOS 26 avec un iPhone physique** en août 2026. Les bugs ci-dessus ont des historiques d'aller-retour ; il est possible que la situation se soit améliorée depuis les derniers commentaires publics. Il est également possible qu'elle ait régressé.
+**e) What I was unable to verify.** **[NV]** The real behaviour on **iOS 26 with a physical iPhone** in August 2026. The bugs above have histories of going back and forth; it is possible that the situation has improved since the last public comments. It is equally possible that it has regressed.
 
-> **Action bloquante recommandée :** avant d'investir dans le module de scan, faire un **prototype jetable** — une page HTML servie en HTTPS, `getUserMedia` + `barcode-detector`, installée en PWA sur un iPhone réel à jour. Vérifier : (1) le flux vidéo s'affiche, (2) un EAN-13 se décode, (3) l'autorisation survit à un kill + relance de l'app. Une demi-journée. Si (3) échoue, ce n'est pas rédhibitoire, mais l'UX doit être conçue autour de cette contrainte dès le départ plutôt qu'après coup.
+> **Recommended blocking action:** before investing in the scan module, build a **throwaway prototype** — an HTML page served over HTTPS, `getUserMedia` + `barcode-detector`, installed as a PWA on a real, up-to-date iPhone. Check: (1) the video stream displays, (2) an EAN-13 decodes, (3) the authorisation survives killing and relaunching the app. Half a day. If (3) fails, that is not disqualifying, but the UX must be designed around the constraint from the outset rather than after the fact.
 
-### 2.3 Comportement hors ligne
+### 2.3 Offline behaviour
 
-**Oui, on peut scanner sans réseau — sous conditions.**
+**Yes, scanning without a network is possible — under conditions.**
 
-| Étape | Hors ligne ? |
+| Step | Offline? |
 |---|---|
-| Ouvrir la caméra (`getUserMedia`) | ✅ purement local |
-| Décoder l'EAN (WASM) | ✅ si le `.wasm` est précaché par le service worker |
-| Résoudre l'EAN → fiche produit | ❌ sauf si en cache local |
-| Enregistrer l'ajout au stock | ✅ si écrit en IndexedDB puis synchronisé |
+| Open the camera (`getUserMedia`) | ✅ purely local |
+| Decode the EAN (WASM) | ✅ if the `.wasm` is precached by the service worker |
+| Resolve EAN → product record | ❌ unless in the local cache |
+| Record the addition to stock | ✅ if written to IndexedDB then synchronised |
 
-Points d'attention :
+Points to watch:
 
-- **Précacher explicitement le `.wasm`.** Il est chargé dynamiquement par la colle JS, pas via un `import` statique : un service worker généré automatiquement (`vite-plugin-pwa` / Workbox) risque de **ne pas le voir**. Il faut l'ajouter à la liste de précache à la main et vérifier le manifeste généré. Erreur classique, et elle ne se manifeste qu'en avion.
-- **Pas de Background Sync sur iOS.** L'API Background Synchronization n'est pas supportée par Safari et il n'y a pas d'indication qu'elle le soit prochainement **[S]** (<https://caniuse.com/background-sync>). Il ne faut donc **pas** bâtir la synchronisation dessus. Le modèle qui marche partout : file d'attente d'opérations en IndexedDB, vidée sur l'événement `online`, au retour au premier plan (`visibilitychange`), et au démarrage de l'app.
-- **Conception offline-first assumée.** Le scan produit un EAN. Le stock est modifié **immédiatement en local** avec la fiche produit en attente ; la résolution OFF est une opération asynchrone qui enrichit l'entrée plus tard. Ce n'est pas une dégradation gracieuse, c'est le mode nominal — cela rend l'app agréable même avec du réseau, puisque le fond de placard capte rarement bien.
-- **[NV]** Le quota de stockage et la politique d'éviction pour une PWA installée sur iOS en 2026. Prudence : ne pas considérer IndexedDB comme un stockage durable, prévoir une synchronisation serveur rapide et un export.
+- **Precache the `.wasm` explicitly.** It is loaded dynamically by the JS glue, not via a static `import`: an automatically generated service worker (`vite-plugin-pwa` / Workbox) risks **not seeing it**. It must be added to the precache list by hand and the generated manifest checked. A classic mistake, and one that only shows up on a plane.
+- **No Background Sync on iOS.** The Background Synchronization API is not supported by Safari and there is no indication that it will be soon **[S]** (<https://caniuse.com/background-sync>). Synchronisation must therefore **not** be built on it. The model that works everywhere: a queue of operations in IndexedDB, drained on the `online` event, on returning to the foreground (`visibilitychange`), and at app start-up.
+- **Offline-first by design, deliberately.** The scan produces an EAN. Stock is modified **immediately, locally**, with the product record pending; OFF resolution is an asynchronous operation that enriches the entry later. This is not graceful degradation, it is the nominal mode — and it makes the app pleasant even with a network, since the back of a cupboard rarely has good reception.
+- **[NV]** The storage quota and eviction policy for a PWA installed on iOS in 2026. Caution: do not treat IndexedDB as durable storage; plan for prompt server synchronisation and an export.
 
 ---
 
-## 3. Base de données produits — Open Food Facts
+## 3. Product database — Open Food Facts
 
-### 3.1 L'API
+### 3.1 The API
 
-Vérifié par requêtes directes le 3 août 2026 **[V]**.
+Verified by direct requests on 3 August 2026 **[V]**.
 
-**Versions.** v3 (dernière sous-version **v3.6**) est la version courante recommandée. **v2 est explicitement marquée dépréciée** dans la doc officielle, encore supportée pour compatibilité **[V]** (<https://github.com/openfoodfacts/openfoodfacts-server/blob/main/docs/api/index.md>). → **Développer en v3 dès le départ.**
+**Versions.** v3 (latest sub-version **v3.6**) is the current recommended version. **v2 is explicitly marked deprecated** in the official documentation, still supported for compatibility **[V]** (<https://github.com/openfoodfacts/openfoodfacts-server/blob/main/docs/api/index.md>). → **Develop against v3 from the start.**
 
-**Endpoint de lookup :**
+**Lookup endpoint:**
 
 ```
 GET https://world.openfoodfacts.org/api/v3/product/{barcode}.json?fields=…
 ```
 
-Réponse pour un produit existant (Nutella, `3017624010701`) :
+Response for an existing product (Nutella, `3017624010701`):
 
 ```json
 {"code":"3017624010701","errors":[],
@@ -212,7 +214,7 @@ Réponse pour un produit existant (Nutella, `3017624010701`) :
  "status":"success","warnings":[]}
 ```
 
-Réponse pour un code absent (`3760091721234`) — **HTTP 404** :
+Response for a missing code (`3760091721234`) — **HTTP 404**:
 
 ```json
 {"code":"3760091721234",
@@ -223,237 +225,239 @@ Réponse pour un code absent (`3760091721234`) — **HTTP 404** :
  "status":"failure","warnings":[]}
 ```
 
-> Le contrat d'erreur v3 est **structuré** (`result.id`, `errors[]`) et diffère de v2 (`status: 0` / `status_verbose`). Se brancher sur `result.id === "product_not_found"` et sur le code HTTP, jamais sur une chaîne libre.
+> The v3 error contract is **structured** (`result.id`, `errors[]`) and differs from v2 (`status: 0` / `status_verbose`). Branch on `result.id === "product_not_found"` and on the HTTP code, never on a free-form string.
 
-**Champs utiles** (testés, non vides sur un produit réel) :
+**Useful fields** (tested, non-empty on a real product):
 
-| Champ | Contenu |
+| Field | Content |
 |---|---|
-| `product_name`, `product_name_fr` | nom ; toujours demander la variante `_fr` |
-| `brands` | marque, chaîne libre séparée par des virgules |
-| `quantity` | contenance, **texte libre** (`"400.0 g"`) — à parser, jamais un nombre |
-| `categories_tags` | taxonomie, préfixée par langue : `["en:spreads","fr:pates-a-tartiner","de:Other"]` — le mélange de langues est normal |
+| `product_name`, `product_name_fr` | name; always request the `_fr` variant |
+| `brands` | brand, a free-form comma-separated string |
+| `quantity` | contents, **free text** (`"400.0 g"`) — to be parsed, never a number |
+| `categories_tags` | taxonomy, prefixed by language: `["en:spreads","fr:pates-a-tartiner","de:Other"]` — the mixture of languages is normal |
 | `nutriscore_grade` | `a`…`e` |
-| `nova_group` | 1–4 (degré d'ultra-transformation) |
+| `nova_group` | 1–4 (degree of ultra-processing) |
 | `allergens_tags` | `["en:nuts"]` |
-| `image_front_small_url` | vignette (voir §3.2 pour la licence) |
-| `ecoscore_grade` | encore servi, mais la doc parle désormais de **Green-Score** — renommage en cours, à ne pas traiter comme stable |
-| `serving_size` | portion |
+| `image_front_small_url` | thumbnail (see §3.2 for the licence) |
+| `ecoscore_grade` | still served, but the documentation now speaks of **Green-Score** — a rename in progress, not to be treated as stable |
+| `serving_size` | serving |
 
-**Le paramètre `fields=` est indispensable** : une fiche complète pèse plusieurs centaines de kilo-octets. Demander 10 champs ramène quelques centaines d'octets. Réduit la bande passante, le temps de réponse, et la charge sur l'infrastructure OFF.
+**The `fields=` parameter is indispensable**: a complete record weighs several hundred kilobytes. Requesting 10 fields brings back a few hundred bytes. It reduces bandwidth, response time, and load on the OFF infrastructure.
 
-**CORS :** l'API renvoie `access-control-allow-origin: *` **[V]** (relevé dans les en-têtes). Le frontend *pourrait* donc appeler OFF directement. **Ne pas le faire** — voir §3.5, la raison est architecturale et non technique.
+**CORS:** the API returns `access-control-allow-origin: *` **[V]** (observed in the headers). The frontend *could* therefore call OFF directly. **Do not do it** — see §3.5; the reason is architectural, not technical.
 
-**Environnement de staging :** `https://world.openfoodfacts.net`, protégé par Basic Auth `off` / `off`. La doc demande explicitement que **tous les appels de développement passent par le staging** **[V]**.
+**Staging environment:** `https://world.openfoodfacts.net`, protected by Basic Auth `off` / `off`. The documentation explicitly asks that **all development calls go through staging** **[V]**.
 
-### 3.2 Conditions d'usage — licences, attribution, rate limits
+### 3.2 Terms of use — licences, attribution, rate limits
 
-Toutes ces obligations sont dans la doc officielle **[V]** (<https://github.com/openfoodfacts/openfoodfacts-server/blob/main/docs/api/index.md>) et sur <https://world.openfoodfacts.org/data>.
+All these obligations are in the official documentation **[V]** (<https://github.com/openfoodfacts/openfoodfacts-server/blob/main/docs/api/index.md>) and on <https://world.openfoodfacts.org/data>.
 
-**Licences — et elles diffèrent, c'est le piège :**
+**Licences — and they differ, that is the trap:**
 
-| Élément | Licence |
+| Element | Licence |
 |---|---|
-| La base (structure) | **ODbL 1.0** — <https://opendatacommons.org/licenses/odbl/1.0/> |
-| Les contenus individuels | **DbCL 1.0** — <https://opendatacommons.org/licenses/dbcl/1.0/> |
-| **Les images produits** | **CC BY-SA 3.0** — <https://creativecommons.org/licenses/by-sa/3.0/> |
+| The database (structure) | **ODbL 1.0** — <https://opendatacommons.org/licenses/odbl/1.0/> |
+| The individual contents | **DbCL 1.0** — <https://opendatacommons.org/licenses/dbcl/1.0/> |
+| **The product images** | **CC BY-SA 3.0** — <https://creativecommons.org/licenses/by-sa/3.0/> |
 
-La doc ajoute un avertissement à propos des images : *« They may contain graphical elements subject to copyright or other rights »* — les emballages photographiés contiennent des logos et visuels de marque qui restent la propriété de leurs titulaires. Afficher une vignette dans une app privée d'inventaire domestique est sans enjeu ; republier ces images le serait davantage.
+The documentation adds a warning about the images: *"They may contain graphical elements subject to copyright or other rights"* — the photographed packaging contains logos and brand imagery that remain the property of their holders. Displaying a thumbnail in a private household inventory app is inconsequential; republishing those images would be less so.
 
-**ODbL = attribution + share-alike.** Concrètement pour Chaudron :
-- afficher une attribution « Données produits : Open Food Facts — ODbL » quelque part dans l'UI ;
-- le share-alike mord **si l'on combine la base OFF avec une autre base** : la base dérivée devrait alors être publiée en open data. Un cache de fiches produits juxtaposé à un stock personnel est un cas limite ; pour un usage privé non redistribué, la question ne se pose pas en pratique. **Elle se poserait si Chaudron devenait un service multi-utilisateurs public.** À trancher avant, pas après.
+**ODbL = attribution + share-alike.** Concretely for Chaudron:
+- display an attribution "Product data: Open Food Facts — ODbL" somewhere in the UI;
+- share-alike bites **if the OFF database is combined with another database**: the derived database would then have to be published as open data. A cache of product records sitting alongside a personal stock is a borderline case; for private, non-redistributed use, the question does not arise in practice. **It would arise if Chaudron became a public multi-user service.** To be settled before, not after.
 
-**User-Agent obligatoire.** *« We ask you to always use a custom User-Agent to identify your app »*, au format `AppName/Version (ContactEmail)` **[V]**. Les lectures ne demandent **aucune autre authentification** ; les écritures (édition de fiche, upload de photo) exigent un compte.
+**A User-Agent is mandatory.** *"We ask you to always use a custom User-Agent to identify your app"*, in the format `AppName/Version (ContactEmail)` **[V]**. Reads require **no other authentication**; writes (editing a record, uploading a photo) require an account.
 
-**Rate limits — citation exacte [V] :**
+**Rate limits — exact quotation [V]:**
 
-- **15 req/min/IP** pour toutes les lectures produit (`GET /api/v*/product` ou page produit) ;
-- **10 req/min/IP** pour les recherches (`GET /api/v*/search`) — *« don't use it for a search-as-you-type feature, you would be blocked very quickly »* ;
-- **aucune limite** sur les écritures ;
-- limites globales additionnelles indépendantes de l'IP → **HTTP 503** ;
-- dépassement = **bannissement d'IP possible** (réversible par mail à `reuse@openfoodfacts.org`).
+- **15 req/min/IP** for all product reads (`GET /api/v*/product` or the product page);
+- **10 req/min/IP** for searches (`GET /api/v*/search`) — *"don't use it for a search-as-you-type feature, you would be blocked very quickly"*;
+- **no limit** on writes;
+- additional global limits independent of the IP → **HTTP 503**;
+- exceeding them = **possible IP ban** (reversible by mailing `reuse@openfoodfacts.org`).
 
-J'ai touché ce mur pendant la rédaction de cette note : après quelques requêtes de recherche, l'API a renvoyé une page HTML « Page temporarily unavailable ». **La limite n'est pas théorique, et elle ne renvoie pas toujours du JSON** — le client HTTP doit gérer une réponse HTML inattendue sans planter.
+I hit this wall while writing this note: after a few search requests, the API returned an HTML page saying "Page temporarily unavailable". **The limit is not theoretical, and it does not always return JSON** — the HTTP client must handle an unexpected HTML response without crashing.
 
-**Formulaire de déclaration.** La doc demande de remplir un formulaire d'usage de l'API pour que l'équipe identifie les réutilisations et évite les bannissements accidentels **[V]**. Cinq minutes, à faire.
+**Declaration form.** The documentation asks that an API usage form be filled in so the team can identify reuses and avoid accidental bans **[V]**. Five minutes, to be done.
 
-**Avertissement sur la qualité.** *« Data […] is provided voluntarily by users […] there are no assurances that the data is accurate, complete, or reliable. The user assumes the entire risk of using the data. »* **[V]** Voir §4.
+**Warning about quality.** *"Data […] is provided voluntarily by users […] there are no assurances that the data is accurate, complete, or reliable. The user assumes the entire risk of using the data."* **[V]** See §4.
 
-### 3.3 Couverture réelle sur les produits français
+### 3.3 Actual coverage of French products
 
-Mesuré en direct le 3 août 2026 via `GET /api/v2/search` **[V]** :
+Measured live on 3 August 2026 via `GET /api/v2/search` **[V]**:
 
-| Indicateur | Valeur |
+| Indicator | Value |
 |---|---|
-| Produits en base, tous pays | **4 663 574** |
-| Produits déclarés vendus en France (`countries_tags_en=france`) | **1 255 052** |
+| Products in the database, all countries | **4,663,574** |
+| Products declared as sold in France (`countries_tags_en=france`) | **1,255,052** |
 
-**Verdict : exploitable, et largement.** 1,26 million de références pour la France, sur un pays qui compte quelques dizaines de milliers de références en circulation courante dans la grande distribution : la couverture des produits emballés de marque nationale sera très bonne. OFF est un projet d'origine française, la France est son marché historique et le mieux documenté.
+**Verdict: usable, and amply so.** 1.26 million references for France, in a country that has a few tens of thousands of references in common circulation in mass retail: coverage of packaged national-brand products will be very good. OFF is a project of French origin, France is its historical and best-documented market.
 
-**Nuance importante — présence ≠ complétude.** Une fiche peut exister avec un simple nom et aucune donnée nutritionnelle, aucune catégorie, aucune photo. **Je n'ai pas pu mesurer les taux de complétude** (Nutri-Score renseigné, photo de face sélectionnée) : les requêtes ont été bloquées par le rate limit de recherche **[NV]**. À mesurer proprement sur un dump JSONL local plutôt qu'en tapant l'API.
+> **Two counts of the same thing, and both are real.** [`technical-notes-ingestion.md`](technical-notes-ingestion.md) §3.6 gives **4.72 M** and **1,255,083** for the same day. That is not a contradiction between the two notes: the figures above were measured through `GET /api/v2/search`, the other pair was read off the `fr.openfoodfacts.org` landing page, and the two endpoints do not return the same number. *Which* population each one counts was never established, so neither figure supersedes the other. The France counts differ by 31 products, which is noise; the world counts differ by about 1.2%, which is not. The derived row counts inherit the split and round in opposite directions: **~1.26 M** in this document, **~1.25 M** in the other, off the same ~1.255 M measurement. Re-measure before sizing anything on either.
 
-**Angles morts attendus [NV, non quantifiés] :** marques de distributeur régionales, produits de petits producteurs, produits en circuit court, épicerie fine, produits importés de niche.
+**An important nuance — presence ≠ completeness.** A record may exist with just a name and no nutritional data, no category, no photo. **I was unable to measure the completeness rates** (Nutri-Score filled in, front photo selected): the requests were blocked by the search rate limit **[NV]**. To be measured properly on a local JSONL dump rather than by hammering the API.
 
-### 3.4 Alternatives et compléments
+**Expected blind spots [NV, not quantified]:** regional private labels, small producers' products, short-supply-chain products, fine groceries, niche imported products.
 
-| Source | Modèle | Verdict pour Chaudron |
+### 3.4 Alternatives and complements
+
+| Source | Model | Verdict for Chaudron |
 |---|---|---|
-| **CodeOnline Food (GS1 France)** | Base alimentée **par les marques elles-mêmes**, donc données fiables et à jour, spécifiquement France. API « CodeOnline Search ». **Accès réservé aux adhérents GS1 France** ; la grille tarifaire cite un forfait PREMIUM à **20 000 € HT/an** **[S]** (<https://developers.gs1.fr/tarifs>) | **Hors de portée.** C'est pourtant *le* plan B qualitativement supérieur si le projet devenait commercial. |
-| **Edamam Food Database** | Freemium, jusqu'à ~999 $/mois ; ~700 000 codes UPC/EAN **[S, non vérifié à la source]** | Base à dominante américaine, couverture FR douteuse. |
-| **Nutritionix** | Entreprise, à partir de ~1 850 $/mois **[S, NV]** | Même remarque, et disqualifié par le prix. |
-| **Barcode Lookup / Go-UPC / EAN-DB** | Lookup générique (pas nutritionnel). Barcode Lookup à partir de ~9 $/mois, 1 000 lookups/jour ; EAN-DB à ~0,005 €/code **[S, NV]** | Utile seulement comme **filet pour le nom du produit** quand OFF renvoie 404. Coût marginal réel pour un usage domestique. À garder en réserve, pas en v1. |
-| **Open Prices** (projet OFF) | Open data, prix relevés par la communauté | Hors périmètre v1, mais intéressant plus tard pour un budget courses. |
-| **L'utilisateur lui-même** | Gratuit | **C'est le vrai plan B.** Voir §4.1. |
+| **CodeOnline Food (GS1 France)** | A database fed **by the brands themselves**, hence reliable and up-to-date data, specifically for France. "CodeOnline Search" API. **Access reserved to GS1 France members**; the price grid quotes a PREMIUM package at **€20,000 excl. VAT/year** **[S]** (<https://developers.gs1.fr/tarifs>) | **Out of reach.** It is nonetheless *the* qualitatively superior plan B if the project were to become commercial. |
+| **Edamam Food Database** | Freemium, up to ~$999/month; ~700,000 UPC/EAN codes **[S, not verified at source]** | A predominantly American database, doubtful FR coverage. |
+| **Nutritionix** | Enterprise, from ~$1,850/month **[S, NV]** | Same remark, and disqualified by price. |
+| **Barcode Lookup / Go-UPC / EAN-DB** | Generic lookup (not nutritional). Barcode Lookup from ~$9/month, 1,000 lookups/day; EAN-DB at ~€0.005/code **[S, NV]** | Useful only as a **safety net for the product name** when OFF returns 404. Real marginal cost for household use. To be kept in reserve, not in v1. |
+| **Open Prices** (an OFF project) | Open data, prices collected by the community | Out of scope for v1, but interesting later for a grocery budget. |
+| **The user themselves** | Free | **This is the real plan B.** See §4.1. |
 
-**Recommandation :** OFF seul en v1, avec saisie manuelle en repli. Aucune API payante. Si un besoin de couverture apparaît, le mesurer d'abord (compter les 404 réels sur *son propre* placard) avant d'acheter quoi que ce soit.
+**Recommendation:** OFF alone in v1, with manual entry as the fallback. No paid API. If a coverage need appears, measure it first (count the real 404s on *your own* cupboard) before buying anything.
 
-### 3.5 Stratégie de cache côté backend
+### 3.5 Backend caching strategy
 
-**Le point d'architecture le plus important de la section.**
+**The most important architectural point of this section.**
 
-La doc OFF précise : *« If your requests come from your users directly (ex: mobile app), the rate limits apply per user »* **[V]**. Corollaire, souvent manqué : **en centralisant les appels dans le backend FastAPI, toutes les requêtes sortent d'une IP unique — la limite de 15 req/min devient un plafond global, partagé par l'ensemble des utilisateurs de Chaudron.**
+The OFF documentation states: *"If your requests come from your users directly (ex: mobile app), the rate limits apply per user"* **[V]**. The corollary, often missed: **by centralising the calls in the FastAPI backend, all requests leave from a single IP — the 15 req/min limit becomes a global ceiling, shared by all of Chaudron's users.**
 
-Ce n'est pas une raison pour appeler OFF depuis le navigateur (on perdrait le cache, la maîtrise du User-Agent et la résilience hors ligne). C'est une raison pour que **le backend ne soit presque jamais amené à appeler OFF**.
+That is not a reason to call OFF from the browser (we would lose the cache, control of the User-Agent, and offline resilience). It is a reason for **the backend almost never to have to call OFF**.
 
-La doc OFF le dit d'ailleurs elle-même : *« If you expect your app to generate a lot of API traffic, we **strongly encourage you to host a local instance** […] and use the daily exports to update your local database »* **[V]**.
+The OFF documentation says as much itself: *"If you expect your app to generate a lot of API traffic, we **strongly encourage you to host a local instance** […] and use the daily exports to update your local database"* **[V]**.
 
-**Architecture proposée :**
+**Proposed architecture:**
 
-1. **Table `product_cache` en PostgreSQL** (conforme au défaut projet), clé primaire = EAN normalisé, **globale et non scopée par foyer** (voir §3.6). Colonnes : les champs utiles dénormalisés, plus le JSON brut, plus `fetched_at`, `source` (`off` / `manual` / `import`), `off_last_modified_t`.
-2. **Cache positif quasi permanent.** Une fiche produit ne change presque jamais. TTL long (30 jours), servi en **stale-while-revalidate** : on rend immédiatement la version en cache, on rafraîchit en tâche de fond. Le scan ne doit *jamais* attendre le réseau.
-3. **Cache négatif court.** Un 404 doit être mémorisé — sinon chaque re-scan d'un produit absent retape OFF — mais avec un TTL court (24 h) car un produit peut être ajouté à OFF entre-temps, y compris par l'utilisateur lui-même.
-4. **Un seul point de sortie, avec limiteur.** Toutes les requêtes OFF passent par un client unique portant :
-   - le User-Agent conforme (`Chaudron/x.y (contact@…)`) ;
-   - un limiteur à **10 req/min** (marge sous les 15) ;
-   - un backoff exponentiel sur 429/503, et une tolérance aux réponses **HTML** (voir §3.2) ;
-   - un timeout court (2–3 s) : OFF est une infrastructure associative, pas un CDN.
-5. **Pré-remplissage par dump.** Le levier décisif. OFF publie un dump MongoDB nocturne, un export **JSONL gzip**, un **Parquet** sur Hugging Face, un CSV (~0,9 Go compressé / ~9 Go décompressé) et des **exports delta sur fenêtre glissante de 14 jours** **[V]** (<https://world.openfoodfacts.org/data>). Importer une fois le sous-ensemble « vendus en France » avec les 10 champs utiles, puis appliquer les deltas quotidiennement, ramène le taux de hit réseau proche de zéro. Volume estimé : ~1,26 M lignes × quelques centaines d'octets ≈ **quelques centaines de Mo en Postgres** — parfaitement raisonnable. Chantier de v2, pas de v1, mais **concevoir la table dès la v1 pour pouvoir être alimentée par les deux voies**.
-6. **Images.** Ne pas hotlinker `images.openfoodfacts.org` depuis le client à chaque affichage de liste : c'est de la charge gratuite sur l'infra OFF. Proxy + cache disque côté backend, ou téléchargement de la vignette à la première résolution. Conserver l'attribution CC BY-SA.
-7. **Dev sur le staging.** `world.openfoodfacts.net` (Basic Auth `off`/`off`) pour tous les tests, comme demandé.
+1. **A `product_cache` table in PostgreSQL** (in line with the project default), primary key = normalised EAN, **global and not scoped per household** (see §3.6). Columns: the useful denormalised fields, plus the raw JSON, plus `fetched_at`, `source` (`off` / `manual` / `import`), `off_last_modified_t`.
+2. **A near-permanent positive cache.** A product record almost never changes. A long TTL (30 days), served **stale-while-revalidate**: the cached version is returned immediately, and refreshed in the background. The scan must *never* wait on the network.
+3. **A short negative cache.** A 404 must be remembered — otherwise every re-scan of a missing product hits OFF again — but with a short TTL (24 h), since a product may be added to OFF in the meantime, including by the user themselves.
+4. **A single exit point, with a limiter.** All OFF requests go through a single client carrying:
+   - the compliant User-Agent (`Chaudron/x.y (contact@…)`);
+   - a limiter at **10 req/min** (headroom under the 15);
+   - exponential backoff on 429/503, and tolerance for **HTML** responses (see §3.2);
+   - a short timeout (2–3 s): OFF is a non-profit's infrastructure, not a CDN.
+5. **Pre-filling from the dump.** The decisive lever. OFF publishes a nightly MongoDB dump, a **JSONL gzip** export, a **Parquet** file on Hugging Face, a CSV (~0.9 GB compressed / ~9 GB uncompressed) and **delta exports over a rolling 14-day window** **[V]** (<https://world.openfoodfacts.org/data>). Importing the "sold in France" subset once with the 10 useful fields, then applying the deltas daily, brings the network hit rate close to zero. Estimated volume: ~1.26 M rows × a few hundred bytes ≈ **a few hundred MB in Postgres** — perfectly reasonable. A v2 job, not v1, but **design the table in v1 so it can be fed by both routes**.
+6. **Images.** Do not hotlink `images.openfoodfacts.org` from the client on every list display: that is free load on the OFF infrastructure. Proxy + disk cache on the backend side, or download the thumbnail on first resolution. Keep the CC BY-SA attribution.
+7. **Development against staging.** `world.openfoodfacts.net` (Basic Auth `off`/`off`) for all tests, as requested.
 
-### 3.6 Articulation avec le multi-tenant (ADR 0006)
+### 3.6 Articulation with multi-tenancy (ADR 0006)
 
-L'[ADR 0006](adr/0006-multi-tenant-from-day-one.md) acte un modèle multi-tenant dès la première migration, avec une phase 2 d'ouverture publique multi-utilisateurs. Deux conséquences directes sur ce module :
+[ADR 0006](adr/0006-multi-tenant-from-day-one.md) records a multi-tenant model from the first migration onwards, with a phase 2 of public multi-user opening. Two direct consequences for this module:
 
-**a) Le cache OFF n'est pas une donnée de foyer.** L'ADR impose `household_id` sur « toute table métier » et cite `UNIQUE (household_id, barcode)`. Cette contrainte est correcte pour l'**article en stock**, mais **la fiche produit issue d'OFF n'est pas une donnée de foyer** : c'est un cache de référentiel externe, identique pour tout le monde. Le cacher par foyer multiplierait les appels à OFF par le nombre de foyers — exactement ce que le plafond de 15 req/min interdit.
+**a) The OFF cache is not household data.** The ADR imposes `household_id` on "every business table" and cites `UNIQUE (household_id, barcode)`. That constraint is correct for the **stocked item**, but **the product record coming from OFF is not household data**: it is a cache of an external reference base, identical for everybody. Caching it per household would multiply the calls to OFF by the number of households — exactly what the 15 req/min ceiling forbids.
 
-Le découpage à retenir est donc en **deux tables distinctes** :
-- `product_cache` — **globale, sans `household_id`**, clé `barcode`, alimentée par OFF ou par le dump. Aucune donnée personnelle, donc aucun enjeu d'étanchéité.
-- `item` / `stock_entry` — **par foyer**, avec `household_id`, portant les surcharges locales (§4.5) et le stock.
+The split to adopt is therefore **two distinct tables**:
+- `product_cache` — **global, without `household_id`**, keyed on `barcode`, fed by OFF or by the dump. No personal data, hence no isolation stakes.
+- `item` / `stock_entry` — **per household**, with `household_id`, carrying the local overrides (§4.5) and the stock.
 
-Cette séparation n'est pas une entorse à l'ADR : elle en respecte l'esprit (toute donnée *métier* est scopée) tout en évitant de scoper un cache partagé. **À expliciter dans l'ADR ou dans le modèle de données**, sinon quelqu'un ajoutera un `household_id` à `product_cache` par application mécanique de la règle.
+This separation is not a breach of the ADR: it respects its spirit (all *business* data is scoped) while avoiding scoping a shared cache. **To be made explicit in the ADR or in the data model**, otherwise somebody will add a `household_id` to `product_cache` by mechanical application of the rule.
 
-**b) Le plafond de 15 req/min devient un mur en phase 2.** En mono-foyer, un cache correct suffit. En service public multi-utilisateurs, 15 requêtes produit par minute partagées entre *tous* les foyers, depuis l'IP unique du backend, ne tient pas — et le dépassement expose à un bannissement d'IP qui couperait le service pour tout le monde d'un coup. **L'import du dump JSONL n'est donc pas une optimisation de confort mais un prérequis de la phase 2**, à traiter comme tel dans la feuille de route.
+**b) The 15 req/min ceiling becomes a wall in phase 2.** For a single household, a decent cache is enough. In a public multi-user service, 15 product requests per minute shared between *all* households, from the backend's single IP, does not hold — and exceeding it exposes us to an IP ban that would cut the service for everyone at once. **Importing the JSONL dump is therefore not a convenience optimisation but a phase 2 prerequisite**, to be treated as such in the roadmap.
 
-**c) Le share-alike ODbL se réveille en phase 2.** Tant que Chaudron sert un foyer, la question de la redistribution est théorique. Un service public qui combine OFF avec d'autres sources de données produit entre dans le périmètre du share-alike (§3.2). À trancher **avant** l'ouverture, pas après.
-
----
-
-## 4. Ce qui va mal se passer
-
-Section volontairement pessimiste. Chaque mode d'échec est suivi de son repli UX. Ce sont ces replis qui font la différence entre une app utilisable et une démo.
-
-### 4.1 Le produit n'est pas dans Open Food Facts (HTTP 404)
-
-**Fréquence attendue :** faible sur les marques nationales, **élevée** sur les MDD régionales, les producteurs locaux, l'épicerie fine, les produits importés. **[NV]** — non quantifié.
-
-**Repli :** le 404 ne doit **jamais** être une impasse. L'écran de scan enchaîne directement sur un formulaire pré-rempli avec l'EAN, ne demandant que **trois champs** : nom, marque (facultative), quantité. Le produit entre au stock immédiatement. Optionnellement, proposer une contribution à OFF (photo de face + nom) : les écritures ne sont pas rate-limitées **[V]** et la doc OFF encourage explicitement ce flux pour les « inventory apps ». C'est un cercle vertueux : l'utilisateur enrichit la base dont il dépend.
-
-**Anti-pattern à éviter :** un message « produit inconnu » avec un bouton « OK ». C'est ce qui fait abandonner une app d'inventaire à la troisième utilisation.
-
-### 4.2 Le code-barres est illisible
-
-Emballage froissé (sachets souples, surgelés), reflet sur film plastique, code partiellement recouvert par une étiquette de prix, bouteille cylindrique de faible diamètre, lumière basse (placard, cellier), tremblement, code trop petit sur un conditionnement individuel.
-
-**Replis, dans l'ordre :**
-1. **Guider avant de corriger.** Cadre de visée à l'écran, retour haptique/sonore au décodage, message contextuel après ~3 s d'échec (« rapprochez-vous », « évitez le reflet »).
-2. **Torche** — mais bouton présent uniquement si `"torch" in track.getCapabilities()`. **Absent sur iPhone** (§2.1). C'est une asymétrie iOS/Android qu'il faut accepter.
-3. **Zoom numérique** via `applyConstraints({ zoom })` si la capacité existe — aide sur les codes petits.
-4. **Saisie manuelle des 13 chiffres**, toujours accessible d'un tap depuis l'écran de scan. Ce n'est pas un aveu d'échec, c'est le filet indispensable. **Valider la clé de contrôle EAN-13 en local** avant tout appel réseau : ça détecte immédiatement une faute de frappe et évite un 404 trompeur.
-5. **Ne pas s'acharner en boucle.** Après ~10 s sans décodage, proposer explicitement la saisie manuelle plutôt que de laisser tourner la caméra.
-
-### 4.3 Le produit n'a pas de code-barres du tout
-
-Fruits et légumes en vrac, boucherie, poissonnerie, fromage à la coupe, boulangerie, vrac sec, jardin et conserves maison.
-
-**Ce n'est pas un cas marginal.** Dans un placard et un frigo réels, cette catégorie représente une part significative du contenu. Une app de stock alimentaire qui ne sait ajouter qu'au scan est structurellement incomplète.
-
-**Replis :**
-1. **L'ajout manuel est un chemin de premier rang**, pas une option cachée. Bouton « + » toujours visible à côté du scan.
-2. **Catalogue local de produits génériques** : « pommes », « carottes », « bœuf haché », « pain ». Une trentaine d'entrées couvrent l'essentiel du frais domestique. Réutilisables, avec unité (pièce / g / kg) et durée de conservation par défaut.
-3. **Codes PLU** (Price Look-Up, standard IFPS) : les étiquettes 4–5 chiffres sur les fruits et légumes. 4 chiffres = culture conventionnelle, 5 chiffres commençant par 9 = bio **[S]** (<https://www.ifpsglobal.com/>). Reconnaissables optiquement mais **il ne s'agit pas d'un code-barres** — il faudrait de l'OCR. **À ne pas faire en v1** ; une liste de sélection est plus rapide pour l'utilisateur qu'une reconnaissance approximative.
-4. **Produits récurrents** : proposer en tête de liste ce que l'utilisateur ajoute souvent. Deux taps pour « 6 pommes ».
-
-### 4.4 Poids variables et codes internes magasin
-
-Les codes-barres à préfixe **02** et **20–29** sont des *Restricted Circulation Numbers* : GS1 les réserve à l'usage interne des distributeurs **[S]** (<https://www.gs1.org/docs/barcodes/SummaryOfGS1MOPrefixes20-29.pdf>, <https://www.gs1uk.org/knowledge-hub/barcodes/how-to-barcode-variable-measure-items>). On les trouve sur tout ce qui est pesé en magasin : barquettes de boucherie, fromage à la coupe, fruits pesés en caisse. Leur structure typique encode une référence article interne **et le prix ou le poids**, selon une convention **propre à chaque enseigne**.
-
-**Deux conséquences directes :**
-1. Ces codes **ne sont pas dans OFF et n'y seront jamais.** Les interroger, c'est garantir un 404 et consommer inutilement le quota de 15 req/min.
-2. **Le même produit a un code différent d'un ticket à l'autre** (le prix change avec le poids). Les mettre en cache produirait des milliers d'entrées inutiles.
-
-**Repli :** détecter le préfixe **côté client** (`ean.startsWith("02") || /^2[0-9]/.test(ean)`), **ne pas appeler le backend**, et basculer directement sur le formulaire manuel avec un message honnête : « code interne magasin — décrivez le produit ». Décoder le poids ou le prix embarqué est possible mais dépend de l'enseigne : **à ne pas tenter en v1**.
-
-### 4.5 La fiche OFF existe mais elle est fausse ou incomplète
-
-Données contributives : nom en majuscules, marque mal orthographiée, `quantity` en texte libre incohérent, catégories absurdes, ancienne version d'une recette, Nutri-Score obsolète. OFF le dit lui-même : *« no assurances that the data is accurate, complete, or reliable »* **[V]**.
-
-**Repli :** toute fiche importée doit être **modifiable localement**, et la modification locale doit **primer** sur un rafraîchissement OFF ultérieur (colonne `source`/`overridden_at` dans le schéma — à prévoir dès la première migration, l'ajouter après est douloureux).
-
-**Piège de parsing :** `quantity` est du texte (`"400.0 g"`, `"1L"`, `"6x125g"`, `"environ 250 g"`). Ne jamais supposer un format. Parser au mieux, conserver la chaîne d'origine, et **afficher le texte brut en cas d'échec** plutôt qu'un `null` ou un `0`.
-
-### 4.6 iOS redemande l'autorisation caméra
-
-Voir §2.2. **[V]** — bugs WebKit toujours actifs.
-
-**Repli :** ne pas déclencher `getUserMedia()` au montage de l'écran. Afficher d'abord un état explicite avec un bouton « Activer la caméra » : une demande d'autorisation déclenchée par un geste utilisateur est mieux comprise, et si elle est redemandée, elle ne ressemble pas à un bug. Gérer `NotAllowedError` avec un message qui explique *où* réautoriser (Réglages > Safari), et un bouton « Réessayer ». Et garder le retrait d'`apple-mobile-web-app-capable` comme interrupteur de secours documenté.
-
-### 4.7 Scans parasites et doublons
-
-Une caméra qui tourne décode le même code 30 fois par seconde. Et un utilisateur qui range ses courses scanne parfois deux fois le même article — sans savoir si c'est un doublon ou deux exemplaires.
-
-**Repli :** anti-rebond sur l'EAN (ignorer le même code pendant ~2 s), et une confirmation explicite qui affiche le produit reconnu avec un compteur de quantité incrémentable. Le mode « courses » (scan en rafale de 20 articles) et le mode « ajout unitaire » ont des attentes UX différentes — à distinguer.
-
-### 4.8 Décodage erroné
-
-Rare avec la validation de checksum de ZXing, mais possible sur code partiellement masqué, et plus probable si l'on active tous les formats.
-
-**Replis :** restreindre `formats` aux formats commerce de détail (§1.3) ; **valider la clé de contrôle EAN-13 côté client** avant lookup ; exiger **deux lectures identiques consécutives** avant de valider (peu coûteux, élimine l'essentiel des faux positifs).
-
-### 4.9 Open Food Facts est indisponible
-
-Infrastructure associative. Pannes, maintenances, rate limit atteint, **et réponses HTML au lieu de JSON** (constaté §3.2).
-
-**Repli :** le cache Postgres absorbe la majorité des cas. Sinon, l'ajout se fait avec l'EAN seul, en file d'attente d'enrichissement à traiter plus tard en tâche de fond. **L'indisponibilité d'OFF ne doit jamais empêcher d'ajouter un article au stock.**
+**c) ODbL share-alike wakes up in phase 2.** As long as Chaudron serves one household, the question of redistribution is theoretical. A public service that combines OFF with other product data sources falls within the scope of share-alike (§3.2). To be settled **before** opening up, not after.
 
 ---
 
-## 5. Décisions recommandées
+## 4. What is going to go wrong
 
-1. **Un seul décodeur : `barcode-detector` (ponyfill Sec-ant, MIT, v3.2.1) sur `zxing-wasm`.** Pas de branche « API native si disponible » : elle n'existe ni sur iOS, ni sur Firefox, ni sur Chrome/Linux — donc jamais testable en dev local — et le gain de perf ne justifie pas un second chemin de code. Formats restreints à `ean_13, ean_8, upc_a, upc_e, databar*`. WASM chargé en lazy à l'ouverture de l'écran de scan (~450 Ko gzip, mesuré) et **précaché explicitement** par le service worker.
+A deliberately pessimistic section. Each failure mode is followed by its UX fallback. It is those fallbacks that make the difference between a usable app and a demo.
 
-2. **Écarter `html5-qrcode`** (dernière release npm avril 2023, mode maintenance déclaré, 441 issues ouvertes, embarque une version figée de `@zxing/library`). Écarter `@zxing/library` en direct (JS pur donc plus lent, 20 mois sans release entre 2024 et 2026, 170 issues).
+### 4.1 The product is not in Open Food Facts (HTTP 404)
 
-3. **Valider la caméra iOS sur appareil réel avant tout engagement.** C'est le seul point qui peut remettre en cause la viabilité mobile. Le support existe depuis iOS 13.4 (#185448 RESOLVED FIXED), mais les bugs de non-persistance des permissions (#215884, rapports jusqu'en janvier 2026) et de flux vidéo noir en mode standalone (#252465, régressions jusqu'en juin 2025) sont documentés et actifs. **Prototype jetable, une demi-journée, avant d'écrire le module.** Garder le retrait d'`apple-mobile-web-app-capable` comme interrupteur de secours documenté.
+**Expected frequency:** low on national brands, **high** on regional private labels (MDD), local producers, fine groceries, imported products. **[NV]** — not quantified.
 
-4. **Offline-first, sans Background Sync.** Non supporté par Safari. File d'attente en IndexedDB, vidée sur `online` / `visibilitychange` / démarrage. Le scan et le décodage doivent fonctionner en avion ; seule la résolution EAN → fiche exige le réseau, et elle est asynchrone par conception.
+**Fallback:** the 404 must **never** be a dead end. The scan screen leads directly into a form pre-filled with the EAN, asking for only **three fields**: name, brand (optional), quantity. The product enters stock immediately. Optionally, offer to contribute to OFF (front photo + name): writes are not rate-limited **[V]** and the OFF documentation explicitly encourages this flow for "inventory apps". It is a virtuous circle: the user enriches the database they depend on.
 
-5. **Open Food Facts en v3 (v3.6) uniquement.** v2 est officiellement dépréciée. Toujours `fields=` pour ne demander que le nécessaire. User-Agent `Chaudron/x.y (contact@…)` obligatoire. Développement contre le staging `world.openfoodfacts.net` (Basic Auth `off`/`off`). Remplir le formulaire de déclaration d'usage de l'API.
+**Anti-pattern to avoid:** an "unknown product" message with an "OK" button. That is what makes people abandon an inventory app on the third use.
 
-6. **Le rate limit est un plafond global, pas par utilisateur.** 15 req/min pour une IP unique : en centralisant dans FastAPI, c'est la limite de **toute** l'application. Donc : cache Postgres avec TTL long en stale-while-revalidate, cache négatif court (24 h) sur les 404, un seul client sortant avec limiteur à 10 req/min et backoff, tolérance aux réponses HTML. **À terme, pré-remplir la base par le dump JSONL « France » + deltas quotidiens** — OFF le recommande explicitement. Concevoir la table dès la v1 pour accepter les deux voies d'alimentation.
+### 4.2 The barcode is unreadable
 
-7. **Le cache OFF est une table globale, sans `household_id`** — contrairement à ce que la règle de l'ADR 0006 laisserait supposer par application mécanique. Une fiche produit est un référentiel externe partagé, pas une donnée de foyer ; la scoper multiplierait les appels à OFF par le nombre de foyers. Séparer `product_cache` (globale) de `item` / `stock_entry` (par foyer, portant les surcharges locales), et l'expliciter dans le modèle de données. **Deux points sont à traiter avant l'ouverture publique de la phase 2 : l'import du dump devient un prérequis** (15 req/min partagés entre tous les foyers, avec risque de bannissement d'IP coupant le service pour tout le monde) **et le share-alike ODbL cesse d'être théorique** si l'on combine OFF avec d'autres bases.
+Crumpled packaging (soft bags, frozen food), reflection on plastic film, a code partly covered by a price label, a narrow cylindrical bottle, low light (cupboard, pantry), shake, a code too small on individual packaging.
 
-8. **Couverture OFF suffisante : 1 255 052 produits vendus en France sur 4 663 574 au total** (mesuré le 3 août 2026). Pas de plan B payant en v1. CodeOnline Food (GS1 France) serait qualitativement supérieur mais son accès passe par une adhésion GS1 avec des forfaits à cinq chiffres — hors de portée. Mesurer le taux réel de 404 sur son propre placard avant d'envisager quoi que ce soit d'autre.
+**Fallbacks, in order:**
+1. **Guide before correcting.** An on-screen aiming frame, haptic/audible feedback on decoding, a contextual message after ~3 s of failure ("move closer", "avoid the reflection").
+2. **Torch** — but the button present only if `"torch" in track.getCapabilities()`. **Absent on iPhone** (§2.1). That is an iOS/Android asymmetry that has to be accepted.
+3. **Digital zoom** via `applyConstraints({ zoom })` if the capability exists — helps on small codes.
+4. **Manual entry of the 13 digits**, always accessible one tap away from the scan screen. It is not an admission of failure, it is the indispensable safety net. **Validate the EAN-13 check digit locally** before any network call: that immediately detects a typo and avoids a misleading 404.
+5. **Do not grind away in a loop.** After ~10 s without decoding, explicitly offer manual entry rather than leaving the camera running.
 
-9. **La saisie manuelle est une fonctionnalité de premier rang, pas un repli.** Produits absents d'OFF, codes illisibles, frais sans code-barres, codes internes magasin à préfixe 02/20–29 : ces cas cumulés représentent une part substantielle d'un stock domestique réel. **Une app qui ne sait ajouter qu'au scan est inutilisable.** Corollaire de schéma : les fiches doivent être éditables localement, et l'édition locale doit primer sur tout rafraîchissement OFF ultérieur — prévoir la colonne dès la première migration.
+### 4.3 The product has no barcode at all
+
+Loose fruit and vegetables, butchery, fishmonger, cut cheese, bakery, dry loose goods, garden produce and home preserves.
+
+**This is not a marginal case.** In a real cupboard and fridge, this category is a significant share of the contents. A food stock app that can only add by scanning is structurally incomplete.
+
+**Fallbacks:**
+1. **Manual addition is a first-class path**, not a hidden option. A "+" button always visible next to the scan.
+2. **A local catalogue of generic products**: "apples", "carrots", "minced beef", "bread". About thirty entries cover the essentials of household fresh produce. Reusable, with a unit (piece / g / kg) and a default shelf life.
+3. **PLU codes** (Price Look-Up, the IFPS standard): the 4–5 digit labels on fruit and vegetables. 4 digits = conventional farming, 5 digits starting with 9 = organic **[S]** (<https://www.ifpsglobal.com/>). Optically recognisable but **it is not a barcode** — it would take OCR. **Not to be done in v1**; a selection list is faster for the user than approximate recognition.
+4. **Recurring products**: offer at the top of the list what the user adds often. Two taps for "6 apples".
+
+### 4.4 Variable weights and in-store internal codes
+
+Barcodes prefixed **02** and **20–29** are *Restricted Circulation Numbers*: GS1 reserves them for retailers' internal use **[S]** (<https://www.gs1.org/docs/barcodes/SummaryOfGS1MOPrefixes20-29.pdf>, <https://www.gs1uk.org/knowledge-hub/barcodes/how-to-barcode-variable-measure-items>). They are found on everything weighed in store: butchery trays, cut cheese, fruit weighed at the till. Their typical structure encodes an internal item reference **and the price or the weight**, according to a convention **specific to each retailer**.
+
+**Two direct consequences:**
+1. These codes **are not in OFF and never will be.** Querying them guarantees a 404 and needlessly consumes the 15 req/min quota.
+2. **The same product has a different code from one receipt to the next** (the price changes with the weight). Caching them would produce thousands of useless entries.
+
+**Fallback:** detect the prefix **client-side** (`ean.startsWith("02") || /^2[0-9]/.test(ean)`), **do not call the backend**, and switch straight to the manual form with an honest message: "in-store internal code — describe the product". Decoding the embedded weight or price is possible but depends on the retailer: **not to be attempted in v1**.
+
+### 4.5 The OFF record exists but is wrong or incomplete
+
+Contributed data: a name in capitals, a misspelled brand, an inconsistent free-text `quantity`, absurd categories, an old version of a recipe, an obsolete Nutri-Score. OFF says so itself: *"no assurances that the data is accurate, complete, or reliable"* **[V]**.
+
+**Fallback:** every imported record must be **locally editable**, and the local edit must **take precedence** over a later OFF refresh (a `source`/`overridden_at` column in the schema — to be provided for from the first migration; adding it later is painful).
+
+**Parsing trap:** `quantity` is text (`"400.0 g"`, `"1L"`, `"6x125g"`, `"environ 250 g"`). Never assume a format. Parse as best you can, keep the original string, and **display the raw text on failure** rather than a `null` or a `0`.
+
+### 4.6 iOS asks for camera authorisation again
+
+See §2.2. **[V]** — WebKit bugs still active.
+
+**Fallback:** do not trigger `getUserMedia()` on mounting the screen. First display an explicit state with an "Enable the camera" button: an authorisation request triggered by a user gesture is better understood, and if it is asked again, it does not look like a bug. Handle `NotAllowedError` with a message that explains *where* to re-authorise (Settings > Safari), and a "Try again" button. And keep the removal of `apple-mobile-web-app-capable` as a documented emergency switch.
+
+### 4.7 Spurious scans and duplicates
+
+A running camera decodes the same code 30 times a second. And a user putting the shopping away sometimes scans the same item twice — without knowing whether it is a duplicate or two units.
+
+**Fallback:** debounce on the EAN (ignore the same code for ~2 s), and an explicit confirmation showing the recognised product with an incrementable quantity counter. The "shopping" mode (burst-scanning 20 items) and the "single addition" mode have different UX expectations — to be distinguished.
+
+### 4.8 Erroneous decoding
+
+Rare with ZXing's checksum validation, but possible on a partly masked code, and more likely if all formats are enabled.
+
+**Fallbacks:** restrict `formats` to the retail formats (§1.3); **validate the EAN-13 check digit client-side** before lookup; require **two consecutive identical reads** before accepting (cheap, eliminates the bulk of false positives).
+
+### 4.9 Open Food Facts is unavailable
+
+A non-profit's infrastructure. Outages, maintenance, rate limit reached, **and HTML responses instead of JSON** (observed in §3.2).
+
+**Fallback:** the Postgres cache absorbs the majority of cases. Otherwise, the addition is made with the EAN alone, in an enrichment queue to be processed later in the background. **OFF being unavailable must never prevent adding an item to stock.**
+
+---
+
+## 5. Recommended decisions
+
+1. **One decoder only: `barcode-detector` (Sec-ant ponyfill, MIT, v3.2.1) on top of `zxing-wasm`.** No "native API if available" branch: it exists neither on iOS, nor on Firefox, nor on Chrome/Linux — hence never testable in local dev — and the performance gain does not justify a second code path. Formats restricted to `ean_13, ean_8, upc_a, upc_e, databar*`. WASM lazy-loaded when the scan screen opens (~450 kB gzip, measured) and **explicitly precached** by the service worker.
+
+2. **Rule out `html5-qrcode`** (last npm release April 2023, declared maintenance mode, 441 open issues, bundles a frozen version of `@zxing/library`). Rule out `@zxing/library` directly (pure JS hence slower, 20 months without a release between 2024 and 2026, 170 issues).
+
+3. **Validate the iOS camera on a real device before any commitment.** This is the only point that can call mobile viability into question. Support has existed since iOS 13.4 (#185448 RESOLVED FIXED), but the bugs around non-persistent permissions (#215884, reports up to January 2026) and a black video stream in standalone mode (#252465, regressions up to June 2025) are documented and live. **A throwaway prototype, half a day, before writing the module.** Keep the removal of `apple-mobile-web-app-capable` as a documented emergency switch.
+
+4. **Offline-first, without Background Sync.** Not supported by Safari. A queue in IndexedDB, drained on `online` / `visibilitychange` / start-up. Scanning and decoding must work on a plane; only EAN → record resolution requires the network, and it is asynchronous by design.
+
+5. **Open Food Facts on v3 (v3.6) only.** v2 is officially deprecated. Always `fields=` so as to request only what is needed. User-Agent `Chaudron/x.y (contact@…)` mandatory. Development against the staging `world.openfoodfacts.net` (Basic Auth `off`/`off`). Fill in the API usage declaration form.
+
+6. **The rate limit is a global ceiling, not a per-user one.** 15 req/min for a single IP: by centralising in FastAPI, that is the limit for the **whole** application. Therefore: a Postgres cache with a long TTL, stale-while-revalidate, a short negative cache (24 h) on 404s, a single outbound client with a limiter at 10 req/min and backoff, tolerance for HTML responses. **In due course, pre-fill the database from the "France" JSONL dump + daily deltas** — OFF explicitly recommends it. Design the table in v1 to accept both feeding routes.
+
+7. **The OFF cache is a global table, without `household_id`** — contrary to what the ADR 0006 rule would suggest by mechanical application. A product record is a shared external reference base, not household data; scoping it would multiply the calls to OFF by the number of households. Separate `product_cache` (global) from `item` / `stock_entry` (per household, carrying the local overrides), and make it explicit in the data model. **Two points must be dealt with before the public opening of phase 2: importing the dump becomes a prerequisite** (15 req/min shared between all households, with the risk of an IP ban cutting the service for everyone) **and ODbL share-alike stops being theoretical** if OFF is combined with other databases.
+
+8. **OFF coverage is sufficient: 1,255,052 products sold in France out of 4,663,574 in total** (measured on 3 August 2026). No paid plan B in v1. CodeOnline Food (GS1 France) would be qualitatively superior but access goes through a GS1 membership with five-figure packages — out of reach. Measure the real 404 rate on your own cupboard before considering anything else.
+
+9. **Manual entry is a first-class feature, not a fallback.** Products missing from OFF, unreadable codes, fresh produce without a barcode, in-store internal codes prefixed 02/20–29: these cases taken together represent a substantial share of a real household stock. **An app that can only add by scanning is unusable.** A schema corollary: records must be locally editable, and the local edit must take precedence over any later OFF refresh — provide for the column from the first migration.
 
 ---
 
 ## Sources
 
-**Support navigateur**
+**Browser support**
 - MDN browser-compat-data, `api/BarcodeDetector.json` — <https://github.com/mdn/browser-compat-data/blob/main/api/BarcodeDetector.json>
 - MDN, `BarcodeDetector` — <https://developer.mozilla.org/en-US/docs/Web/API/BarcodeDetector>
 - caniuse, BarcodeDetector API — <https://caniuse.com/mdn-api_barcodedetector>
@@ -462,33 +466,33 @@ Infrastructure associative. Pannes, maintenances, rate limit atteint, **et répo
 - WebKit Features in Safari 26.0 — <https://webkit.org/blog/17333/webkit-features-in-safari-26-0/>
 - WebKit Features for Safari 26.6 — <https://webkit.org/blog/18178/webkit-features-for-safari-26-6/>
 
-**Bugs WebKit**
-- #185448 — getUserMedia en mode standalone (RESOLVED FIXED, iOS 13.4) — <https://bugs.webkit.org/show_bug.cgi?id=185448>
-- #215884 — persistance des permissions caméra en PWA — <https://bugs.webkit.org/show_bug.cgi?id=215884>
-- #252465 — flux vidéo noir en PWA iOS — <https://bugs.webkit.org/show_bug.cgi?id=252465>
-- #281848 — Shape Detection API non fonctionnelle sur iOS (ouvert) — <https://bugs.webkit.org/show_bug.cgi?id=281848>
+**WebKit bugs**
+- #185448 — getUserMedia in standalone mode (RESOLVED FIXED, iOS 13.4) — <https://bugs.webkit.org/show_bug.cgi?id=185448>
+- #215884 — persistence of camera permissions in a PWA — <https://bugs.webkit.org/show_bug.cgi?id=215884>
+- #252465 — black video stream in an iOS PWA — <https://bugs.webkit.org/show_bug.cgi?id=252465>
+- #281848 — Shape Detection API non-functional on iOS (open) — <https://bugs.webkit.org/show_bug.cgi?id=281848>
 
-**Bibliothèques** (métadonnées relevées le 2026-08-03 sur `registry.npmjs.org` et `api.github.com`)
+**Libraries** (metadata collected on 2026-08-03 from `registry.npmjs.org` and `api.github.com`)
 - zxing-wasm — <https://github.com/Sec-ant/zxing-wasm>
 - barcode-detector — <https://github.com/Sec-ant/barcode-detector>
 - @zxing/library — <https://github.com/zxing-js/library>
 - html5-qrcode — <https://github.com/mebjas/html5-qrcode>
 - @ericblade/quagga2 — <https://github.com/ericblade/quagga2>
 
-**Caméra**
+**Camera**
 - STRICH KB, Camera Access Issues in iOS PWA — <https://kb.strich.io/article/29-camera-access-issues-in-ios-pwa>
 - Dynamsoft, camera focus control on web — <https://www.dynamsoft.com/codepool/camera-focus-control-on-web.html>
 - Scandit, make a barcode scanner app performant — <https://www.scandit.com/blog/make-barcode-scanner-app-performant/>
 
 **Open Food Facts**
-- Documentation API (source) — <https://github.com/openfoodfacts/openfoodfacts-server/blob/main/docs/api/index.md>
-- Version publiée — <https://openfoodfacts.github.io/openfoodfacts-server/api/>
+- API documentation (source) — <https://github.com/openfoodfacts/openfoodfacts-server/blob/main/docs/api/index.md>
+- Published version — <https://openfoodfacts.github.io/openfoodfacts-server/api/>
 - Data, API and SDKs (exports, licences) — <https://world.openfoodfacts.org/data>
-- Conditions d'utilisation — <https://world.openfoodfacts.org/terms-of-use>
+- Terms of use — <https://world.openfoodfacts.org/terms-of-use>
 - ODbL 1.0 — <https://opendatacommons.org/licenses/odbl/1.0/> · DbCL 1.0 — <https://opendatacommons.org/licenses/dbcl/1.0/> · CC BY-SA 3.0 — <https://creativecommons.org/licenses/by-sa/3.0/>
 
-**Codes-barres et alternatives**
-- GS1, préfixes 20–29 — <https://www.gs1.org/docs/barcodes/SummaryOfGS1MOPrefixes20-29.pdf>
+**Barcodes and alternatives**
+- GS1, prefixes 20–29 — <https://www.gs1.org/docs/barcodes/SummaryOfGS1MOPrefixes20-29.pdf>
 - GS1 UK, variable measure items — <https://www.gs1uk.org/knowledge-hub/barcodes/how-to-barcode-variable-measure-items>
-- IFPS (codes PLU) — <https://www.ifpsglobal.com/>
-- GS1 France, CodeOnline for Developers — tarifs — <https://developers.gs1.fr/tarifs>
+- IFPS (PLU codes) — <https://www.ifpsglobal.com/>
+- GS1 France, CodeOnline for Developers — pricing — <https://developers.gs1.fr/tarifs>

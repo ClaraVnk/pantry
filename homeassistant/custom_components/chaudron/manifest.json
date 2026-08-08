@@ -1,0 +1,12 @@
+{
+  "domain": "chaudron",
+  "name": "Chaudron",
+  "codeowners": ["@ClaraVnk"],
+  "config_flow": true,
+  "documentation": "https://github.com/ClaraVnk/chaudron/blob/main/homeassistant/README.md",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/ClaraVnk/chaudron/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

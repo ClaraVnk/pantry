@@ -1,0 +1,49 @@
+# Chaudron — encrypted off-machine database backup.
+#
+# Install to:   ~chaudron/.config/systemd/user/chaudron-backup.service
+# Paired with:  chaudron-backup.timer
+# Script:       ops/chaudron-backup.sh
+#
+# Replaces the two hand-typed `pg_dump` / `pg_restore` commands that used to be
+# the whole of ops/README.md §4: no timer, no retention, no encryption, no
+# off-machine copy, and no tested restore. Each of those is now somebody's job —
+# this unit's, chaudron-backup.timer's, or chaudron-restore-check.service's.
+
+[Unit]
+Description=Chaudron — encrypted PostgreSQL backup to an off-machine destination
+Documentation=https://github.com/ClaraVnk/chaudron
+# Ordering only. A backup attempted while the database is down should fail
+# loudly rather than be silently skipped: a skipped backup looks like a
+# successful one in every dashboard.
+After=chaudron-db.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Age recipient, remote destination, retention. Mode 0600 — it names the backup
+# host and the SSH identity, neither of which belongs in a world-readable file.
+#
+# It must NOT contain CHAUDRON_CREDENTIAL_ENCRYPTION_KEY. The script checks its
+# own destination directory for key-shaped files and refuses to run if it finds
+# one; this is the other half of that rule.
+EnvironmentFile=%h/chaudron/backup.env
+
+ExecStart=%h/chaudron/bin/chaudron-backup.sh
+
+NoNewPrivileges=true
+
+# A dump plus an age stream is a bounded pipeline; this ceiling keeps a backup
+# from competing with the database it is dumping.
+MemoryHigh=384M
+MemoryMax=512M
+# Half a core. A backup that finishes slowly is fine; a backup that starves
+# PostgreSQL of CPU while it runs is a self-inflicted outage.
+CPUQuota=50%
+IOSchedulingClass=idle
+
+# Long enough for a large dump over a slow uplink, short enough that a hung
+# rsync does not sit there until the next run.
+TimeoutStartSec=3600
+
+# Deliberately no [Install]: the timer pulls this in.

@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Final
 
 from chaudron.domain.ports import (
     UNSET,
@@ -60,6 +61,12 @@ REMOVAL_KINDS: dict[str, StockMovementKind] = {
     "correction": StockMovementKind.ADJUSTMENT,
 }
 
+#: The contract's word for what a ``PATCH`` does to a quantity (contract v1.1
+#: section 6: "un ajustement manuel porte le motif correction"). Named rather
+#: than spelled inline so the value that crosses the service boundary is the
+#: contract's vocabulary and not the ledger's free-text ``reason``.
+_ADJUSTMENT_REASON: Final = "correction"
+
 
 @dataclass(frozen=True, slots=True)
 class AddItemCommand:
@@ -79,6 +86,12 @@ class AddItemCommand:
     expiry_kind: ExpiryDateKind | None = None
     opened_at: date | None = None
     source: StockEntrySource = StockEntrySource.MANUAL
+    #: The receipt line this stock came off, when it came off one. Carried on the
+    #: draft rather than written afterwards so that the lot is never briefly in the
+    #: database without its provenance -- the budget's coverage figure reads that
+    #: column, and a row that is momentarily "stock added without a receipt" is a
+    #: row a concurrent read can count wrong.
+    source_receipt_line_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +102,38 @@ class UpdateItemCommand:
     expires_on: Maybe[date | None] = UNSET
     expiry_kind: Maybe[ExpiryDateKind] = UNSET
     opened_at: Maybe[date | None] = UNSET
+
+
+@dataclass(frozen=True, slots=True)
+class DepletionSignal:
+    """A lot that this mutation took to zero, and the ledger reason that did it.
+
+    Deliberately *not* a :class:`chaudron.domain.shopping.DepletionEvent`: this
+    module reports what happened to the stock and knows nothing about shopping
+    lists. Whether a reason is worth proposing a repurchase for is contract 6bis'
+    question, and it is answered in one place --
+    :class:`chaudron.services.shopping_import.DepletionService` -- so ``reason``
+    is carried out verbatim, ``correction`` included. A caller that filtered it
+    here would be a second copy of a rule that must have exactly one.
+
+    ``None`` rather than an instance of this is how "nothing ran out" is said: a
+    lot that was already at zero is not depleted again by being removed twice.
+    """
+
+    product_id: uuid.UUID
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class UpdatedItem:
+    """The lot as it now stands, and whether the update emptied it.
+
+    A pair rather than two calls, because the caller needs both and asking twice
+    would mean reading the lot again after it changed.
+    """
+
+    item: InventoryItem
+    depletion: DepletionSignal | None
 
 
 class InventoryService:
@@ -135,6 +180,7 @@ class InventoryService:
             date_kind=date_kind,
             opened_at=command.opened_at,
             entry_source=command.source,
+            source_receipt_line_id=command.source_receipt_line_id,
         )
 
         existing = await self._inventory.find_mergeable(household_id, draft)
@@ -167,7 +213,7 @@ class InventoryService:
 
     async def update_item(
         self, household_id: uuid.UUID, item_id: uuid.UUID, command: UpdateItemCommand
-    ) -> InventoryItem:
+    ) -> UpdatedItem:
         state = await self._inventory.get_state(household_id, item_id)
         if state is None:
             raise InventoryItemNotFoundError(item_id)
@@ -221,13 +267,34 @@ class InventoryService:
                     dimension=unit.dimension,
                     reason="manual correction",
                 )
-        return item
 
-    async def remove_item(self, household_id: uuid.UUID, item_id: uuid.UUID, reason: str) -> None:
+        # An adjustment reports a depletion only if it actually reached zero --
+        # not on every ``PATCH``. Today it never can: `_to_canonical` refuses a
+        # non-positive amount, so emptying a lot goes through `remove_item`. The
+        # test is written against the quantity rather than against that
+        # invariant, because the day a zero becomes representable this is the
+        # line that must already be right. The reason is `correction` (contract
+        # v1.1 section 6, "un ajustement manuel porte le motif correction"), which
+        # contract 6bis never proposes a repurchase for -- and that filter lives
+        # in `DepletionService`, not here.
+        depletion = (
+            DepletionSignal(product_id=state.product_id, reason=_ADJUSTMENT_REASON)
+            if canonical is not None and canonical == 0
+            else None
+        )
+        return UpdatedItem(item=item, depletion=depletion)
+
+    async def remove_item(
+        self, household_id: uuid.UUID, item_id: uuid.UUID, reason: str
+    ) -> DepletionSignal | None:
         """Deplete a lot and say why, in the ledger.
 
         Not a ``DELETE``: consumption history is what feeds waste statistics and
         what makes a suggestion account for what the household actually eats.
+
+        Returns what ran out, or ``None`` when the lot held nothing to run out of
+        -- removing an already-empty lot is bookkeeping, not a depletion, and it
+        must not offer to buy anything.
         """
         kind = REMOVAL_KINDS.get(reason)
         if kind is None:
@@ -237,7 +304,8 @@ class InventoryService:
         if state is None:
             raise InventoryItemNotFoundError(item_id)
 
-        if state.quantity_canonical != 0:
+        emptied = state.quantity_canonical != 0
+        if emptied:
             await self._inventory.record_movement(
                 household_id,
                 item_id,
@@ -247,6 +315,7 @@ class InventoryService:
                 reason=reason,
             )
         await self._inventory.deplete(household_id, item_id)
+        return DepletionSignal(product_id=state.product_id, reason=reason) if emptied else None
 
     # -- Products ----------------------------------------------------------- #
 
@@ -273,6 +342,7 @@ class InventoryService:
                         else normalize_gtin(command.new_product.gtin)
                     ),
                     default_unit_code=command.new_product.default_unit_code,
+                    source=command.new_product.source,
                 ),
             )
             return created.id

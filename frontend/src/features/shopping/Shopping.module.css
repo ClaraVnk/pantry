@@ -1,0 +1,335 @@
+/*
+ * Shopping list and import review.
+ *
+ * Designed at 390×844 first: every control clears --tap-target (44px), rows
+ * wrap rather than scroll sideways, and nothing on this screen is a modal —
+ * the import is a state of the screen, not a layer over it.
+ *
+ * Muted text uses --text-muted (#5D6470 in light mode). The brand's #6B7280
+ * measures 4.47:1 on this warm background and fails AA, so it is not used here
+ * or anywhere else.
+ */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.headingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.heading {
+  font-size: 1.15rem;
+  overflow-wrap: anywhere;
+}
+
+.sectionTitle {
+  font-size: 1rem;
+  margin-bottom: var(--space-2);
+}
+
+/*
+ * Prose is bounded by its own measure rather than by the container, so widening
+ * the screen adds columns of cards instead of lengthening the line. Past roughly
+ * seventy characters the eye loses the start of the next one.
+ */
+.lead {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  max-width: 68ch;
+}
+
+.note {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  max-width: 68ch;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.formError {
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fieldLabel {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/*
+ * A native file input, on purpose. The usual trick — a hidden input driven by a
+ * styled button — loses the filename the browser writes next to it, and on
+ * mobile it is the only confirmation that the right document was picked.
+ */
+.fileInput {
+  padding: var(--space-2);
+  line-height: 1.4;
+}
+
+.textarea {
+  min-height: 8rem;
+  resize: vertical;
+  font-family: var(--font-body);
+  line-height: 1.5;
+}
+
+.fallbackText {
+  font-size: 0.9rem;
+  max-width: 68ch;
+}
+
+/* ------------------------------------------------------------------------ *
+ * Adding by hand
+ * ------------------------------------------------------------------------ */
+
+.addForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.addRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* ------------------------------------------------------------------------ *
+ * The list
+ * ------------------------------------------------------------------------ */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  box-shadow: var(--shadow-sm);
+}
+
+/*
+ * A ticked item stays legible. It is dimmed, never hidden and never greyed to
+ * the point of being unreadable: unticking something picked up by mistake has
+ * to remain possible, and a struck-through line still has to be findable in an
+ * aisle.
+ */
+.itemChecked {
+  background: var(--bg-subtle);
+}
+
+.itemName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.itemNameChecked {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.itemMain {
+  min-width: 0;
+}
+
+.itemActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.itemEdit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.itemError {
+  color: var(--danger);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------------ *
+ * Import review
+ * ------------------------------------------------------------------------ */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.reviewIntro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.reviewList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/*
+ * 48em: the list has room for a second column, and a third arrives on its own
+ * once the width allows — `auto-fill` keeps every card the same size, so a
+ * section holding one item does not stretch it across the row.
+ *
+ * Forms stay narrow. A text field is not more usable for being 900 px wide, and
+ * a label sitting a screen away from its input is worse.
+ */
+@media (min-width: 48em) {
+  .list,
+  .reviewList {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+    align-items: start;
+  }
+
+  .card,
+  .addForm {
+    max-width: 46rem;
+  }
+}
+
+.reviewCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-shadow: var(--shadow-sm);
+}
+
+.reviewCardInvalid {
+  border-color: var(--danger);
+}
+
+.reviewHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The label is the field, not a value with an edit button beside it. */
+.reviewLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.reviewRemove {
+  flex: 0 0 auto;
+  min-width: var(--tap-target);
+  font-size: 1.1rem;
+  color: var(--text-muted);
+}
+
+.reviewQuantity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.reviewQuantityLabel {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.reviewAmount {
+  flex: 0 1 5.5rem;
+  width: 5.5rem;
+  text-align: right;
+}
+
+.reviewUnit {
+  flex: 0 1 9rem;
+  width: auto;
+}
+
+.reviewMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+.reviewRaw {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.reviewRawLabel {
+  font-weight: 600;
+}
+
+.reviewError {
+  color: var(--danger);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.reviewActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+}

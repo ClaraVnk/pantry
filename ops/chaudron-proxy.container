@@ -1,0 +1,133 @@
+# Quadlet unit for the Chaudron reverse proxy / TLS terminator (rootless).
+#
+# Install to:   ~/.config/containers/systemd/chaudron-proxy.container
+# Reload with:  systemctl --user daemon-reload
+# Start with:   systemctl --user start chaudron-proxy.service
+#
+# Generated unit name is derived from the filename: chaudron-proxy.service.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS UNIT IS FOR
+# ---------------------------------------------------------------------------
+# Two jobs that had no owner before it existed:
+#
+#   1. TLS. Without it the PWA does not work at all off `localhost` — a service
+#      worker and `getUserMedia` are both secure-context only — and the HSTS
+#      header the API emits is ignored by specification.
+#   2. Serving `frontend/dist/`. Nothing hosted it, so the origin that carries
+#      the service worker, the Workbox precache and `localStorage` had no CSP,
+#      no `nosniff` and no HSTS. See ops/Caddyfile.example.
+#
+# Certificates are obtained and renewed automatically from Let's Encrypt.
+
+[Unit]
+Description=Chaudron — Caddy reverse proxy and TLS termination
+Documentation=https://github.com/ClaraVnk/chaudron
+After=network-online.target chaudron.service
+Wants=network-online.target
+# Ordering only, like chaudron.service → chaudron-db.service. A restarting API
+# must not take the landing page and the certificate renewal down with it.
+Wants=chaudron.service
+
+[Container]
+ContainerName=chaudron-proxy
+
+# Major-version pin, matching the convention chaudron-db.container already sets
+# for postgres:16. `AutoUpdate=` is deliberately absent: a proxy that replaces
+# itself unattended can take the whole instance offline, including the path ACME
+# needs to renew the certificate that would let you notice.
+Image=docker.io/library/caddy:2-alpine
+
+# Static address on chaudron-net. This is not decoration: it is the value that
+# FORWARDED_ALLOW_IPS in chaudron.container names, and uvicorn compares the peer
+# address against that list literally. A proxy whose address moves on every
+# restart cannot be named, which is how deployments end up with `*` — and `*`
+# means any client can dictate its own `X-Forwarded-For`, making every IP-based
+# decision in the stack a header away from being wrong.
+#
+# The network must therefore be created with a fixed subnet:
+#   podman network create --subnet 10.89.7.0/24 chaudron-net
+Network=chaudron-net:ip=10.89.7.10
+
+# The only ports this deployment publishes. Rootless Podman binds these on the
+# host as an unprivileged user, which needs a one-off sysctl — see ops/README.md
+# §7.2:
+#   net.ipv4.ip_unprivileged_port_start=80
+PublishPort=80:80
+PublishPort=443:443
+
+# Hostname, ACME contact and API upstream. Non-secret by nature; there is no
+# secret in this container at all, which is why it carries no Secret= line.
+EnvironmentFile=%h/chaudron/caddy.env
+
+# The configuration, read-only to the container. `:Z,ro` — the SELinux private
+# label is mandatory under Enforcing, and a proxy has no reason to rewrite its
+# own configuration.
+Volume=%h/chaudron/caddy/Caddyfile:/etc/caddy/Caddyfile:Z,ro
+
+# The built PWA. Read-only for the same reason: the file server serves it, and
+# nothing in this container should be able to modify the bytes that carry the
+# service worker.
+#
+# Populate it from a build:
+#   npm --prefix frontend ci && npm --prefix frontend run build
+#   rsync -a --delete frontend/dist/ ~chaudron/chaudron/www/
+Volume=%h/chaudron/www:/srv:Z,ro
+
+# Certificates, account keys and OCSP staples. This one is writable and must
+# persist: losing it forces re-issuance, and Let's Encrypt rate-limits that.
+# It is also the single most valuable directory on the host after the database —
+# it holds the private key for the instance's certificate.
+Volume=%h/chaudron/data/caddy:/data:Z
+
+# Caddy's autosaved JSON configuration. Separate from /data so a wipe of the
+# cache never takes the certificates with it.
+Volume=%h/chaudron/data/caddy-config:/config:Z
+
+# Binding :80 and :443 *inside* the container's network namespace needs
+# CAP_NET_BIND_SERVICE and nothing else. Everything else is dropped.
+#
+# The alternative — listening on 8080/8443 inside and remapping on the host —
+# was rejected: Caddy's automatic HTTPS derives its redirect targets and its
+# ACME challenge ports from the ports it binds, so moving them means telling
+# Caddy about the mapping in three places and getting a redirect to :8443 the
+# day one is forgotten.
+NoNewPrivileges=true
+DropCapability=ALL
+AddCapability=NET_BIND_SERVICE
+ReadOnly=true
+Tmpfs=/tmp:rw,size=32M,mode=1777
+
+# Explicit, because the default is not obvious and it is the difference between
+# "logs are ephemeral" and "logs are on disk forever". journald IS the default
+# for rootless Podman, so this line changes nothing today — it states the
+# choice, and it is the anchor for the retention policy in
+# ops/journald.conf.d/chaudron-retention.conf. The Caddyfile's own log filter
+# is what keeps identifiers out of these lines in the first place.
+LogDriver=journald
+
+# Resource bounds. A proxy is the component most exposed to the internet and
+# therefore the one most likely to be asked to do unbounded work; without a
+# ceiling, a flood of TLS handshakes competes for memory with PostgreSQL.
+#
+# MemoryHigh throttles and reclaims before MemoryMax kills, so the failure mode
+# is "slow" before it is "OOM-killed mid-handshake".
+PodmanArgs=--memory=256m --memory-reservation=128m --pids-limit=512
+
+[Service]
+Restart=always
+RestartSec=5
+# First start performs an ACME order, which involves DNS propagation and a
+# round trip to Let's Encrypt.
+TimeoutStartSec=180
+
+# systemd-level ceilings, applied to the whole unit cgroup (conmon and the
+# rootless port forwarder included), unlike PodmanArgs above which bounds the
+# container payload only.
+MemoryHigh=192M
+MemoryMax=320M
+CPUQuota=100%
+TasksMax=768
+
+[Install]
+WantedBy=default.target

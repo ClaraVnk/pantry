@@ -1,0 +1,50 @@
+# Chaudron — schedule for the cosign-gated image update.
+#
+# Install to:  ~chaudron/.config/systemd/user/chaudron-verified-update.timer
+# Then:        systemctl --user daemon-reload
+#              systemctl --user mask podman-auto-update.timer
+#              systemctl --user enable --now chaudron-verified-update.timer
+# Verify:      systemctl --user list-timers chaudron-verified-update.timer
+#
+# Masking `podman-auto-update.timer` is not optional and not tidiness. Both
+# timers act on the same `AutoUpdate=registry` quadlet, so leaving the stock one
+# enabled means the ungated path still exists — and it would win roughly half
+# the time, deploying digests this timer exists to refuse. The old
+# `podman-auto-update.timer.d/override.conf` drop-in has been removed from this
+# repository for the same reason: it only ever served to make the UNVERIFIED
+# path fire more often.
+#
+# Cadence: 15 minutes, unchanged. What changed is what happens at minute 15.
+#
+# Cost: 96 registry polls per day per image, plus 96 Rekor/Fulcio verifications
+# on the days something actually moves — cosign only runs when the digest
+# changed, so a quiet day costs nothing beyond the pulls.
+#
+# What this still does NOT buy: a human between a merged pull request and
+# production. Signature verification proves an image came from this repository's
+# `main` workflow. It says nothing about whether the change is correct. If that
+# trade stops being acceptable — a second maintainer, real users — put a GitHub
+# Environment with a required reviewer in front of `publish.yml` rather than
+# lengthening this interval.
+
+[Unit]
+Description=Chaudron — verified image update every 15 minutes
+Documentation=https://github.com/ClaraVnk/chaudron
+
+[Timer]
+Unit=chaudron-verified-update.service
+
+# Not at boot exactly: let the network, the database and the API settle first.
+OnBootSec=5min
+OnUnitActiveSec=15min
+
+# Spread the load slightly so several hosts do not poll the registry in
+# lockstep.
+RandomizedDelaySec=60s
+
+# Catch up on a run missed while the machine was off, rather than waiting a
+# further 15 minutes after boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,442 @@
+# =============================================================================
+# JEU D'ÉVALUATION TENU À L'ÉCART
+#
+# Aucun de ces tickets n'a servi à construire le lexique. Le lexique et le code
+# ont été gelés AVANT que ces trois photos ne soient lues et annotées, et n'ont
+# pas été retouchés ensuite. Le protocole complet est dans docs/label-lexicon.md.
+#
+# Tickets (photos publiques Open Prices) :
+#   openprices:10051  E.Leclerc Levallois — thermique, champs séparés par virgule
+#   openprices:14722  Intermarché Contact — thermique, colonne de 20 caractères
+#   openprices:3716   Carrefour Carré Sénart — hyper, colonne de 18 caractères
+#
+# `gold` = la lecture correcte de CHAQUE jeton que le module devrait toucher.
+#   * une valeur ordinaire  → le jeton doit être développé ainsi
+#   * "@brand"              → le jeton doit être reconnu comme marque et retiré
+#   * un jeton absent de `gold` doit être laissé tel quel ; le développer compte
+#     comme fausse expansion, l'erreur que ce module existe pour éviter.
+#
+# Annoter honnêtement veut dire inscrire aussi ce que le lexique ne sait PAS
+# lire : ces entrées comptent en rappel manqué et donnent sa valeur au chiffre.
+# =============================================================================
+
+# --- E.Leclerc Levallois (openprices:10051) ----------------------------------
+
+[[case]]
+raw = "*MAXI POP SUCRE 3X90G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "RIZ LONG CR REP,10MN 4SACH,500G"
+retailer = "leclerc"
+gold = { SACH = "sachet" }
+
+[[case]]
+raw = "PENNE RIGATE,TURINI,500G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "CAFE SOLUB EXPRES,STICK X25,45G"
+retailer = "leclerc"
+gold = { SOLUB = "soluble" }
+
+[[case]]
+raw = "SCE TURINI,POIVRON&AUBERGI,190G"
+retailer = "leclerc"
+gold = { SCE = "sauce", AUBERGI = "aubergine" }
+
+[[case]]
+raw = "MAIS CROQUANT,N.JARDIN 1,3X140G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "CORNICHON RUSTICA,AIGRE DX,360G"
+retailer = "leclerc"
+gold = { DX = "doux" }
+
+[[case]]
+raw = "48 DOSET.CORSE,PLANTATION,336G"
+retailer = "leclerc"
+gold = { DOSET = "dosette" }
+
+[[case]]
+raw = "ASPERGE BLANC MOY,N.JARDIN,205G"
+retailer = "leclerc"
+gold = { MOY = "moyen" }
+
+[[case]]
+raw = "BETTERAVE ROUGE,3X130G PNE,390G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "ARTICHAUT MARINE,BOC NJARD,115G"
+retailer = "leclerc"
+gold = { BOC = "bocal" }
+
+[[case]]
+raw = "PRINCE POCKET,CHOCOLAT,400G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "*SAUCE PESTO,CALABRESE,190G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "BABY LILLET BLANC 17D,,75CL"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "SIROP ICED TEA,BID TSR,60CL"
+retailer = "leclerc"
+gold = { BID = "bidon" }
+
+[[case]]
+raw = "IND.TONIC,LIGHT,150CL"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "DEBOUCH.GEL,CANALISAT.SYPHON,1L"
+retailer = "leclerc"
+gold = { DEBOUCH = "deboucheur", CANALISAT = "canalisation" }
+
+[[case]]
+raw = "TORTILLAS CHORIZO,TDM,500G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "CREP MOEL SUCR,X8 BIO,200G"
+retailer = "leclerc"
+gold = { CREP = "crepe", MOEL = "moelleux", SUCR = "sucre" }
+
+[[case]]
+raw = "TARTE FLAMBEE,NRT,180G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "PATE EN CROUT SUP,FR C NRT,200G"
+retailer = "leclerc"
+gold = { CROUT = "croute", SUP = "superieur" }
+
+[[case]]
+raw = "YAB YOP FRAISE,X4,1KG"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "4ACTIFID CITRON,DELISSE,500G"
+retailer = "leclerc"
+gold = { DELISSE = "@brand" }
+
+[[case]]
+raw = "COMTE BLOC,LES CROISES,350G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "SALADE ORIGINALE,CRUDETTES,200G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "CROUT.AIL&FROMAGE,LES CRUD.,80G"
+retailer = "leclerc"
+gold = { CROUT = "crouton" }
+
+[[case]]
+raw = "HOUMMOUS,TABLES DU M,200G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "ROLLMOPS VINAIGRE,RDM,400G"
+retailer = "leclerc"
+gold = {}
+
+[[case]]
+raw = "CLASSEUR CAHIER,POLYPRO MR,1P"
+retailer = "leclerc"
+gold = { MR = "@brand" }
+
+# --- Intermarché Contact (openprices:14722) ----------------------------------
+
+[[case]]
+raw = "PAQUITO DESS.FRT POM"
+retailer = "intermarche"
+gold = { PAQUITO = "@brand", DESS = "dessert", FRT = "fruit", POM = "pomme" }
+
+[[case]]
+raw = "ST ELOI BETT RGE ENT"
+retailer = "intermarche"
+gold = { "ST ELOI" = "@brand", BETT = "betterave", RGE = "rouge", ENT = "entier" }
+
+[[case]]
+raw = "ST ELOI CHX BRUXELLE"
+retailer = "intermarche"
+gold = { "ST ELOI" = "@brand", CHX = "chou" }
+
+[[case]]
+raw = "M.RANOU SAUCIS LENTI"
+retailer = "intermarche"
+gold = { "M.RANOU" = "@brand", SAUCIS = "saucisse", LENTI = "lentille" }
+
+[[case]]
+raw = "GERBLE BISC.GERME DE"
+retailer = "intermarche"
+gold = { GERBLE = "@brand", BISC = "biscuit" }
+
+[[case]]
+raw = "MERCI COTES 1ERES PO"
+retailer = "intermarche"
+gold = {}
+
+[[case]]
+raw = "CHAMPIGNON BLANC 200"
+retailer = "intermarche"
+gold = {}
+
+[[case]]
+raw = "FIORINI MACARONI CEL"
+retailer = "intermarche"
+gold = { FIORINI = "@brand" }
+
+[[case]]
+raw = "IDS NEM POULET X4 +"
+retailer = "intermarche"
+gold = { IDS = "@brand" }
+
+[[case]]
+raw = "FE P&C FRIAND VIANDE"
+retailer = "intermarche"
+gold = {}
+
+[[case]]
+raw = "ODYSSEE TARAMA OEUF"
+retailer = "intermarche"
+gold = {}
+
+[[case]]
+raw = "ST ELOI RIZ COMPLET"
+retailer = "intermarche"
+gold = { "ST ELOI" = "@brand" }
+
+[[case]]
+raw = "REGAIN GALETTE MAIS"
+retailer = "intermarche"
+gold = {}
+
+[[case]]
+raw = "ST ELOI MELEE CRUDIT"
+retailer = "intermarche"
+gold = { "ST ELOI" = "@brand", CRUDIT = "crudites" }
+
+[[case]]
+raw = "FIORINI TORT RIC/EPI"
+retailer = "intermarche"
+gold = { FIORINI = "@brand", TORT = "tortellini", RIC = "ricotta", EPI = "epinard" }
+
+[[case]]
+raw = "RANOU MUSEAU DE BOEU"
+retailer = "intermarche"
+gold = { RANOU = "@brand", BOEU = "boeuf" }
+
+[[case]]
+raw = "TOMATE FILET"
+retailer = "intermarche"
+gold = {}
+
+[[case]]
+raw = "KAKI"
+retailer = "intermarche"
+gold = {}
+
+[[case]]
+raw = "ST ELOI RATATOUILLE"
+retailer = "intermarche"
+gold = { "ST ELOI" = "@brand" }
+
+[[case]]
+raw = "CHABRIOR GRANDMIE CO"
+retailer = "intermarche"
+gold = { CHABRIOR = "@brand" }
+
+# --- Carrefour Carré Sénart (openprices:3716) --------------------------------
+
+[[case]]
+raw = "40CL CF EP AOP 40%"
+retailer = "carrefour"
+gold = { CF = "creme fraiche", EP = "epaisse" }
+
+[[case]]
+raw = "XX 1KG CAPELLINI B"
+retailer = "carrefour"
+gold = {}
+
+[[case]]
+raw = "EPINARD SRP 750G"
+retailer = "carrefour"
+gold = {}
+
+[[case]]
+raw = "MAGNUM X4 CARAMEL"
+retailer = "carrefour"
+gold = {}
+
+[[case]]
+raw = "BAO VEGGIE X3"
+retailer = "carrefour"
+gold = {}
+
+[[case]]
+raw = "510G TABOULE ORIEN"
+retailer = "carrefour"
+gold = { ORIEN = "oriental" }
+
+[[case]]
+raw = "250G GIRASOLI CEPE"
+retailer = "carrefour"
+gold = {}
+
+[[case]]
+raw = "250G GIRASOLI LEGU"
+retailer = "carrefour"
+gold = { LEGU = "legume" }
+
+[[case]]
+raw = "730G CROUSTI MOELL"
+retailer = "carrefour"
+gold = { CROUSTI = "croustillant", MOELL = "moelleux" }
+
+[[case]]
+raw = "PCE CHOU CHINOIS F"
+retailer = "carrefour"
+gold = { PCE = "piece" }
+
+[[case]]
+raw = "SCH 1KG ENDIVE"
+retailer = "carrefour"
+gold = { SCH = "sachet" }
+
+[[case]]
+raw = "KG FILET PLT JNE F"
+retailer = "carrefour"
+gold = { PLT = "poulet", JNE = "jaune" }
+
+[[case]]
+raw = "BRK 1L LAIT UHT MO"
+retailer = "carrefour"
+gold = { BRK = "brique" }
+
+[[case]]
+raw = "15 OEUFS CRF BIO"
+retailer = "carrefour"
+gold = { CRF = "@brand" }
+
+[[case]]
+raw = "4/4 HARIC BLANCS T"
+retailer = "carrefour"
+gold = { HARIC = "haricot" }
+
+[[case]]
+raw = "HARICOTS BLC AUVER"
+retailer = "carrefour"
+gold = { BLC = "blanc", AUVER = "auvergne" }
+
+[[case]]
+raw = "210G SCE PROVENCAL"
+retailer = "carrefour"
+gold = { SCE = "sauce" }
+
+[[case]]
+raw = "190G THON ALB.HO"
+retailer = "carrefour"
+gold = { ALB = "albacore" }
+
+[[case]]
+raw = "250G CHIPS NAT PAY"
+retailer = "carrefour"
+gold = { NAT = "nature" }
+
+[[case]]
+raw = "X8 GOURMET VOLAIL."
+retailer = "carrefour"
+gold = { VOLAIL = "volaille" }
+
+[[case]]
+raw = "GOURMET PERLE LEGU"
+retailer = "carrefour"
+gold = { LEGU = "legume" }
+
+[[case]]
+raw = "DESTOP DEBOU CHEVE"
+retailer = "carrefour"
+gold = { DEBOU = "deboucheur", CHEVE = "cheveux" }
+
+[[case]]
+raw = "PH LT ALOE 4 RLX"
+retailer = "carrefour"
+gold = { PH = "papier hygienique", RLX = "rouleau" }
+
+[[case]]
+raw = "RAID RECH ELEC INO"
+retailer = "carrefour"
+gold = { RECH = "recharge", ELEC = "electrique" }
+
+[[case]]
+raw = "RAID ELEC DIF PLAQ"
+retailer = "carrefour"
+gold = { ELEC = "electrique", DIF = "diffuseur", PLAQ = "plaquette" }
+
+[[case]]
+raw = "DENT NETTOY ELMEX"
+retailer = "carrefour"
+gold = { NETTOY = "nettoyant" }
+
+[[case]]
+raw = "BAIN MOUSS LAVANDE"
+retailer = "carrefour"
+gold = { MOUSS = "moussant" }
+
+[[case]]
+raw = "16X PROTEC. MOUSSE"
+retailer = "carrefour"
+gold = { PROTEC = "protection" }
+
+[[case]]
+raw = "LING ANTIBACT ECRA"
+retailer = "carrefour"
+gold = { LING = "lingette", ANTIBACT = "antibacterien" }
+
+[[case]]
+raw = "BTE 80 MOUCH LOTUS"
+retailer = "carrefour"
+gold = { BTE = "boite", MOUCH = "mouchoir" }
+
+[[case]]
+raw = "SAC CONG ZIP MM"
+retailer = "carrefour"
+gold = { CONG = "congelation" }
+
+[[case]]
+raw = "200 BATONNETS CRF"
+retailer = "carrefour"
+gold = { CRF = "@brand" }
+
+[[case]]
+raw = "12X85G SHEBA SC CO"
+retailer = "carrefour"
+gold = {}
+
+[[case]]
+raw = "200G SPEC FILTRE N"
+retailer = "carrefour"
+gold = {}

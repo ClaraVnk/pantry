@@ -96,15 +96,58 @@ async def test_a_dated_lot_cannot_declare_an_unknown_kind(
     assert response.json()["type"].endswith("/expiry-date-inconsistent")
 
 
-async def test_a_zero_quantity_is_refused(
+async def test_a_zero_quantity_is_refused_on_every_write_path(
     api_client: httpx.AsyncClient, make_household: MakeHousehold, make_product: MakeProduct
 ) -> None:
+    """Refused by the *schema* now, on the create and the patch alike.
+
+    It used to be refused only by ``services/inventory.py``, and the answer was
+    ``/invalid-quantity`` rather than ``/validation-failed`` for that reason. The
+    domain guard is still there and still the only thing that can express "0.0001 g
+    rounds to zero at three decimals"; what changed is that it is no longer alone.
+    ``PATCH`` carried no bound at all, so the only thing between ``{"amount": "0"}``
+    and ``ck_inventory_lot_quantity_positive`` was that one guard -- and a violated
+    CHECK is answered by ``handle_unexpected``, which logs the exception PostgreSQL
+    composed by quoting the whole failing row back.
+    """
+    household = await make_household()
+    product = await make_product()
+    created = await api_client.post(
+        "/v1/inventory",
+        headers=household_headers(household),
+        json={"product_id": str(product.id), "amount": "1", "unit": "g"},
+    )
+    assert created.status_code == 201
+
+    for response in (
+        await api_client.post(
+            "/v1/inventory",
+            headers=household_headers(household),
+            json={"product_id": str(product.id), "amount": "0", "unit": "g"},
+        ),
+        await api_client.patch(
+            f"/v1/inventory/{created.json()['id']}",
+            headers=household_headers(household),
+            json={"amount": "0"},
+        ),
+    ):
+        assert response.status_code == 422
+        body = response.json()
+        assert body["type"].endswith("/validation-failed")
+        assert ["body", "amount"] in [error["loc"] for error in body["errors"]]
+
+
+async def test_a_quantity_that_rounds_to_zero_is_still_a_domain_refusal(
+    api_client: httpx.AsyncClient, make_household: MakeHousehold, make_product: MakeProduct
+) -> None:
+    """The control for the test above: the schema bound does not make the domain
+    guard redundant, and ``/invalid-quantity`` is still reachable."""
     household = await make_household()
     product = await make_product()
     response = await api_client.post(
         "/v1/inventory",
         headers=household_headers(household),
-        json={"product_id": str(product.id), "amount": "0", "unit": "g"},
+        json={"product_id": str(product.id), "amount": "0.0001", "unit": "g"},
     )
     assert response.status_code == 422
     assert response.json()["type"].endswith("/invalid-quantity")

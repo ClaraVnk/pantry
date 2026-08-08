@@ -3,7 +3,15 @@
 
 interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string;
-  readonly VITE_HOUSEHOLD_ID?: string;
+  /*
+   * There is deliberately no VITE_HOUSEHOLD_ID. Vite inlines every VITE_* value
+   * into the built bundle, which the service worker then precaches onto every
+   * visitor's device — so a household identifier declared here was published
+   * with the application. The active household is runtime state derived from the
+   * session instead (`api/session.ts`).
+   */
+  /** Public origin of this deployment. Read by vite.config.ts only. */
+  readonly VITE_SITE_URL?: string;
 }
 
 interface ImportMeta {

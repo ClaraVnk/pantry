@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +32,11 @@ from chaudron.domain.ports import (
     LotUpdate,
     ProductView,
 )
+from chaudron.domain.shelf_life import effective_expiry_sql, join_shelf_life_guideline
+
+#: Label the computed column carries, so ``_row_to_item`` reads it by name rather
+#: than by position.
+_EFFECTIVE_EXPIRY: Final = "effective_expiry"
 
 
 def _row_to_item(row: Any) -> InventoryItem:
@@ -60,6 +65,7 @@ def _row_to_item(row: Any) -> InventoryItem:
         best_before=lot.best_before,
         date_kind=lot.date_kind,
         opened_at=lot.opened_at,
+        effective_expiry=getattr(row, _EFFECTIVE_EXPIRY),
         entry_source=lot.entry_source,
         created_at=lot.created_at,
     )
@@ -72,14 +78,18 @@ class SqlInventoryRepository:
     # -- Reads ------------------------------------------------------------- #
 
     def _base_query(self, household_id: uuid.UUID) -> Select[Any]:
-        return (
-            select(InventoryLot, Product, StorageLocation)
+        return join_shelf_life_guideline(
+            select(
+                InventoryLot,
+                Product,
+                StorageLocation,
+                effective_expiry_sql().label(_EFFECTIVE_EXPIRY),
+            )
             .join(Product, Product.id == InventoryLot.product_id)
             .outerjoin(StorageLocation, StorageLocation.id == InventoryLot.storage_location_id)
-            .where(
-                InventoryLot.household_id == household_id,
-                InventoryLot.depleted_at.is_(None),
-            )
+        ).where(
+            InventoryLot.household_id == household_id,
+            InventoryLot.depleted_at.is_(None),
         )
 
     async def list_items(self, household_id: uuid.UUID, criteria: InventoryFilter) -> InventoryPage:
@@ -93,15 +103,22 @@ class SqlInventoryRepository:
             pattern = f"%{criteria.query}%"
             conditions.append(Product.name.ilike(pattern) | Product.brand.ilike(pattern))
         if criteria.expiring_within_days is not None:
+            # Against the effective date, not the printed one: a jar opened three
+            # weeks ago is what this filter exists to surface, and its printed
+            # date has not moved (docs/data-model.md 7.4).
             horizon = datetime.now(UTC).date() + timedelta(days=criteria.expiring_within_days)
-            conditions.append(InventoryLot.best_before.is_not(None))
-            conditions.append(InventoryLot.best_before <= horizon)
+            expiry = effective_expiry_sql()
+            conditions.append(expiry.is_not(None))
+            conditions.append(expiry <= horizon)
 
+        # The count joins the guideline too: it has to answer for exactly the
+        # rows the page below returns, and `conditions` may now reference it.
         total = await self._session.scalar(
-            select(func.count())
-            .select_from(InventoryLot)
-            .join(Product, Product.id == InventoryLot.product_id)
-            .where(
+            join_shelf_life_guideline(
+                select(func.count())
+                .select_from(InventoryLot)
+                .join(Product, Product.id == InventoryLot.product_id)
+            ).where(
                 InventoryLot.household_id == household_id,
                 InventoryLot.depleted_at.is_(None),
                 *conditions,
@@ -115,7 +132,7 @@ class SqlInventoryRepository:
             # rather than to the top, where a NULL would otherwise sort in
             # PostgreSQL's default ascending order.
             .order_by(
-                InventoryLot.best_before.asc().nullslast(),
+                effective_expiry_sql().asc().nullslast(),
                 InventoryLot.created_at.desc(),
                 InventoryLot.id,
             )
@@ -181,6 +198,7 @@ class SqlInventoryRepository:
             date_kind=draft.date_kind,
             opened_at=draft.opened_at,
             entry_source=draft.entry_source,
+            source_receipt_line_id=draft.source_receipt_line_id,
         )
         self._session.add(lot)
         try:
@@ -278,6 +296,7 @@ class SqlInventoryRepository:
 def _to_state(lot: InventoryLot) -> LotState:
     return LotState(
         id=lot.id,
+        product_id=lot.product_id,
         quantity_value=lot.quantity_value,
         quantity_unit_code=lot.quantity_unit_code,
         quantity_dimension=lot.quantity_dimension,

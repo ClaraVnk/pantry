@@ -12,6 +12,8 @@ allowlist of **endpoints** -- host *and* port -- from the instance environment, 
 * DNS resolved at validation **and** again immediately before the call, with the two
   answers required to agree -- otherwise a name that resolves to an allowed host at
   save time and to a metadata endpoint at call time (DNS rebinding) would pass;
+* the socket opened on the address that agreement was reached about, rather than on
+  whatever a third lookup would have said (:func:`_dial_targets`);
 * redirects disabled, so a permitted host cannot bounce us onto a forbidden one;
 * a bounded timeout and a bounded response size, so a hostile or broken endpoint
   cannot hold a connection or exhaust memory.
@@ -24,11 +26,22 @@ with an oracle. Constraining the pair collapses every endpoint the operator did 
 declare into one refusal, taken structurally, before a socket is opened.
 
 Everything here raises domain errors. No ``httpx`` exception crosses the boundary.
+
+The one place a body is quoted -- an excerpt of a response that is not JSON, which
+is how an operator diagnoses a gateway -- scrubs the credential this client sends
+*by literal match*, not merely by pattern. It is derived from the headers rather
+than passed in, so an adapter cannot forget it: whatever authenticates the request
+is by construction what has to come out of the excerpt. That path is not
+hypothetical. ``base_url`` is household-supplied on the Ollama topology, and an
+OpenAI-compatible gateway that answers 200 with a proxy error page echoing
+``Authorization`` puts the household's key straight into a domain error, and from
+there into a log line.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import socket
 from collections.abc import Awaitable, Callable, Mapping
@@ -44,14 +57,15 @@ from chaudron.domain.llm_ports import (
     ProviderResponseInvalid,
     ProviderUnavailable,
 )
-from chaudron.infra.llm.redaction import snippet
 from chaudron.infra.llm.settings import ALLOWED_HOSTS_ENV_VAR, LlmSettings
+from chaudron.infra.redaction import snippet
 
 __all__ = [
     "GuardedHttpClient",
     "HttpFailure",
     "Resolver",
     "endpoint_port",
+    "resolve_pin",
     "system_resolver",
     "translate_http_status",
     "translate_transport_error",
@@ -60,6 +74,17 @@ __all__ = [
 
 _ALLOWED_SCHEMES: Final = frozenset({"http", "https"})
 _DEFAULT_SCHEME_PORTS: Final = {"http": 80, "https": 443}
+
+#: Headers whose value is a credential, whatever else it is. Lower-cased, because
+#: header names are case-insensitive and a mismatch here fails open.
+_CREDENTIAL_HEADERS: Final = frozenset(
+    {"authorization", "x-api-key", "x-goog-api-key", "api-key", "proxy-authorization"}
+)
+
+#: Schemes that prefix a credential in an ``Authorization`` header. The scheme
+#: itself is not secret and removing it as one would blank the word "Bearer" out of
+#: every diagnostic that mentions it.
+_AUTH_SCHEMES: Final = ("bearer ", "basic ", "token ")
 
 #: Resolve a (host, port) pair to the set of addresses it currently points at.
 Resolver = Callable[[str, int], Awaitable[frozenset[str]]]
@@ -73,6 +98,26 @@ async def system_resolver(host: str, port: int) -> frozenset[str]:
     except OSError as exc:
         raise ProviderUnavailable(f"host {host!r} could not be resolved") from exc
     return frozenset(str(info[4][0]) for info in infos)
+
+
+async def resolve_pin(url: httpx.URL, resolver: Resolver) -> frozenset[str]:
+    """The DNS answer that authorises this URL, kept so later calls can be compared.
+
+    Separate from :func:`system_resolver` because the *moment* it runs is the whole
+    control: this is the "first" of the two answers
+    :meth:`GuardedHttpClient.assert_stable_resolution` requires to agree, and it has
+    to be taken when the transport is built rather than lazily on the first call --
+    a pin established by the very request it is meant to guard would compare an
+    answer against itself and refuse nothing.
+    """
+    addresses = await resolver(url.host, endpoint_port(url))
+    if not addresses:
+        # An empty answer must not become an empty pin: `frozenset() <= frozenset()`
+        # holds, so it would satisfy the later check while asserting nothing.
+        raise ProviderNotConfigured(
+            f"host {url.host!r} resolves to no address; the Ollama endpoint cannot be reached"
+        )
+    return addresses
 
 
 def validate_ollama_base_url(raw_url: str, settings: LlmSettings) -> httpx.URL:
@@ -148,12 +193,110 @@ def translate_transport_error(
     )
 
 
+def _credentials_in(headers: Mapping[str, str]) -> tuple[str, ...]:
+    """The secret values this client sends, for removal from anything it quotes.
+
+    Reading them off the headers rather than taking them as an argument is what
+    makes the guarantee structural: an adapter that authenticates its requests has
+    already declared its credential here, and cannot separately forget to declare
+    it for redaction.
+    """
+    found: list[str] = []
+    for name, value in headers.items():
+        if name.lower() not in _CREDENTIAL_HEADERS:
+            continue
+        candidate = value.strip()
+        lowered = candidate.lower()
+        for scheme in _AUTH_SCHEMES:
+            if lowered.startswith(scheme):
+                candidate = candidate[len(scheme) :].strip()
+                break
+        if candidate:
+            found.append(candidate)
+    return tuple(found)
+
+
 @dataclass(frozen=True, slots=True)
 class HttpFailure:
     """A non-2xx answer, reduced to what is safe to reason about."""
 
     status: int
     body: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DialTarget:
+    """One socket to open: a literal address, still speaking the configured name."""
+
+    url: httpx.URL
+    headers: Mapping[str, str]
+    extensions: Mapping[str, Any]
+
+
+def _dial_targets(url: httpx.URL, addresses: frozenset[str] | None) -> tuple[_DialTarget, ...]:
+    """Point the request at the pinned addresses without changing who it talks to.
+
+    This is the transport half of the rebinding control, and the half that was
+    missing (AUD-028, pentest S-17): comparing two DNS answers decides nothing if
+    ``httpx`` then takes a third one when it opens the socket. The address goes in
+    the URL, so it is what ``connect()`` gets; the *name* goes in two places, and
+    both matter for a different reason:
+
+    * ``Host`` -- a name-based virtual host, and any reverse proxy in front of the
+      endpoint, routes on this. Sending the literal instead would reach the right
+      machine and the wrong service.
+    * ``sni_hostname`` -- the TLS extension, and, because ``httpcore`` passes it to
+      ``start_tls`` as ``server_hostname``, **also the name the certificate is
+      checked against**. Leaving it to default to the URL's host would verify the
+      chain against an IP literal, which no ordinary certificate carries: every
+      HTTPS endpoint would fail, and the obvious way to make it pass again is to
+      stop verifying -- trading a hard SSRF for an easy man-in-the-middle. The
+      guarantee has to stay "the socket goes where DNS was pinned, and the peer
+      still has to prove it is the name".
+
+    With no pin (the first-party providers) the URL is used exactly as written and
+    resolution is left to ``httpx``, which is the pre-existing behaviour for hosts
+    that are not household-supplied.
+    """
+    if not addresses:
+        return (_DialTarget(url, {}, {}),)
+    # The authority as configured, port included when it was written: that is what
+    # a virtual host expects to see, and `url.host` alone would drop the port.
+    authority = url.netloc.decode("ascii")
+    name = url.host
+    return tuple(
+        _DialTarget(
+            url=url.copy_with(host=address),
+            headers={"Host": authority},
+            extensions={"sni_hostname": name},
+        )
+        for address in _dial_order(addresses)
+    )
+
+
+def _dial_order(addresses: frozenset[str]) -> tuple[str, ...]:
+    """The pinned addresses, as literals, in a deterministic order.
+
+    IPv4 before IPv6, then sorted: a set has no order, and an order that varies
+    between two runs makes "which address did it dial" unanswerable in an incident.
+
+    Anything that is not a bare literal is refused rather than dropped. A resolver
+    answer this cannot put in a URL -- a scoped link-local ``fe80::1%eth0``, say --
+    would otherwise silently reduce the set the socket may go to, and an empty
+    reduction would fall back to dialling the name, which is the hole being closed.
+    """
+    literals: list[tuple[int, bytes, str]] = []
+    for address in addresses:
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            raise ProviderNotConfigured(
+                f"the endpoint resolves to {address!r}, which is not an address this "
+                "client can dial directly; the request was refused rather than sent "
+                "to whatever the name resolves to next"
+            ) from None
+        literals.append((parsed.version, parsed.packed, address))
+    return tuple(address for _, _, address in sorted(literals))
 
 
 class GuardedHttpClient:
@@ -175,32 +318,51 @@ class GuardedHttpClient:
         self._resolver = resolver
         self._pinned = pinned_addresses
         self._headers = dict(headers or {})
+        self._secrets = _credentials_in(self._headers)
 
     @property
     def base_url(self) -> httpx.URL:
         return self._base_url
 
-    async def assert_stable_resolution(self) -> None:
-        """Re-resolve and compare, so a rebound name is caught before the call.
+    async def assert_stable_resolution(self) -> frozenset[str] | None:
+        """Re-resolve, compare, and hand back the addresses the call may dial.
 
         Skipped when no resolver is configured -- which is the case for the
         first-party providers, whose hostnames are ours to trust and are not
         user-supplied. Only the Ollama path, where the URL comes from a household,
-        pins its resolution.
+        pins its resolution. The pin itself is taken by :func:`resolve_pin` when the
+        transport is built (``LlmProviderFactory._build_ollama``), which is what
+        makes the two answers compared here genuinely two.
 
-        **What this does not do**, stated here because the check reads stronger than
-        it is (security audit, AUD-028): the connection is not then forced onto a
-        pinned address. ``httpx`` resolves the name again when it opens the socket,
-        so a resolver that answers differently a third time is not caught. Requiring
-        the current answer to be a *subset* of the pinned one -- rather than merely
-        to intersect it, which let ``[allowed, hostile]`` through -- is what makes
-        the window narrow rather than closed. Closing it properly means dialling a
-        literal address with the name carried in ``Host``, which is a transport, not
-        a check. The residual is small because the hostname must already be in the
-        instance allowlist, and a household cannot put a name it controls there.
+        The return value is the *current* answer, not the pin: it is non-empty and
+        contained in the pin, so every address in it is both freshly observed and
+        authorised. :meth:`_send_json` opens its socket on one of those literals
+        rather than on the name -- without that, this method compares two answers
+        and then lets ``httpx`` ask a third time (security audit AUD-028, pentest
+        S-17: a resolver announcing an unreachable address passed the comparison
+        while the socket still went where the *third* lookup pointed, so the pin
+        never entered the choice at all).
+
+        **What this still does not do.** Stated because the check once read much
+        stronger than it was: for a while it was wired to nothing and returned on
+        its first line in production, which is the failure mode this paragraph
+        exists to prevent recurring. The pin lives and dies with this client, and a
+        client is built per request. So the window closed is *from the resolution
+        that authorised this transport to each socket it opens* -- which bites on
+        every multi-call flow (the capability probe's ``/api/version`` then
+        ``/api/show``; the emulated-schema retry) and, now that the socket is
+        pinned too, leaves no gap inside a single call. A resolver that flips
+        **between** two requests is still not caught, because nothing durable
+        remembers the earlier answer: that would need the pin persisted next to the
+        configuration, i.e. a schema change.
+
+        Requiring the current answer to be a *subset* of the pinned one -- rather
+        than merely to intersect it, which let ``[allowed, hostile]`` through -- is
+        what keeps the returned set from being widened by the very lookup it is
+        meant to constrain.
         """
         if self._resolver is None or self._pinned is None:
-            return
+            return None
         host = self._base_url.host
         current = await self._resolver(host, endpoint_port(self._base_url))
         if not current or not current <= self._pinned:
@@ -208,6 +370,7 @@ class GuardedHttpClient:
                 f"host {host!r} now resolves elsewhere than when it was registered; "
                 "the request was refused (possible DNS rebinding)"
             )
+        return current
 
     async def get_json(
         self,
@@ -250,8 +413,8 @@ class GuardedHttpClient:
         context: ProviderContext,
         provider_label: str,
     ) -> dict[str, Any] | HttpFailure:
-        await self.assert_stable_resolution()
-        url = self._base_url.join(path)
+        addresses = await self.assert_stable_resolution()
+        targets = _dial_targets(self._base_url.join(path), addresses)
         async with httpx.AsyncClient(
             transport=self._transport,
             timeout=self._settings.timeout_seconds,
@@ -259,21 +422,9 @@ class GuardedHttpClient:
             follow_redirects=False,
             headers=self._headers,
         ) as client:
-            try:
-                request = (
-                    client.build_request(method, url)
-                    if payload is None
-                    else client.build_request(method, url, json=dict(payload))
-                )
-                response = await client.send(request, stream=True)
-                try:
-                    body = await self._read_bounded(response, context)
-                finally:
-                    await response.aclose()
-            except httpx.HTTPError as exc:
-                raise translate_transport_error(
-                    exc, context, provider_label=provider_label
-                ) from None
+            response, body = await self._dial(
+                client, method, targets, payload, context=context, provider_label=provider_label
+            )
 
         # 3xx counts as a failure, not a success: redirects are disabled on purpose,
         # so a redirect is a permitted host trying to send us somewhere else.
@@ -283,7 +434,8 @@ class GuardedHttpClient:
             decoded: object = json.loads(body)
         except json.JSONDecodeError:
             raise ProviderResponseInvalid(
-                f"{provider_label} returned a body that is not JSON: {snippet(body)}",
+                f"{provider_label} returned a body that is not JSON: "
+                f"{snippet(body, secrets=self._secrets)}",
                 context=ProviderContext(context.provider, context.model, "malformed_payload"),
             ) from None
         if not isinstance(decoded, dict):
@@ -292,6 +444,64 @@ class GuardedHttpClient:
                 context=ProviderContext(context.provider, context.model, "malformed_payload"),
             )
         return decoded
+
+    async def _dial(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        targets: tuple[_DialTarget, ...],
+        payload: Mapping[str, Any] | None,
+        *,
+        context: ProviderContext,
+        provider_label: str,
+    ) -> tuple[httpx.Response, str]:
+        """Open the socket, on the first target that accepts one, and read the body.
+
+        More than one target only when the pinned answer held several addresses --
+        a name with both an ``A`` and an ``AAAA`` record is ordinary on a Podman
+        network, and refusing to try the second would turn "pinned" into "broken on
+        dual-stack". Only a *connection* failure moves on: nothing has been written
+        at that point, so re-sending a ``POST`` cannot duplicate anything. Anything
+        that happens after the connection is up belongs to the endpoint that
+        answered, and is translated rather than retried elsewhere.
+        """
+        for index, target in enumerate(targets):
+            try:
+                request = (
+                    client.build_request(
+                        method, target.url, headers=target.headers, extensions=target.extensions
+                    )
+                    if payload is None
+                    else client.build_request(
+                        method,
+                        target.url,
+                        json=dict(payload),
+                        headers=target.headers,
+                        extensions=target.extensions,
+                    )
+                )
+                response = await client.send(request, stream=True)
+                try:
+                    body = await self._read_bounded(response, context)
+                finally:
+                    await response.aclose()
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                if index + 1 < len(targets):
+                    continue
+                raise translate_transport_error(
+                    exc, context, provider_label=provider_label
+                ) from None
+            except httpx.HTTPError as exc:
+                raise translate_transport_error(
+                    exc, context, provider_label=provider_label
+                ) from None
+            return response, body
+        # `_dial_targets` never returns an empty tuple; this keeps the contract
+        # total rather than relying on that from a distance.
+        raise ProviderUnavailable(
+            f"{provider_label} has no address to dial",
+            context=ProviderContext(context.provider, context.model, "connection_refused"),
+        )
 
     async def _read_bounded(self, response: httpx.Response, context: ProviderContext) -> str:
         limit = self._settings.max_response_bytes

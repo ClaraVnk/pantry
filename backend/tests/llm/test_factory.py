@@ -57,53 +57,53 @@ def _config(
     )
 
 
-def test_instance_owner_is_refused_to_every_other_household() -> None:
+async def test_instance_owner_is_refused_to_every_other_household() -> None:
     factory = LlmProviderFactory(_SETTINGS)
     config = _config(_STRANGER, LlmProviderMode.INSTANCE_OWNER)
     with pytest.raises(ProviderNotPermitted) as raised:
-        factory.build_transport(config)
+        await factory.build_transport(config)
     message = str(raised.value)
     assert "reserved" in message
     # The refusal has to be actionable, not merely correct.
     assert "your own API key" in message
 
 
-def test_instance_owner_is_granted_to_the_designated_household() -> None:
+async def test_instance_owner_is_granted_to_the_designated_household() -> None:
     factory = LlmProviderFactory(_SETTINGS)
-    transport = factory.build_transport(_config(_OWNER, LlmProviderMode.INSTANCE_OWNER))
+    transport = await factory.build_transport(_config(_OWNER, LlmProviderMode.INSTANCE_OWNER))
     assert transport.capabilities.model == "claude-opus-5"
 
 
-def test_instance_owner_is_closed_by_default() -> None:
+async def test_instance_owner_is_closed_by_default() -> None:
     """No designated household means nobody -- including the operator."""
     factory = LlmProviderFactory(LlmSettings())
     with pytest.raises(ProviderNotPermitted) as raised:
-        factory.build_transport(_config(_OWNER, LlmProviderMode.INSTANCE_OWNER))
+        await factory.build_transport(_config(_OWNER, LlmProviderMode.INSTANCE_OWNER))
     assert INSTANCE_OWNER_ENV_VAR in str(raised.value)
 
 
-def test_designated_household_without_a_key_gets_the_remedy() -> None:
+async def test_designated_household_without_a_key_gets_the_remedy() -> None:
     settings = LlmSettings(instance_owner_household_id=_OWNER)
     factory = LlmProviderFactory(settings)
     with pytest.raises(ProviderNotConfigured) as raised:
-        factory.build_transport(_config(_OWNER, LlmProviderMode.INSTANCE_OWNER))
+        await factory.build_transport(_config(_OWNER, LlmProviderMode.INSTANCE_OWNER))
     assert INSTANCE_OWNER_KEY_ENV_VAR in str(raised.value)
 
 
-def test_byok_requires_a_stored_key() -> None:
+async def test_byok_requires_a_stored_key() -> None:
     factory = LlmProviderFactory(_SETTINGS)
     with pytest.raises(ProviderNotConfigured):
-        factory.build_transport(_config(_STRANGER, LlmProviderMode.BYOK))
+        await factory.build_transport(_config(_STRANGER, LlmProviderMode.BYOK))
 
 
-def test_ollama_cannot_be_selected_as_a_byok_provider() -> None:
+async def test_ollama_cannot_be_selected_as_a_byok_provider() -> None:
     """Ollama has no key; offering it in the BYOK list would only confuse."""
     factory = LlmProviderFactory(_SETTINGS)
     config = _config(
         _STRANGER, LlmProviderMode.BYOK, provider_code="ollama", model="llama3.2", api_key="x"
     )
     with pytest.raises(ProviderNotConfigured) as raised:
-        factory.build_transport(config)
+        await factory.build_transport(config)
     assert "household key" in str(raised.value)
 
 
@@ -122,7 +122,7 @@ def test_ollama_without_a_probe_is_refused() -> None:
     assert "probed" in str(raised.value)
 
 
-def test_ollama_uses_the_stored_probe() -> None:
+async def test_ollama_uses_the_stored_probe() -> None:
     import datetime as dt
 
     probed = ProviderCapabilities(
@@ -144,7 +144,7 @@ def test_ollama_uses_the_stored_probe() -> None:
         base_url="http://ollama:11434",
         probed_capabilities=probed,
     )
-    transport = factory.build_transport(config)
+    transport = await factory.build_transport(config)
     assert transport.capabilities is probed
     assert transport.capabilities.source == "probed"
 

@@ -1,0 +1,35 @@
+# Chaudron — daily backup schedule.
+#
+# Install to:  ~chaudron/.config/systemd/user/chaudron-backup.timer
+# Then:        systemctl --user daemon-reload
+#              systemctl --user enable --now chaudron-backup.timer
+# Verify:      systemctl --user list-timers chaudron-backup.timer
+#
+# Daily is the cadence the data justifies: a household's inventory changes a few
+# times a day, so the worst case of losing a day is re-scanning a shop. Raise it
+# to twice daily only after the restore drill (chaudron-restore-check.timer) has
+# passed a few times — an untested backup taken twice as often is still an
+# untested backup.
+
+[Unit]
+Description=Chaudron — daily encrypted database backup
+Documentation=https://github.com/ClaraVnk/chaudron
+
+[Timer]
+Unit=chaudron-backup.service
+
+# 03:20 local, before any batch work and well clear of the evening cooking hours
+# when the instance is actually used.
+OnCalendar=*-*-* 03:20:00
+
+# Up to 20 minutes of jitter: several instances backing up to the same
+# destination at 03:20:00 exactly is a self-inflicted thundering herd.
+RandomizedDelaySec=20min
+
+# Run on next boot if the machine was off at 03:20. A machine that is off at
+# night is the normal case for a self-hosted instance, and without this it would
+# simply never be backed up.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

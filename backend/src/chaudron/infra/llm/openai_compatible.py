@@ -30,10 +30,12 @@ from chaudron.domain.llm_ports import (
     ProviderContext,
     ProviderNotConfigured,
     ProviderResponseInvalid,
+    TokenUsage,
 )
-from chaudron.infra.llm.base import CompletionRequest, ProviderTransport
+from chaudron.infra.llm.base import Completion, CompletionRequest, ProviderTransport
 from chaudron.infra.llm.http import GuardedHttpClient, HttpFailure, translate_http_status
 from chaudron.infra.llm.settings import LlmSettings
+from chaudron.infra.llm.usage import subtract_cached, token_count
 
 __all__ = [
     "MISTRAL_MODELS",
@@ -146,7 +148,7 @@ class ChatCompletionsTransport(ProviderTransport):
     def _label(self) -> str:
         return "OpenAI" if self._is_openai else "Mistral AI"
 
-    async def complete(self, request: CompletionRequest) -> str:
+    async def complete(self, request: CompletionRequest) -> Completion:
         result = await self._client.post_json(
             "/v1/chat/completions",
             self._payload(request),
@@ -162,7 +164,7 @@ class ChatCompletionsTransport(ProviderTransport):
                     _OPENAI_SUBSCRIPTION_HINT if self._is_openai else _MISTRAL_CREDENTIALS_HINT
                 ),
             )
-        return self._text_of(result)
+        return Completion(text=self._text_of(result), usage=_usage_of(result))
 
     def _payload(self, request: CompletionRequest) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
@@ -215,3 +217,28 @@ class ChatCompletionsTransport(ProviderTransport):
                 self.capabilities.provider, self.capabilities.model, "empty_response"
             ),
         )
+
+
+def _usage_of(payload: dict[str, Any]) -> TokenUsage | None:
+    """The ``usage`` block of a chat-completions answer, in domain terms.
+
+    ``prompt_tokens`` is the **all-in** prompt count here -- it already contains the
+    cached tokens that ``prompt_tokens_details.cached_tokens`` breaks out -- so the
+    uncached remainder is what belongs in ``input_tokens``. Mistral AI reports no
+    cache detail at all, which simply leaves the cached figure ``None`` and the
+    prompt total intact: a provider without a prompt cache is not a provider whose
+    cache served nothing.
+    """
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    cached: int | None = None
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        cached = token_count(details.get("cached_tokens"))
+    reported = TokenUsage(
+        input_tokens=subtract_cached(token_count(usage.get("prompt_tokens")), cached),
+        output_tokens=token_count(usage.get("completion_tokens")),
+        cached_input_tokens=cached,
+    )
+    return reported if reported.is_known else None

@@ -1,111 +1,111 @@
-# 0005. Abstraction de domaine pour les fournisseurs de modèles
+# 0005. Domain abstraction for model providers
 
-## Statut
+## Status
 
-Accepté — 2026-08-03
+Accepted — 2026-08-03
 
-## Contexte
+## Context
 
-Deux fonctionnalités de Chaudron reposent sur un modèle de langage : la génération de suggestions de recettes à partir du stock disponible, et l'extraction structurée des lignes d'un ticket de caisse photographié (modèle multimodal).
+Two Chaudron features rest on a language model: generating recipe suggestions from available stock, and structured extraction of the lines of a photographed till receipt (multimodal model).
 
-La solution la plus directe serait d'appeler le SDK d'un fournisseur depuis les handlers HTTP. Trois éléments l'excluent :
+The most direct solution would be to call a provider's SDK from the HTTP handlers. Three things rule that out:
 
-1. **Chaque foyer configure son propre accès au modèle** (cf. ADR-0007). Il n'existe pas un fournisseur unique décidé par l'application, mais autant de configurations que de foyers, résolues à l'exécution. Le fournisseur est une donnée, pas une constante de déploiement.
-2. **Cinq adaptateurs sont visés dès la v1**, quatre de premier rang et un cas dégradé de référence :
+1. **Each household configures its own model access** (see ADR-0007). There is no single provider decided by the application, but as many configurations as there are households, resolved at runtime. The provider is data, not a deployment constant.
+2. **Five adapters are targeted from v1**, four first-class ones and one reference degraded case:
 
-   | Adaptateur | Fournisseur | Statut |
+   | Adapter | Provider | Status |
    |---|---|---|
-   | `AnthropicProvider` | Anthropic (Claude) | pleinement capable — `claude-opus-5` est le modèle par défaut de la documentation et du mode `instance_owner` |
-   | `OpenAIProvider` | OpenAI (GPT) | pleinement capable |
-   | `GeminiProvider` | Google (Gemini) | pleinement capable |
-   | `MistralProvider` | Mistral AI (Mistral, Pixtral) | pleinement capable, **hébergé en UE** |
-   | `OllamaProvider` | local | capacités variables, détectées à la configuration |
+   | `AnthropicProvider` | Anthropic (Claude) | fully capable — `claude-opus-5` is the default model in the documentation and in `instance_owner` mode |
+   | `OpenAIProvider` | OpenAI (GPT) | fully capable |
+   | `GeminiProvider` | Google (Gemini) | fully capable |
+   | `MistralProvider` | Mistral AI (Mistral, Pixtral) | fully capable, **EU-hosted** |
+   | `OllamaProvider` | local | variable capabilities, detected at configuration time |
 
-3. **Le domaine n'a pas besoin de savoir qui répond.** « Proposer des recettes à partir de ce stock » et « extraire les lignes de ce ticket » sont des opérations métier ; le transport, le format des messages et la gestion des jetons sont de l'infrastructure.
+3. **The domain does not need to know who answers.** "Suggest recipes from this stock" and "extract the lines of this receipt" are business operations; transport, message format and token handling are infrastructure.
 
-Cet ADR pose l'abstraction alors que le projet évite par ailleurs l'abstraction prématurée. La règle de trois ne s'applique pas ici : cinq implémenteurs sont exigés dès la v1, et le choix entre eux se fait par foyer à chaque requête. Ce n'est pas anticiper un changement possible, c'est modéliser une variabilité déjà présente.
+This ADR introduces an abstraction in a project that otherwise avoids premature abstraction. The rule of three does not apply here: five implementers are required from v1, and the choice between them is made per household on every request. This is not anticipating a possible change, it is modelling variability that is already present.
 
-## Décision
+## Decision
 
-**Ports de domaine.** Deux interfaces sont définies dans la couche domaine, sans aucune dépendance à un SDK :
+**Domain ports.** Two interfaces are defined in the domain layer, with no dependency on any SDK:
 
-- `RecipeSuggester` : à partir d'un inventaire, produit des suggestions de recettes.
-- `ReceiptExtractor` : à partir d'une image, produit des lignes d'achat structurées.
+- `RecipeSuggester`: from an inventory, produces recipe suggestions.
+- `ReceiptExtractor`: from an image, produces structured purchase lines.
 
-Elles n'exposent ni « prompt », ni « message », ni « token » : uniquement des objets du domaine (`InventoryItem`, `RecipeSuggestion`, `ReceiptLine`). Les erreurs des fournisseurs sont traduites en exceptions de domaine (`ProviderUnavailable`, `ProviderQuotaExceeded`, `ProviderResponseInvalid`) ; aucune exception de SDK ne franchit la frontière.
+They expose no "prompt", no "message" and no "token": only domain objects (`InventoryItem`, `RecipeSuggestion`, `ReceiptLine`). Provider errors are translated into domain exceptions (`ProviderUnavailable`, `ProviderQuotaExceeded`, `ProviderResponseInvalid`); no SDK exception crosses the boundary.
 
-**L'interface est conçue pour le fournisseur le plus capable, pas pour le plus faible.** Elle expose la surface complète — sortie structurée stricte, vision, indices de mise en cache de prompt, taille de contexte — et chaque adaptateur déclare ce qu'il sait en faire. Concevoir au plus petit dénominateur commun alignerait le produit sur le fournisseur le moins capable alors que quatre adaptateurs sur cinq sont pleinement capables : c'est précisément le piège que cette décision écarte.
+**The interface is designed for the most capable provider, not the weakest.** It exposes the full surface — strict structured output, vision, prompt caching hints, context size — and each adapter declares what it can do with it. Designing to the lowest common denominator would align the product with the least capable provider while four adapters out of five are fully capable: that is precisely the trap this decision avoids.
 
-**Les capacités appartiennent au couple (fournisseur, modèle), pas au fournisseur.** Un fournisseur de premier rang peut servir un modèle sans vision ou à contexte court si l'utilisateur le choisit pour réduire son coût. La taxonomie de dégradation ci-dessous s'applique donc à toute configuration, pas seulement à Ollama — c'est ce qui la garde pertinente avec quatre fournisseurs pleinement capables.
+**Capabilities belong to the (provider, model) pair, not to the provider.** A first-class provider may serve a model without vision, or with a short context, if the user picks it to cut costs. The degradation taxonomy below therefore applies to every configuration, not just Ollama — which is what keeps it relevant with four fully capable providers.
 
-**Taxonomie de dégradation.** Pour chaque capacité manquante, l'adaptateur relève de l'un de ces trois cas exactement. Le choix se fait par couple (capacité × fonctionnalité) et constitue une décision documentée, jamais une conséquence accidentelle du code :
+**Degradation taxonomy.** For each missing capability, the adapter falls into exactly one of these three cases. The choice is made per (capability × feature) pair and constitutes a documented decision, never an accidental consequence of the code:
 
-1. **Émulation avec perte documentée** — la capacité est approchée par un autre moyen. Exemple : pas de sortie structurée native → le format JSON attendu est demandé dans le prompt, la réponse est validée côté serveur contre le schéma, avec une politique de reprise bornée. La fonctionnalité reste disponible, le taux d'échec est plus élevé, l'utilisateur en est informé.
-2. **Dégradation fonctionnelle visible** — la fonctionnalité reste offerte dans une forme réduite, signalée comme telle dans l'interface (le « mode dégradé »). Exemple : contexte trop court pour l'inventaire complet → suggestions calculées sur un sous-ensemble d'articles, avec mention explicite du périmètre retenu.
-3. **Indisponibilité explicite** — la fonctionnalité est désactivée, avec la raison affichée et la marche à suivre pour y remédier. Exemple : pas de vision → l'import de ticket est désactivé, jamais une erreur brute ni un JSON inventé à partir d'un modèle qui n'a pas vu l'image.
+1. **Emulation with documented loss** — the capability is approximated by other means. Example: no native structured output → the expected JSON format is requested in the prompt, the response is validated server-side against the schema, with a bounded retry policy. The feature stays available, the failure rate is higher, the user is told.
+2. **Visible functional degradation** — the feature is still offered in a reduced form, flagged as such in the interface (the "degraded mode"). Example: context too short for the full inventory → suggestions computed on a subset of items, with an explicit mention of the scope retained.
+3. **Explicit unavailability** — the feature is disabled, with the reason displayed and the steps to fix it. Example: no vision → receipt import is disabled, never a raw error and never invented JSON from a model that never saw the image.
 
-**Indicateur de mode dégradé.** Dès que la configuration d'un foyer n'a pas la capacité pleine, l'interface affiche un indicateur **persistant**, détaillant ce qui est réduit ou indisponible et pourquoi. L'utilisateur ne doit jamais découvrir la limite au moment de l'échec : il doit la connaître avant d'essayer. C'est aussi ce qui protège la réputation du produit — une extraction médiocre attribuée au petit modèle local que l'utilisateur a lui-même chargé n'est pas la même chose qu'une extraction médiocre attribuée à Chaudron.
+**Degraded-mode indicator.** As soon as a household's configuration lacks full capability, the interface shows a **persistent** indicator detailing what is reduced or unavailable and why. The user must never discover the limit at the moment of failure: they must know about it before trying. This also protects the product's reputation — a poor extraction attributed to the small local model the user loaded themselves is not the same thing as a poor extraction attributed to Chaudron.
 
-**Modèle de capacités : deux natures de déclaration, explicites dans le type.** L'asymétrie entre adaptateurs est structurante et fait partie du modèle, pas un cas particulier traité au coup par coup :
+**Capability model: two kinds of declaration, explicit in the type.** The asymmetry between adapters is structural and part of the model, not a special case handled ad hoc:
 
-- **Capacités statiques** (`AnthropicProvider`, `OpenAIProvider`, `GeminiProvider`, `MistralProvider`) — connues à l'avance, dérivées du couple (fournisseur, modèle) par une table embarquée dans l'adaptateur. Aucun appel réseau n'est nécessaire pour les connaître.
-- **Capacités sondées** (`OllamaProvider`) — dépendent du modèle chargé dans l'instance de l'utilisateur, qui peut changer sans que Chaudron en soit averti. Elles sont établies à la configuration en interrogeant l'instance, persistées avec la configuration du foyer, horodatées, et rafraîchies sur demande explicite.
+- **Static capabilities** (`AnthropicProvider`, `OpenAIProvider`, `GeminiProvider`, `MistralProvider`) — known in advance, derived from the (provider, model) pair by a table embedded in the adapter. No network call is needed to know them.
+- **Probed capabilities** (`OllamaProvider`) — they depend on the model loaded in the user's instance, which can change without Chaudron being told. They are established at configuration time by querying the instance, persisted with the household configuration, timestamped, and refreshed on explicit request.
 
-Le domaine consomme les deux à travers le même type `ProviderCapabilities`, mais la provenance (`static` / `probed`, avec la date du sondage) est portée par la valeur : l'interface peut ainsi signaler qu'une capacité sondée date et proposer un rafraîchissement, ce qui n'a aucun sens pour une capacité statique.
+The domain consumes both through the same `ProviderCapabilities` type, but the provenance (`static` / `probed`, with the probe date) is carried by the value: the interface can therefore flag that a probed capability is stale and offer a refresh, which makes no sense for a static one.
 
-**Piège de nommage à désamorcer.** Trois fournisseurs vendent un abonnement grand public dont le nom sera confondu avec l'accès API. C'est la première source prévisible de tickets de support, et l'interface de configuration doit lever l'ambiguïté **au moment où l'utilisateur colle sa clé**, avec le lien vers la bonne console :
+**A naming trap to defuse.** Three providers sell a consumer subscription whose name will be confused with API access. This is the first predictable source of support tickets, and the configuration interface must clear up the ambiguity **at the moment the user pastes their key**, with a link to the right console:
 
-| L'utilisateur pense… | Il lui faut en réalité… |
+| The user thinks… | What they actually need… |
 |---|---|
-| ChatGPT Plus | une clé d'API OpenAI (facturation à l'usage, console développeur) |
-| Claude Pro / Max | une clé d'API Anthropic (console développeur) |
-| Gemini Advanced | une clé d'API Google AI |
+| ChatGPT Plus | an OpenAI API key (usage billing, developer console) |
+| Claude Pro / Max | an Anthropic API key (developer console) |
+| Gemini Advanced | a Google AI API key |
 
-Un abonnement grand public ne donne **aucun** accès programmatique : ce sont deux produits distincts, avec deux facturations distinctes. Le message d'erreur d'une clé invalide doit renvoyer explicitement à cette distinction plutôt qu'au message brut du SDK.
+A consumer subscription grants **no** programmatic access whatsoever: these are two distinct products, with two distinct bills. The error message for an invalid key must point explicitly at this distinction rather than at the SDK's raw message.
 
-**Souveraineté des données : deux options, à exposer dans le choix du fournisseur.** Deux configurations seulement garantissent que les données de consommation alimentaire d'un foyer ne quittent pas la juridiction européenne : **Mistral AI** (hébergé en UE) et **Ollama** (rien ne sort de la machine). C'est un critère de choix réel pour un utilisateur européen, et il doit être affiché comme une propriété du fournisseur dans l'interface de sélection, au même rang que ses capacités — pas enfoui dans une documentation.
+**Data sovereignty: two options, to be surfaced in the provider choice.** Only two configurations guarantee that a household's food consumption data never leaves European jurisdiction: **Mistral AI** (EU-hosted) and **Ollama** (nothing leaves the machine). This is a genuine selection criterion for a European user, and it must be shown as a property of the provider in the selection interface, on a par with its capabilities — not buried in documentation.
 
-**Adaptateurs.** Les implémentations vivent dans la couche infrastructure. Une fabrique construit l'adaptateur adéquat à partir de la configuration du foyer courant ; les handlers reçoivent le port par injection et ne connaissent jamais l'implémentation concrète.
+**Adapters.** The implementations live in the infrastructure layer. A factory builds the right adapter from the current household's configuration; handlers receive the port by injection and never know the concrete implementation.
 
-**Tests de conformité d'adaptateur.** Une suite de contrat unique, paramétrée sur tous les adaptateurs, définit ce qu'un adaptateur doit honorer : respect de la signature des ports, traduction de chaque mode d'échec vers l'exception de domaine correspondante, déclaration de capacités bien formée, et — pour chaque capacité déclarée absente — conformité au cas de la taxonomie retenu pour ce couple. Elle s'exécute sur enregistrements rejoués en CI, et en mode réel à la demande. **Ajouter un fournisseur, c'est écrire un adaptateur et faire passer cette suite** : un travail borné, qui ne peut pas régresser sur les quatre autres. Sans ce garde-fou, cinq adaptateurs seraient imprudents pour un projet solo.
+**Adapter conformance tests.** A single contract suite, parameterised over all adapters, defines what an adapter must honour: conformance to the port signatures, translation of each failure mode into the corresponding domain exception, a well-formed capability declaration, and — for each capability declared absent — conformance to the taxonomy case chosen for that pair. It runs against replayed recordings in CI, and in live mode on demand. **Adding a provider means writing an adapter and making that suite pass**: bounded work that cannot regress the other four. Without that safeguard, five adapters would be reckless for a solo project.
 
-**Les abonnements grand public ne sont pas une option d'exécution.** Claude Pro/Max, ChatGPT Plus et Gemini Advanced sont des licences d'usage **personnel**, sans API stable ni contractuelle. Une application qui sert des utilisateurs ne peut s'y adosser : usage hors licence, surface non documentée susceptible de casser sans préavis, aucun engagement de disponibilité. Seuls des accès API facturés à l'usage ou un modèle auto-hébergé sont des fournisseurs légitimes à l'exécution.
+**Consumer subscriptions are not a runtime option.** Claude Pro/Max, ChatGPT Plus and Gemini Advanced are **personal** use licences, with no stable or contractual API. An application serving users cannot lean on them: out-of-licence use, undocumented surface liable to break without notice, no availability commitment. Only usage-billed API access or a self-hosted model are legitimate runtime providers.
 
-En revanche, ces abonnements sont parfaitement légitimes pour **développer** Chaudron — écrire du code, concevoir des prompts, explorer des formats de sortie. La distinction porte sur le poste de dépense, pas sur l'outil : un abonnement peut construire le produit, il ne peut pas le servir.
+Those subscriptions are, on the other hand, perfectly legitimate for **developing** Chaudron — writing code, designing prompts, exploring output formats. The distinction is about the cost line, not the tool: a subscription can build the product, it cannot serve it.
 
-## Conséquences
+## Consequences
 
-### Positives
+### Positive
 
-- Le produit exploite pleinement les fournisseurs capables au lieu de s'aligner sur le plus faible : sortie structurée stricte et mise en cache de prompt sont utilisées là où elles existent.
-- Le foyer choisit selon ses propres critères — coût, capacités, juridiction — sans que Chaudron impose un fournisseur.
-- La logique métier est testable sans réseau : un `FakeRecipeSuggester` en mémoire suffit, et la majorité des tests n'a jamais besoin d'un vrai fournisseur.
-- La taxonomie de dégradation rend le comportement en capacité manquante prévisible et revuable : pour chaque couple, on sait quel cas s'applique et pourquoi.
-- Les tests de conformité bornent le coût d'ajout d'un fournisseur et transforment une régression potentielle en échec de CI.
-- Les erreurs de fournisseur sont traduites une fois, au bon endroit, au lieu de fuir en `except AnthropicError` dispersés dans les routes.
+- The product fully exploits capable providers instead of aligning with the weakest: strict structured output and prompt caching are used where they exist.
+- The household chooses on its own criteria — cost, capabilities, jurisdiction — without Chaudron imposing a provider.
+- Business logic is testable without a network: an in-memory `FakeRecipeSuggester` is enough, and most tests never need a real provider.
+- The degradation taxonomy makes behaviour under a missing capability predictable and reviewable: for each pair, we know which case applies and why.
+- The conformance tests bound the cost of adding a provider and turn a potential regression into a CI failure.
+- Provider errors are translated once, in the right place, instead of leaking into `except AnthropicError` scattered across the routes.
 
-### Négatives
+### Negative
 
-- **La matrice de test et de maintenance est importante, et c'est le vrai prix de la décision.** Cinq adaptateurs × chaque fonctionnalité de modèle × chaque capacité consommée : chaque nouvelle fonctionnalité multiplie les cas à trancher, implémenter, exposer et tester. Pour un développeur solo, c'est une charge structurelle, pas un coût ponctuel. Les tests de conformité la rendent tenable — ils ne la suppriment pas.
-- **Cinq SDK à suivre.** Chacun a son rythme de publication, ses ruptures d'API et ses modèles dépréciés. Une mise à jour de dépendance peut casser un adaptateur sans toucher aux autres, et il faut le détecter avant l'utilisateur.
-- **Les capacités statiques sont une table à maintenir à la main.** Chaque nouveau modèle publié par l'un des quatre fournisseurs demande une entrée ; une table périmée fait déclarer une capacité absente ou promet une capacité inexistante.
-- **La déclaration sondée d'Ollama est une source de bugs propre.** Elle dépend d'une instance tierce joignable au moment de la configuration ; l'utilisateur peut changer de modèle après coup sans que Chaudron le sache, laissant des capacités périmées. Il faut gérer l'instance injoignable, la donnée obsolète et une voie de rafraîchissement — trois chemins d'erreur qui n'existent pour aucun autre adaptateur.
-- **Le chemin d'émulation a ses propres modes d'échec** : latences variables et échecs résiduels que l'interface doit présenter honnêtement plutôt que masquer.
-- **L'indicateur de mode dégradé est du travail d'UI récurrent** : chaque capacité manquante doit être expliquée en langue naturelle, avec une remédiation actionnable. Un indicateur vague est pire qu'aucun.
-- **Support utilisateur plus difficile.** « Ça ne marche pas » peut venir de leur instance Ollama, de leur quota, d'une clé d'abonnement collée à la place d'une clé d'API, du modèle qu'ils ont choisi, ou du code. Le diagnostic exige de faire remonter le fournisseur, les capacités détectées et le mode d'échec dans les erreurs présentées.
+- **The test and maintenance matrix is large, and that is the real price of the decision.** Five adapters × each model feature × each capability consumed: every new feature multiplies the cases to decide, implement, surface and test. For a solo developer, that is a structural load, not a one-off cost. The conformance tests make it bearable — they do not remove it.
+- **Five SDKs to track.** Each has its own release cadence, its own API breakages and its own deprecated models. A dependency update can break one adapter without touching the others, and it has to be caught before the user does.
+- **Static capabilities are a hand-maintained table.** Every new model released by one of the four providers needs an entry; a stale table either declares a capability absent or promises one that does not exist.
+- **Ollama's probed declaration is a bug source of its own.** It depends on a third-party instance being reachable at configuration time; the user can switch models afterwards without Chaudron knowing, leaving stale capabilities. The unreachable instance, the stale data and a refresh path all have to be handled — three error paths that exist for no other adapter.
+- **The emulation path has its own failure modes**: variable latency and residual failures that the interface must present honestly rather than hide.
+- **The degraded-mode indicator is recurring UI work**: every missing capability has to be explained in plain language, with an actionable remedy. A vague indicator is worse than none.
+- **User support is harder.** "It doesn't work" can come from their Ollama instance, their quota, a subscription key pasted instead of an API key, the model they picked, or the code. Diagnosis requires surfacing the provider, the detected capabilities and the failure mode in the errors shown.
 
-## Alternatives écartées
+## Rejected alternatives
 
-- **Appels directs au SDK dans les handlers** — le moins de code aujourd'hui. Écarté : cinq fournisseurs sélectionnés par foyer à l'exécution se traduiraient par des branchements conditionnels dans chaque handler.
-- **Interface au plus petit dénominateur commun** — une seule surface, celle que tous les fournisseurs savent honorer, donc aucune matrice de dégradation à maintenir. Écarté explicitement : cela aligne le produit sur le fournisseur le plus faible et prive la majorité des foyers des capacités qu'ils paient.
-- **Un seul fournisseur de premier rang en v1, les autres plus tard** — diviserait la matrice par quatre immédiatement. Écarté : le choix du fournisseur est un critère d'adoption (coût, juridiction, compte déjà existant), et l'ajout tardif d'un adaptateur sans suite de conformité préexistante est bien plus risqué que sa construction initiale.
-- **Une passerelle multi-fournisseurs (LiteLLM, OpenRouter)** — normalise les fournisseurs sans écrire d'adaptateurs. Écarté : une passerelle logicielle impose son modèle de données et suit mal les capacités spécifiques — exactement ce que la décision cherche à exploiter ; une passerelle hébergée ajoute un intermédiaire qui voit toutes les requêtes, ce qui détruit l'argument de souveraineté et contredit le modèle par foyer de l'ADR-0007.
-- **Abstraction générique `LLMClient` (`complete(prompt) -> str`)** — une seule interface pour tout. Écartée : elle place la construction du prompt et le parsing de la réponse dans le domaine, et ne permet aucune déclaration de capacités.
-- **Abonnement grand public exploité via une automatisation de navigateur** — supprimerait le coût à l'usage. Écarté : usage hors licence, surface non documentée, aucune garantie de disponibilité.
+- **Direct SDK calls in the handlers** — the least code today. Rejected: five providers selected per household at runtime would translate into conditional branching in every handler.
+- **A lowest-common-denominator interface** — one surface, the one every provider can honour, hence no degradation matrix to maintain. Explicitly rejected: it aligns the product with the weakest provider and deprives most households of the capabilities they pay for.
+- **A single first-class provider in v1, the others later** — would divide the matrix by four immediately. Rejected: provider choice is an adoption criterion (cost, jurisdiction, an account already held), and adding an adapter late with no pre-existing conformance suite is far riskier than building it up front.
+- **A multi-provider gateway (LiteLLM, OpenRouter)** — normalises providers without writing adapters. Rejected: a software gateway imposes its own data model and tracks provider-specific capabilities poorly — exactly what this decision seeks to exploit; a hosted gateway adds an intermediary that sees every request, which destroys the sovereignty argument and contradicts ADR-0007's per-household model.
+- **A generic `LLMClient` abstraction (`complete(prompt) -> str`)** — one interface for everything. Rejected: it puts prompt construction and response parsing in the domain, and allows no capability declaration.
+- **A consumer subscription driven through browser automation** — would remove the usage cost. Rejected: out-of-licence use, undocumented surface, no availability guarantee.
 
-## Révision
+## Revisiting
 
-- Si la matrice capacité × fonctionnalité devient ingérable à la main, formaliser les couples dans une table de décision unique, vérifiée par les tests de conformité, plutôt que dispersée entre les adaptateurs et l'interface.
-- Retirer un adaptateur si les mesures montrent qu'aucun foyer ne l'utilise : chaque adaptateur conservé a un coût de maintenance permanent, et cinq est un plafond, pas un point de départ.
-- Réévaluer la détection de capacités d'Ollama si l'instance expose un moyen fiable de signaler un changement de modèle.
-- Réévaluer la granularité des ports si un troisième cas d'usage de modèle apparaît (par exemple la normalisation de libellés produits).
+- If the capability × feature matrix becomes unmanageable by hand, formalise the pairs in a single decision table, checked by the conformance tests, rather than scattered between the adapters and the interface.
+- Remove an adapter if measurements show that no household uses it: every adapter kept carries a permanent maintenance cost, and five is a ceiling, not a starting point.
+- Reassess Ollama capability detection if the instance exposes a reliable way to signal a model change.
+- Reassess port granularity if a third model use case appears (product label normalisation, for instance).

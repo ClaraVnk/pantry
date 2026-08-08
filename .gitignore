@@ -108,10 +108,24 @@ data/openfoodfacts/
 *.jsonl
 *.jsonl.gz
 
-# Receipt images and user uploads — personal data, never versioned
-uploads/
-media/
-receipts/
+# Receipt images and user uploads — personal data, never versioned.
+#
+# Anchored with a leading slash, and that is not tidiness. Unanchored, `receipts/`
+# matches a directory of that name at *any* depth, and it silently swallowed
+# `frontend/src/features/receipts/` — six source files that existed locally,
+# built locally, and were simply absent from the repository. The failure surfaced
+# on CI as `Cannot find module '../receipts/ReceiptsScreen'`, which points at the
+# importer rather than at the rule that removed the import's target.
+#
+# A pattern that hides source code is worse than one that misses a data
+# directory: the second is caught by review, the first is caught by whoever
+# clones the repository next.
+/uploads/
+/media/
+/receipts/
+data/uploads/
+data/media/
+data/receipts/
 
 # Local demo stack (see docs/screenshots): generated, never committed
 frontend/.env.local

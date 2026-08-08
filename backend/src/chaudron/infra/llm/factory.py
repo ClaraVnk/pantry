@@ -55,7 +55,11 @@ from chaudron.infra.llm.gemini_provider import (
 )
 from chaudron.infra.llm.http import Resolver
 from chaudron.infra.llm.ollama_provider import PROVIDER_CODE as OLLAMA_CODE
-from chaudron.infra.llm.ollama_provider import OllamaTransport, build_guarded_client
+from chaudron.infra.llm.ollama_provider import (
+    OllamaTransport,
+    build_guarded_client,
+    build_pinned_client,
+)
 from chaudron.infra.llm.openai_compatible import (
     MISTRAL_PROVIDER_CODE,
     OPENAI_PROVIDER_CODE,
@@ -113,9 +117,16 @@ class HouseholdProviderConfig:
 class LlmProviderFactory:
     """Resolves a household configuration into a port implementation.
 
-    ``transport``, ``resolver`` and ``pinned_addresses`` exist so the conformance
-    suite and the unit tests can substitute the wire without substituting the
-    adapter: the logic under test is the real one, only the socket is a double.
+    ``transport`` and ``pinned_addresses`` exist so the conformance suite and the
+    unit tests can substitute the wire without substituting the adapter: the logic
+    under test is the real one, only the socket is a double.
+
+    ``resolver`` is not a test seam. It is the production DNS lookup
+    (``system_resolver``, wired in ``services.providers.provider_ports_builder``),
+    and supplying it is what arms the rebinding check on the Ollama path: the
+    factory takes the first DNS answer here and hands it to the client as the pin
+    that every later call is compared against. Passing ``pinned_addresses``
+    explicitly overrides that, which is what the doubles do.
 
     ``cipher`` is what makes ``byok`` work. It is optional so that a test exercising
     the four other modes needs no key material; a household whose credential is
@@ -166,20 +177,29 @@ class LlmProviderFactory:
 
     # -- ports ------------------------------------------------------------ #
 
-    def recipe_generator(self, config: HouseholdProviderConfig) -> RecipeGenerator:
-        return ModelRecipeGenerator(self.build_transport(config))
+    async def recipe_generator(self, config: HouseholdProviderConfig) -> RecipeGenerator:
+        return ModelRecipeGenerator(await self.build_transport(config))
 
-    def receipt_parser(self, config: HouseholdProviderConfig) -> ReceiptParser:
-        return ModelReceiptParser(self.build_transport(config))
+    async def receipt_parser(self, config: HouseholdProviderConfig) -> ReceiptParser:
+        return ModelReceiptParser(await self.build_transport(config))
 
     # -- wiring ----------------------------------------------------------- #
 
-    def build_transport(self, config: HouseholdProviderConfig) -> ProviderTransport:
+    async def build_transport(self, config: HouseholdProviderConfig) -> ProviderTransport:
+        """Build the adapter for this configuration.
+
+        Asynchronous for one reason, and only on one branch: the Ollama path has to
+        resolve the household's hostname *before* the client exists, so that the
+        first DNS answer can become the pin the rebinding check compares against.
+        The four hosted providers do no I/O here and are async purely to keep one
+        signature; splitting them would put the decision of which method to call
+        back into the caller, which is the knowledge this factory exists to hold.
+        """
         # Permission and coherence first, capabilities second. A household that is
         # not allowed to use this mode must be told *that*, not handed an error
         # about a model table it was never going to reach.
         if config.mode is LlmProviderMode.OLLAMA:
-            return self._build_ollama(config)
+            return await self._build_ollama(config)
         api_key = self._resolve_api_key(config)
         capabilities = self.capabilities_for(config)
         if config.provider_code == ANTHROPIC_CODE:
@@ -204,7 +224,14 @@ class LlmProviderFactory:
             )
         raise ProviderNotConfigured(f"unknown provider {config.provider_code!r}")
 
-    def _build_ollama(self, config: HouseholdProviderConfig) -> ProviderTransport:
+    async def _build_ollama(self, config: HouseholdProviderConfig) -> ProviderTransport:
+        """The one branch where the URL is hostile input, and the only one that pins.
+
+        The first-party providers are deliberately left unpinned: their hostnames
+        are ours, they are not user-supplied, and they are not an SSRF primitive.
+        Pinning them would buy nothing and would make a routine DNS change at a
+        vendor look like an attack.
+        """
         if config.provider_code != OLLAMA_CODE:
             raise ProviderNotConfigured(
                 f"mode 'ollama' cannot serve provider {config.provider_code!r}"
@@ -212,13 +239,23 @@ class LlmProviderFactory:
         if not config.base_url:
             raise ProviderNotConfigured("mode 'ollama' requires a base URL")
         capabilities = self.capabilities_for(config)
-        client = build_guarded_client(
-            config.base_url,
-            self._settings,
-            transport=self._transport,
-            resolver=self._resolver,
-            pinned_addresses=self._pinned,
-        )
+        if self._pinned is not None:
+            # An explicit pin short-circuits the lookup: this is the doubles' path,
+            # where there is no DNS to consult and the pin is the fixture.
+            client = build_guarded_client(
+                config.base_url,
+                self._settings,
+                transport=self._transport,
+                resolver=self._resolver,
+                pinned_addresses=self._pinned,
+            )
+        else:
+            client = await build_pinned_client(
+                config.base_url,
+                self._settings,
+                transport=self._transport,
+                resolver=self._resolver,
+            )
         return OllamaTransport(client, capabilities, max_num_ctx=self._settings.ollama_max_num_ctx)
 
     def _resolve_api_key(self, config: HouseholdProviderConfig) -> str:

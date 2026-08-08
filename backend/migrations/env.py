@@ -20,7 +20,21 @@ from chaudron.domain.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` is not decoration, and the default is the
+    # trap: `fileConfig` otherwise switches off every logger that `alembic.ini`
+    # does not name -- which is all of them except `root`, `sqlalchemy` and
+    # `alembic`. Anything that runs migrations inside a larger process, the test
+    # harness included, silently loses its own logging from this line onwards.
+    #
+    # It cost three tests to find. `tests/test_seed_guard.py` asserts that the
+    # non-local refusal says what to do about it, reading the record through
+    # `caplog`; run after a migration and `chaudron.seed` had been disabled, so
+    # `caplog` was empty and the assertion failed on a message that had in fact
+    # been emitted. The whole suite passed regardless, because a later
+    # `dictConfig(disable_existing_loggers=False)` happened to turn everything
+    # back on -- accidental masking, which is why this only ever appeared when
+    # those files were run on their own.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

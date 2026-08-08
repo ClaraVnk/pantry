@@ -1,0 +1,48 @@
+/*
+ * First-run creation of a storage location.
+ *
+ * Mobile first and single column, like every other form in the application. The
+ * breakpoint is in `em` and the only thing it changes is how many suggestion
+ * buttons share a line — the layout below it is untouched, so nothing here can
+ * disturb the responsive work in `styles/global.css`.
+ */
+
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  max-width: 32rem;
+}
+
+.suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* 30em: measured — below this, two "Créer « Congélateur »" buttons on one line
+ * push each other under the 44 px target. */
+@media (min-width: 30em) {
+  .suggestions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .suggestions > * {
+    flex: 1 1 12rem;
+  }
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.formLead {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
@@ -36,7 +37,7 @@ from chaudron.domain.llm_ports import (
     RecipeIngredient,
     RecipeSuggestion,
 )
-from chaudron.infra.llm.redaction import snippet
+from chaudron.infra.redaction import snippet
 from chaudron.infra.untrusted_text import sanitize_optional
 
 __all__ = [
@@ -81,6 +82,22 @@ RECIPE_SCHEMA: Final[dict[str, Any]] = {
                     "duration_minutes": {"type": ["integer", "null"]},
                     "servings": {"type": ["integer", "null"]},
                     "uses_expiring_soon": {"type": "boolean"},
+                    # Self-declared (contract 4ter). Optional in `required`
+                    # because a model that omits it must not fail the whole
+                    # answer: the field exists to *show* a divergence, and a
+                    # missing declaration is itself displayable as "not stated".
+                    "preparation": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "serving_temperature": {
+                                "type": "string",
+                                "enum": ["hot", "cold", "either"],
+                            },
+                            "requires_cooking": {"type": "boolean"},
+                            "requires_oven": {"type": "boolean"},
+                        },
+                    },
                     "ingredients": {
                         "type": "array",
                         "items": {
@@ -134,7 +151,7 @@ def _invalid(reason: str, context: ProviderContext | None) -> ProviderResponseIn
     return ProviderResponseInvalid(reason, context=context)
 
 
-def _load(raw: str, context: ProviderContext | None) -> dict[str, Any]:
+def _load(raw: str, context: ProviderContext | None, secrets: Sequence[str] = ()) -> dict[str, Any]:
     """Parse the outermost JSON object, tolerating the fences models like to add.
 
     A model told to answer in JSON very often answers with a ```json block around
@@ -148,7 +165,7 @@ def _load(raw: str, context: ProviderContext | None) -> dict[str, Any]:
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         raise _invalid(
-            f"provider response is not JSON: {snippet(text)}",
+            f"provider response is not JSON: {snippet(text, secrets=secrets)}",
             context,
         )
     try:
@@ -256,9 +273,55 @@ def _optional_date(value: object) -> dt.date | None:
         return None
 
 
-def read_recipes(raw: str, *, context: ProviderContext | None = None) -> list[RecipeSuggestion]:
-    """Turn a model answer into domain objects, or raise :class:`ProviderResponseInvalid`."""
-    payload = _load(raw, context)
+#: The three values contract 4ter allows a model to self-declare. Anything else
+#: is read as "it did not say", which is a state the interface renders. Coercing
+#: an unknown word onto one of the three would be inventing the answer.
+_SERVING_TEMPERATURES: Final[frozenset[str]] = frozenset({"hot", "cold", "either"})
+
+
+def _optional_bool(value: object) -> bool | None:
+    """``None`` when the model was silent -- never ``False`` by default.
+
+    "This recipe does not need an oven" and "the model did not say" are different
+    claims, and only one of them is safe to show to somebody who asked not to
+    turn the oven on in August (contract 4ter).
+    """
+    return value if isinstance(value, bool) else None
+
+
+def _read_preparation(value: object) -> tuple[str | None, bool | None, bool | None]:
+    """The model's own description of its recipe. Never validated, only bounded.
+
+    Nothing here can be checked -- no program can tell whether a dish is served
+    cold -- so the reader's whole job is to keep the values inside the closed
+    vocabulary and let "unknown" stay unknown. A divergence from what the
+    household asked for is displayed beside the suggestion; it never removes it.
+    """
+    if not isinstance(value, dict):
+        return None, None, None
+    raw = value.get("serving_temperature")
+    temperature = raw if isinstance(raw, str) and raw in _SERVING_TEMPERATURES else None
+    return (
+        temperature,
+        _optional_bool(value.get("requires_cooking")),
+        _optional_bool(value.get("requires_oven")),
+    )
+
+
+def read_recipes(
+    raw: str,
+    *,
+    context: ProviderContext | None = None,
+    secrets: Sequence[str] = (),
+) -> list[RecipeSuggestion]:
+    """Turn a model answer into domain objects, or raise :class:`ProviderResponseInvalid`.
+
+    ``secrets`` are the credential values the transport authenticates with. They
+    are removed from the excerpt this reader quotes when the answer is not JSON --
+    which is the excerpt that carries the key back when a gateway answers 200 with
+    its own error page rather than a completion.
+    """
+    payload = _load(raw, context, secrets)
     entries = _require_list(payload, "suggestions", context)
     suggestions: list[RecipeSuggestion] = []
     for index, entry in enumerate(entries[:MAX_SUGGESTIONS_READ]):
@@ -290,6 +353,7 @@ def read_recipes(raw: str, *, context: ProviderContext | None = None) -> list[Re
         )
         if not steps:
             raise _invalid(f"suggestion {title!r} has no steps", context)
+        temperature, cooking, oven = _read_preparation(entry.get("preparation"))
         suggestions.append(
             RecipeSuggestion(
                 title=title,
@@ -299,6 +363,9 @@ def read_recipes(raw: str, *, context: ProviderContext | None = None) -> list[Re
                 ingredients=tuple(ingredients),
                 steps=steps,
                 uses_expiring_soon=bool(entry.get("uses_expiring_soon", False)),
+                serving_temperature=temperature,
+                requires_cooking=cooking,
+                requires_oven=oven,
             )
         )
     if not suggestions:
@@ -306,14 +373,21 @@ def read_recipes(raw: str, *, context: ProviderContext | None = None) -> list[Re
     return suggestions
 
 
-def read_receipt(raw: str, *, context: ProviderContext | None = None) -> ParsedReceipt:
+def read_receipt(
+    raw: str,
+    *,
+    context: ProviderContext | None = None,
+    secrets: Sequence[str] = (),
+) -> ParsedReceipt:
     """Turn a model answer into a :class:`ParsedReceipt`, or raise.
 
     An empty ``lines`` array is accepted: an unreadable photograph is a legitimate
     outcome the user must be shown, and inventing a line to avoid an empty screen
     would be far worse than an honest "nothing readable here".
+
+    ``secrets`` is removed from any quoted excerpt, as in :func:`read_recipes`.
     """
-    payload = _load(raw, context)
+    payload = _load(raw, context, secrets)
     entries = _require_list(payload, "lines", context)
     lines: list[ReceiptLine] = []
     for index, entry in enumerate(entries[:MAX_RECEIPT_LINES]):

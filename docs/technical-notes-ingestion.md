@@ -1,580 +1,584 @@
-# Note technique — Ingestion automatique du stock et export de la liste de courses
+# Technical note — Automatic stock ingestion and shopping-list export
 
-**Projet** : Chaudron (PWA de gestion de stock alimentaire domestique — backend FastAPI / PostgreSQL)
-**Statut** : note de faisabilité, pour décision
-**Date de rédaction** : 3 août 2026
-**Toutes les pages citées ont été consultées le 3 août 2026.** Les tarifs, quotas et politiques évoluent vite : les chiffres ci-dessous ont une durée de validité de quelques mois, pas d'années.
+**Project**: Chaudron (household food stock management PWA — FastAPI / PostgreSQL backend)
+**Status**: feasibility note, for decision
+**Written**: 3 August 2026
+**Every page cited was consulted on 3 August 2026.** Prices, quotas and policies move fast: the figures below have a shelf life of a few months, not years.
 
 ---
 
-## 0. Périmètre et méthode
+## 0. Scope and method
 
-### 0.1 Ce qui est déjà tranché et n'est pas rediscuté ici
+### 0.1 What is already settled and is not reopened here
 
-**L'intégration des comptes drive des enseignes (Courses U, Intermarché Drive, Chronodrive, Auchan Drive…) est écartée.** Aucune de ces enseignes n'expose d'API publique ; l'accès passerait par du reverse-engineering d'endpoints privés, fragile par construction et contraire aux CGU. Le point est tranché par **[ADR-0002](adr/0002-no-retailer-drive-integration.md)** (accepté le 2026-08-03) et n'est pas rediscuté ici. La présente note part donc du principe que les données d'achat doivent venir **de l'utilisateur** (mail de récap qu'il reçoit déjà, ou photo de son ticket), jamais d'un scraping d'enseigne.
+**Integrating retailer drive accounts (Courses U, Intermarché Drive, Chronodrive, Auchan Drive…) is ruled out.** None of these retailers exposes a public API; access would go through reverse-engineering private endpoints, fragile by construction and contrary to their terms of service. The point is settled by **[ADR-0002](adr/0002-no-retailer-drive-integration.md)** (accepted on 2026-08-03) and is not reopened here. This note therefore assumes that purchase data must come **from the user** (a summary email they already receive, or a photo of their receipt), never from scraping a retailer.
 
-Cette note **instruit les voies 3 et 4 de l'ADR-0002** (photo de ticket, capture d'e-mail transféré) et documente l'export de la liste de courses, qui n'est couvert par aucun ADR à ce jour.
+This note **works up routes 3 and 4 of ADR-0002** (receipt photo, forwarded-email capture) and documents the shopping-list export, which no ADR covers to date.
 
-Un signal qui va dans le même sens pour l'avenir : la loi anti-gaspillage a supprimé l'impression automatique du ticket de caisse au 1er août 2023, ce qui pousse structurellement les enseignes vers le ticket dématérialisé — donc vers l'email et le QR code, c'est-à-dire vers le chemin n°1 de cette note.
-Source : <https://www.presse-citron.net/le-ticket-de-caisse-disparait-quel-est-son-remplacant/>
+One signal pointing the same way for the future: the anti-waste law abolished automatic printing of the till receipt on 1 August 2023, which structurally pushes retailers towards the dematerialised receipt — hence towards email and QR codes, that is, towards route no. 1 of this note.
+Source: <https://www.presse-citron.net/le-ticket-de-caisse-disparait-quel-est-son-remplacant/>
 
-### 0.2 Rattachement aux décisions déjà prises
+### 0.2 Ties to decisions already taken
 
-Cette note ne part pas d'une page blanche. Elle doit se lire avec :
+This note does not start from a blank page. It must be read together with:
 
-| Document | Ce qu'il impose à cette note |
+| Document | What it imposes on this note |
 |---|---|
-| [ADR-0002](adr/0002-no-retailer-drive-integration.md) | Pas de drive enseigne. L'adresse par foyer est spécifiée `<household_token>@inbox.<domain>` — c'est ce format que §1 met en œuvre. |
-| [ADR-0005](adr/0005-llm-provider-abstraction.md) | **Le fournisseur de modèle est une donnée, pas une constante.** Cinq adaptateurs (Anthropic, OpenAI, Gemini, Mistral, Ollama), dégradation par capacités détectées. Le §3 ne peut donc pas « choisir un modèle » : il peut recommander un **défaut** et chiffrer des repères. |
-| [ADR-0007](adr/0007-byok-and-local-inference.md) | **BYOK : c'est le foyer qui paie.** Aucun budget commun. Deux configurations gardent les données sous juridiction UE : `byok` Mistral (hébergé UE) et `ollama` (rien ne sort). L'inférence locale n'est pas un repli dégradé. |
-| [ADR-0006](adr/0006-multi-tenant-from-day-one.md) | `household_id` sur toute table métier — donc sur l'adresse d'inbox, sur les tickets et sur la table d'alias de §3.6. |
-| [ADR-0008](adr/0008-open-food-facts-integration.md) + [`technical-notes-scanning.md`](technical-notes-scanning.md) | La stratégie Open Food Facts est **déjà tranchée** (cache d'abord, catalogue partagé `household_id IS NULL`, API v3, dump local en prérequis phase 2). Le §3.6 s'y raccorde au lieu de la rejouer. |
+| [ADR-0002](adr/0002-no-retailer-drive-integration.md) | No retailer drive. The per-household address is specified as `<household_token>@inbox.<domain>` — that is the format §1 implements. |
+| [ADR-0005](adr/0005-llm-provider-abstraction.md) | **The model provider is data, not a constant.** Five adapters (Anthropic, OpenAI, Gemini, Mistral, Ollama), degradation by detected capabilities. §3 therefore cannot "pick a model": it can recommend a **default** and quantify reference points. |
+| [ADR-0007](adr/0007-byok-and-local-inference.md) | **BYOK: the household pays.** No shared budget. Two configurations keep the data under EU jurisdiction: `byok` Mistral (EU-hosted) and `ollama` (nothing leaves). Local inference is not a degraded fallback. |
+| [ADR-0006](adr/0006-multi-tenant-from-day-one.md) | `household_id` on every business table — hence on the inbox address, on the receipts and on the alias table of §3.6. |
+| [ADR-0008](adr/0008-open-food-facts-integration.md) + [`technical-notes-scanning.md`](technical-notes-scanning.md) | The Open Food Facts strategy is **already settled** (cache first, shared catalogue `household_id IS NULL`, API v3, local dump as a phase 2 prerequisite). §3.6 plugs into it instead of replaying it. |
 
-### 0.3 Les quatre questions traitées
+### 0.3 The four questions covered
 
-1. Réception d'emails entrants (adresse dédiée par foyer + webhook) — **voie recommandée**
-2. Lecture directe de la boîte mail (Gmail API / IMAP) — voie alternative, documentée pour comparaison
-3. Parsing des tickets de caisse par modèle multimodal
-4. Export de la liste de courses vers les apps que les gens utilisent déjà
+1. Receiving inbound email (dedicated per-household address + webhook) — **recommended route**
+2. Reading the mailbox directly (Gmail API / IMAP) — alternative route, documented for comparison
+3. Parsing till receipts with a multimodal model
+4. Exporting the shopping list to the apps people already use
 
-### 0.4 Limites de cette recherche
+### 0.4 Limits of this research
 
-La vérification a été menée par consultation directe des pages officielles. Plusieurs sites en rendu 100 % JavaScript (docs Stalwart, tarifs Brevo, `dev.mailjet.com`, portails OVH/Infomaniak) et quelques pages en 403 n'ont pas pu être lus. **Chaque point non vérifié est signalé explicitement en ligne**, et une liste récapitulative figure en §6. Les affirmations non sourcées sont des raisonnements d'ingénierie, signalés comme tels.
+Verification was carried out by consulting official pages directly. Several sites rendered 100% in JavaScript (Stalwart docs, Brevo pricing, `dev.mailjet.com`, OVH/Infomaniak portals) and a few pages returning 403 could not be read. **Every unverified point is flagged explicitly inline**, and a summary list appears in §6. Unsourced assertions are engineering reasoning, flagged as such.
 
 ---
 
-## 1. Réception d'emails entrants — la voie recommandée
+## 1. Receiving inbound email — the recommended route
 
-### 1.1 Le principe retenu
+### 1.1 The principle adopted
 
-On attribue à chaque foyer une adresse dédiée — format fixé par l'ADR-0002 : `<household_token>@inbox.<domain>`, par exemple `u7f3a@inbox.exemple.fr`. L'utilisateur crée dans son client mail une **règle de transfert** ciblant les expéditeurs d'enseignes, et le mail transféré arrive sur un webhook HTTP qui le parse.
+Each household is assigned a dedicated address — format fixed by ADR-0002: `<household_token>@inbox.<domain>`, for example `u7f3a@inbox.exemple.fr`. The user creates a **forwarding rule** in their mail client targeting retailer senders, and the forwarded mail lands on an HTTP webhook that parses it.
 
-C'est simple à décrire. Trois choses le compliquent, et elles décident du choix de fournisseur.
+That is simple to describe. Three things complicate it, and they decide the choice of provider.
 
-### 1.2 Le point structurant : un transfert casse SPF, et certains fournisseurs rejettent pour ça
+### 1.2 The structuring point: forwarding breaks SPF, and some providers reject on that basis
 
-C'est **le** critère de sélection, et il est presque toujours ignoré des comparatifs.
+This is **the** selection criterion, and it is almost always ignored by comparison articles.
 
-- **SPF échoue systématiquement sur un transfert.** SPF est une liste de serveurs autorisés à émettre pour un domaine ; le serveur de Google qui reforwarde le mail de Carrefour n'y figure évidemment pas, et il n'est pas envisageable de maintenir une liste de forwarders.
-  Source : <https://dmarcian.com/forwarding-and-dmarc/>
-- **DKIM survit** si le forwarder ne modifie ni le corps ni les headers signés. Google documente que toucher aux frontières MIME, au sujet ou aux headers `To`/`Cc`/`Date`/`Message-ID` casse la signature, et que « *Messages that don't pass DKIM are more likely to be sent to spam* ».
-  Source : <https://support.google.com/a/answer/175365?hl=en>
-- **Conséquence** : « *for forwarded email, your DMARC compliance is equal to the "survival" of your DKIM signatures* » (dmarcian, même URL). Un expéditeur qui signe bien passe ; un qui signe mal est en échec DMARC total.
-- **SRS ne répare pas ce qu'on croit.** Le Sender Rewriting Scheme réécrit l'enveloppe pour faire passer SPF, mais l'alignement DMARC reste cassé puisque le `From:` visible ne change pas. Microsoft l'écrit noir sur blanc : « *SRS rewriting doesn't resolve the issue of forwarded messages not passing DMARC checks* ».
-  Source : <https://learn.microsoft.com/en-us/exchange/reference/sender-rewriting-scheme>
-  Au demeurant SRS ne nous concerne pas directement : c'est Google qui forwarde, nous sommes du côté receveur.
-- **ARC est le vrai sauveur.** Google appose une chaîne ARC quand il forwarde, permettant au receveur final de faire confiance au verdict d'authentification d'origine. Encore faut-il que le fournisseur inbound l'honore.
+- **SPF fails systematically on a forward.** SPF is a list of servers authorised to send for a domain; the Google server re-forwarding Carrefour's mail is obviously not on it, and maintaining a list of forwarders is not an option.
+  Source: <https://dmarcian.com/forwarding-and-dmarc/>
+- **DKIM survives** if the forwarder modifies neither the body nor the signed headers. Google documents that touching MIME boundaries, the subject or the `To`/`Cc`/`Date`/`Message-ID` headers breaks the signature, and that "*Messages that don't pass DKIM are more likely to be sent to spam*".
+  Source: <https://support.google.com/a/answer/175365?hl=en>
+- **Consequence**: "*for forwarded email, your DMARC compliance is equal to the "survival" of your DKIM signatures*" (dmarcian, same URL). A sender that signs well gets through; one that signs badly is in total DMARC failure.
+- **SRS does not repair what people think it does.** The Sender Rewriting Scheme rewrites the envelope so SPF passes, but DMARC alignment stays broken since the visible `From:` does not change. Microsoft says so in black and white: "*SRS rewriting doesn't resolve the issue of forwarded messages not passing DMARC checks*".
+  Source: <https://learn.microsoft.com/en-us/exchange/reference/sender-rewriting-scheme>
+  In any case SRS does not concern us directly: Google is the one forwarding, we are on the receiving side.
+- **ARC is the real saviour.** Google applies an ARC chain when it forwards, letting the final receiver trust the original authentication verdict. That still requires the inbound provider to honour it.
 
-**Application directe — c'est ce qui disqualifie Cloudflare pour ce cas d'usage** :
+**Direct application — this is what disqualifies Cloudflare for this use case**:
 
-> Cloudflare exige que l'inbound passe une authentification (« *The email must either pass SPF or be correctly signed with DKIM* ») et **applique la politique DMARC de l'expéditeur** : « *messages failing sender DMARC policies are rejected* ».
-> Source : <https://developers.cloudflare.com/email-routing/postmaster/>
+> Cloudflare requires inbound mail to pass authentication ("*The email must either pass SPF or be correctly signed with DKIM*") and **applies the sender's DMARC policy**: "*messages failing sender DMARC policies are rejected*".
+> Source: <https://developers.cloudflare.com/email-routing/postmaster/>
 
-Il existe des plaintes publiques sur exactement ce scénario :
+There are public complaints about exactly this scenario:
 <https://community.cloudflare.com/t/emails-forwarded-from-gmail-are-being-dropped-due-to-dmarc-checks-failing/849579>
 <https://community.cloudflare.com/t/forward-to-gmail-dmarc-failure/565909>
 
-À l'inverse, Postmark, Mailgun, SendGrid et Amazon SES **ne rejettent pas d'office sur DMARC** : ils calculent un score et nous laissent décider. Et un serveur auto-hébergé nous donne le contrôle total — on choisit de ne rien rejeter. C'est un argument de fond en faveur de l'auto-hébergement pour ce cas précis.
+Conversely, Postmark, Mailgun, SendGrid and Amazon SES **do not reject outright on DMARC**: they compute a score and let us decide. And a self-hosted server gives us total control — we choose to reject nothing. This is a substantive argument in favour of self-hosting for this particular case.
 
-### 1.3 Frictions d'onboarding à budgéter (souvent sous-estimées)
+### 1.3 Onboarding friction to budget for (often underestimated)
 
-| Contrainte | Détail | Source |
+| Constraint | Detail | Source |
 |---|---|---|
-| **Gmail exige une vérification de l'adresse de destination** | « *After you add a forwarding email address, we send a verification link to the address. After you verify, you can forward messages* » | <https://support.google.com/mail/answer/9414102?hl=en> |
-| **Gmail ne transfère pas le spam** | « *We forward all new messages to the account, **except for spam*** » | idem |
-| **Transfert sélectif possible** | Un filtre Gmail « Forward it » permet de ne transférer que les mails de l'enseigne — c'est ce qu'il faut recommander à l'utilisateur (minimisation RGPD) | idem |
-| **Microsoft 365 bloque l'auto-forwarding externe par défaut** | Politique anti-spam sortante ; action admin requise | <https://woshub.com/enable-external-forwarding-microsoft-365-exchange/> — ⚠️ blog, **non confirmé sur learn.microsoft.com** |
-| **Outlook.com impose la 2FA** pour activer le transfert | | <https://support.microsoft.com/en-us/office/turn-on-or-off-automatic-forwarding-in-outlook-com-6246987c-6c8f-4144-b255-14fc07007dad> |
+| **Gmail requires verification of the destination address** | "*After you add a forwarding email address, we send a verification link to the address. After you verify, you can forward messages*" | <https://support.google.com/mail/answer/9414102?hl=en> |
+| **Gmail does not forward spam** | "*We forward all new messages to the account, **except for spam***" | ditto |
+| **Selective forwarding is possible** | A Gmail "Forward it" filter allows forwarding only the retailer's mail — that is what should be recommended to the user (GDPR minimisation) | ditto |
+| **Microsoft 365 blocks external auto-forwarding by default** | Outbound anti-spam policy; admin action required | <https://woshub.com/enable-external-forwarding-microsoft-365-exchange/> — ⚠️ blog, **not confirmed on learn.microsoft.com** |
+| **Outlook.com requires 2FA** to enable forwarding | | <https://support.microsoft.com/en-us/office/turn-on-or-off-automatic-forwarding-in-outlook-com-6246987c-6c8f-4144-b255-14fc07007dad> |
 
-**Exigence fonctionnelle qui en découle** : le mail de confirmation Gmail arrive sur l'adresse dédiée **avant** que le transfert ne soit actif. Notre webhook doit savoir le reconnaître et remonter le code/lien dans l'UI, sinon l'onboarding est bloqué. Ce n'est pas un détail, c'est une story à part entière.
+**Functional requirement that follows**: the Gmail confirmation mail arrives at the dedicated address **before** forwarding is active. Our webhook must know how to recognise it and surface the code/link in the UI, otherwise onboarding is blocked. This is not a detail, it is a story in its own right.
 
-### 1.4 Comparatif des fournisseurs managés
+### 1.4 Comparison of managed providers
 
-| Fournisseur | Entrée de gamme | Format webhook | Pièces jointes | Auth webhook | Taille max | Résidence UE | Rejet DMARC ? |
+| Provider | Entry tier | Webhook format | Attachments | Webhook auth | Max size | EU residency | DMARC rejection? |
 |---|---|---|---|---|---|---|---|
-| **CloudMailin** | **gratuit, 10 000/mois** (512 KB max) ; utile à 45 $/mois | JSON normalisé / multipart / **raw MIME** | base64 **ou URL** vers store ; upload S3/Azure/GCS | 🟠 basic auth (signature **dépréciée**) | 512 KB → 50 MB selon plan | ✅ **forçable par DNS** | non |
-| **ImprovMX** | 9 $/mois (Premium ; webhooks **exclus du gratuit**) | JSON complet + `?raw_mime=true` | base64 inline + `inlines[]` avec `cid` | 🔴 **aucune** (IP `15.237.103.194`) | non documentée | ✅ **datacenters FR (OVH)** | non |
-| **Amazon SES** | 0,10 $/1 000 reçus + 0,09 $/1 000 chunks 256 KB | ❌ pas de webhook natif — SNS / Lambda / S3 | via S3 | 🟢 signature SNS / IAM | **150 KB en SNS**, 40 MB en S3 | ✅ **Paris (eu-west-3)**, Francfort… | non (verdicts exposés, décision à nous) |
-| **Mailgun** | **gratuit, 1 route, 100/jour** ; Foundation 35 $ | multipart parsé, ou MIME brut si l'URL finit par `mime` | multipart + `content-id-map` ; `store()` 3 j | 🟡 HMAC (`timestamp`/`token`/`signature`) | non documentée | ⚠️ envoi UE annoncé, **MX EU non vérifiables** | non |
-| **Postmark** | **16,50 $/mois** (Pro — inbound absent de Free et Basic) | JSON riche (`TextBody`, `HtmlBody`, `StrippedTextReply`, `MailboxHash`) | **base64 inline** | 🟠 IP allowlist (4 IP US) | ⚠️ **non documentée** | ❌ **aucune mention** | non |
-| **ForwardEmail** | **gratuit** (webhooks inclus, config par TXT DNS) | JSON `mailparser` + `raw`, avec verdicts `spf`/`dkim`/**`arc`**/`dmarc` | incluses (`?attachments=false`) | 🟢 **HMAC `X-Webhook-Signature`** (payant) + rDNS | **50 MB** | ❌ **Denver, Colorado** | non |
-| **Brevo** | prix 2026 **non extractibles** | JSON très riche + `ExtractedMarkdownMessage` (signature retirée par ML), `Spam.Score` rspamd | métadonnées + `DownloadToken` | 🟡 IP / basic / **bearer** / headers | non documentée | 🇫🇷 réputé, **non confirmé ce jour** | non |
-| **Resend** | gratuit 3 000/mois (in+out confondus) | ❌ **métadonnées seules** — 2 à 3 appels API pour le corps et les PJ | `download_url` valide 1 h | 🟢 **HMAC Svix** (anti-replay) | non documentée | ❌ « *All account data … is stored in the United States* » | non |
-| **Mailtrap** | gratuit 4 000/mois ; inbound prod dès Basic 15 $ | métadonnées + API | via API | 🟢 **HMAC-SHA256** | non documentée | non mentionnée | non |
-| **Cloudflare Email Routing** | **gratuit** | ❌ **MIME brut** à parser soi-même (`postal-mime` recommandé) | à extraire soi-même | 🟢 notre propre secret (c'est notre Worker qui `fetch`) | **25 MiB** | — | 🔴 **OUI — rédhibitoire** |
-| **SendGrid Inbound Parse** | ⚠️ **tarifs non vérifiables** | `multipart/form-data`, option MIME brut | non URL-encodées (piège documenté) | 🔴 **aucune** documentée | **30 MB** (2,5 MB pour l'antispam) | ⚠️ non vérifiable | non |
-| **Mailjet Parse API** | Free 6 000/mois — ⚠️ doc dit « Crystal and above », **plan inexistant dans la grille** | JSON + `Parts[]` + `AttachmentN` base64 | base64 | 🟠 basic auth | non documentée | ⚠️ **non vérifiable** (`/legal/dpa/` redirige vers sinch.com) | non |
-| **Scaleway TEM** | — | ❌ **pas d'inbound du tout** : « *you can only **send*** » | — | — | — | ✅ fr-par | — |
+| **CloudMailin** | **free, 10,000/month** (512 KB max); useful at $45/month | normalised JSON / multipart / **raw MIME** | base64 **or URL** to a store; S3/Azure/GCS upload | 🟠 basic auth (signature **deprecated**) | 512 KB → 50 MB depending on plan | ✅ **forceable by DNS** | no |
+| **ImprovMX** | $9/month (Premium; webhooks **excluded from the free tier**) | full JSON + `?raw_mime=true` | inline base64 + `inlines[]` with `cid` | 🔴 **none** (IP `15.237.103.194`) | not documented | ✅ **FR datacentres (OVH)** | no |
+| **Amazon SES** | $0.10/1,000 received + $0.09/1,000 256 KB chunks | ❌ no native webhook — SNS / Lambda / S3 | via S3 | 🟢 SNS signature / IAM | **150 KB via SNS**, 40 MB via S3 | ✅ **Paris (eu-west-3)**, Frankfurt… | no (verdicts exposed, decision left to us) |
+| **Mailgun** | **free, 1 route, 100/day**; Foundation $35 | parsed multipart, or raw MIME if the URL ends in `mime` | multipart + `content-id-map`; `store()` 3 days | 🟡 HMAC (`timestamp`/`token`/`signature`) | not documented | ⚠️ EU sending announced, **EU MX not verifiable** | no |
+| **Postmark** | **$16.50/month** (Pro — inbound absent from Free and Basic) | rich JSON (`TextBody`, `HtmlBody`, `StrippedTextReply`, `MailboxHash`) | **inline base64** | 🟠 IP allowlist (4 US IPs) | ⚠️ **not documented** | ❌ **no mention at all** | no |
+| **ForwardEmail** | **free** (webhooks included, configured by DNS TXT) | `mailparser` JSON + `raw`, with `spf`/`dkim`/**`arc`**/`dmarc` verdicts | included (`?attachments=false`) | 🟢 **HMAC `X-Webhook-Signature`** (paid) + rDNS | **50 MB** | ❌ **Denver, Colorado** | no |
+| **Brevo** | 2026 prices **not extractable** | very rich JSON + `ExtractedMarkdownMessage` (signature stripped by ML), rspamd `Spam.Score` | metadata + `DownloadToken` | 🟡 IP / basic / **bearer** / headers | not documented | 🇫🇷 reputed, **not confirmed as of today** | no |
+| **Resend** | free 3,000/month (in+out combined) | ❌ **metadata only** — 2 to 3 API calls for the body and the attachments | `download_url` valid 1 h | 🟢 **Svix HMAC** (anti-replay) | not documented | ❌ "*All account data … is stored in the United States*" | no |
+| **Mailtrap** | free 4,000/month; production inbound from Basic $15 | metadata + API | via API | 🟢 **HMAC-SHA256** | not documented | not mentioned | no |
+| **Cloudflare Email Routing** | **free** | ❌ **raw MIME**, to be parsed yourself (`postal-mime` recommended) | to be extracted yourself | 🟢 our own secret (it is our Worker doing the `fetch`) | **25 MiB** | — | 🔴 **YES — disqualifying** |
+| **SendGrid Inbound Parse** | ⚠️ **pricing not verifiable** | `multipart/form-data`, raw MIME option | not URL-encoded (documented trap) | 🔴 **none** documented | **30 MB** (2.5 MB for the antispam) | ⚠️ not verifiable | no |
+| **Mailjet Parse API** | Free 6,000/month — ⚠️ docs say "Crystal and above", **a plan that does not exist in the price grid** | JSON + `Parts[]` + `AttachmentN` base64 | base64 | 🟠 basic auth | not documented | ⚠️ **not verifiable** (`/legal/dpa/` redirects to sinch.com) | no |
+| **Scaleway TEM** | — | ❌ **no inbound at all**: "*you can only **send***" | — | — | — | ✅ fr-par | — |
 
-Sources principales : <https://postmarkapp.com/pricing> · <https://postmarkapp.com/developer/webhooks/inbound-webhook> · <https://www.mailgun.com/pricing/> · <https://documentation.mailgun.com/docs/mailgun/user-manual/receive-forward-store/receive-http/> · <https://www.twilio.com/docs/sendgrid/for-developers/parsing-email/setting-up-the-inbound-parse-webhook> · <https://developers.cloudflare.com/email-routing/limits/> · <https://developers.cloudflare.com/email-routing/email-workers/> · <https://www.cloudmailin.com/plans-and-pricing> · <https://docs.cloudmailin.com/http_post_formats/> · <https://improvmx.com/guides/webhooks/> · <https://improvmx.com/pricing/> · <https://forwardemail.net/en/pricing> · <https://developers.brevo.com/docs/inbound-parse-webhooks> · <https://resend.com/docs/webhooks/emails/received.md> · <https://resend.com/docs/dashboard/domains/regions> · <https://docs.aws.amazon.com/ses/latest/dg/quotas.html> · <https://aws.amazon.com/ses/pricing/> · <https://www.scaleway.com/en/transactional-email-tem/>
+Main sources: <https://postmarkapp.com/pricing> · <https://postmarkapp.com/developer/webhooks/inbound-webhook> · <https://www.mailgun.com/pricing/> · <https://documentation.mailgun.com/docs/mailgun/user-manual/receive-forward-store/receive-http/> · <https://www.twilio.com/docs/sendgrid/for-developers/parsing-email/setting-up-the-inbound-parse-webhook> · <https://developers.cloudflare.com/email-routing/limits/> · <https://developers.cloudflare.com/email-routing/email-workers/> · <https://www.cloudmailin.com/plans-and-pricing> · <https://docs.cloudmailin.com/http_post_formats/> · <https://improvmx.com/guides/webhooks/> · <https://improvmx.com/pricing/> · <https://forwardemail.net/en/pricing> · <https://developers.brevo.com/docs/inbound-parse-webhooks> · <https://resend.com/docs/webhooks/emails/received.md> · <https://resend.com/docs/dashboard/domains/regions> · <https://docs.aws.amazon.com/ses/latest/dg/quotas.html> · <https://aws.amazon.com/ses/pricing/> · <https://www.scaleway.com/en/transactional-email-tem/>
 
-#### Points saillants du tableau
+#### Salient points from the table
 
-- **Postmark** : l'inbound n'apparaît que sur Pro et Platform d'après la grille consultée. Le ticket d'entrée réel est donc **16,50 $/mois**, pas 0 $. ⚠️ La page ne dit pas si l'inbound consomme le quota des 10 000 emails, et **aucune taille max n'a pu être trouvée** (les articles de support pertinents renvoient 404). Retries : 10 tentatives en intervalles croissants, **et un 403 stoppe définitivement les retries** — ne jamais renvoyer 403 sur une erreur transitoire.
-- **Mailgun** : le nombre de routes n'est **pas** le nombre d'adresses. Un seul `catch_all()` ou `match_recipient(".*@inbox.exemple.fr")` suffit, donc le plan gratuit (1 route) est techniquement viable sous 100 mails/jour. Le mode MIME brut se déclenche par l'**URL** (si elle finit par `mime` ou `raw-mime`), pas par la taille. `store()` retient 3 jours et notifie avec une URL de récupération — utile pour les grosses PJ qui feraient timeouter notre endpoint. ⚠️ La page décrivant l'algorithme HMAC renvoie 404 aujourd'hui : le mécanisme existe (`timestamp`, `token`, `signature` sont dans chaque POST) mais **ses modalités exactes n'ont pas pu être re-confirmées**.
-- **Cloudflare** : gratuit et techniquement élégant, mais **trois défauts cumulés** — rejet sur DMARC (§1.2), plafond de **200 règles de routage par domaine** (mur pour « une adresse par foyer » ; obligation de passer par un catch-all + Worker), et MIME brut à parser soi-même. ⚠️ La question « faut-il que le domaine soit en full setup sur les nameservers Cloudflare ? » **n'a pas pu être tranchée** sur une page officielle ; c'est très probable puisque Cloudflare doit gérer les MX, mais ce n'est pas sourcé.
-- **SendGrid** : les pages de tarification tournent en boucle de redirection (`sendgrid.com/pricing` → `twilio.com/en-us/sendgrid` → … ). **Impossible d'établir la grille 2026 ni de confirmer l'existence d'un plan gratuit permanent** sur une page officielle. La page produit ne mentionne qu'un « *free trial — no credit card required* », ce qui *suggère* un basculement vers un essai sans le prouver. Un blog concurrent daté du 27 février 2026 (<https://www.pingram.io/blog/best-inbound-email-notification-apis>) annonce « 100 emails/day for 30 days » puis 19,95 $/mois — **indication, pas fait**. S'ajoute l'absence totale de sécurité de webhook documentée. À écarter.
-- **Resend** : le webhook ne contient **pas** le mail — « *Webhooks do not include the email body, headers, or attachments, only their metadata* ». Il faut un deuxième appel pour le corps, un troisième par pièce jointe. Et « *All account data, including email metadata, logs, and API records, is stored in the United States regardless of the sending region you select* » : les régions ne concernent **que l'envoi**. Le blog Pingram annonçant « EU region available (Ireland) » pour Resend est trompeur au regard de la doc officielle.
-- **CloudMailin** : comportement HTTP→SMTP notable — il **ne retente pas** lui-même, il traduit notre code retour en réponse SMTP (4xx → SMTP 554 rejet définitif + notification à l'expéditeur ; 5xx → SMTP 450, l'émetteur retentera). Propre, mais un 500 accidentel de notre app renvoie la balle à Gmail pendant des jours. ⚠️ **`OpenAI (USA)` figure dans la liste des sous-traitants** pour « *Analysis and content detection* » (<https://www.cloudmailin.com/privacy>) — à clarifier contractuellement avant d'y faire transiter des tickets nominatifs.
-- **Mailjet** : deux incohérences non levées. La doc officielle dit que la Parse API est réservée aux plans « Crystal and above », **or aucun plan « Crystal » n'existe dans la grille publique du 3 août 2026** (Free / Starter 9 $ / Essential 17 $ / Premium 27 $ / Custom). Et l'hébergement européen, pourtant sa réputation, **n'est vérifiable sur aucune page officielle** (`/legal/dpa/` redirige vers sinch.com, `/gdpr/` et `/legal/` en 403).
-- **Brevo** : avertissement honnête de leur part, à intégrer dans notre design — « *100 % success rate on inbound parsing is impossible* ». Prévoir un chemin de secours quand `ExtractedMarkdownMessage` est vide ou tronqué.
+- **Postmark**: inbound only appears on Pro and Platform according to the grid consulted. The real entry ticket is therefore **$16.50/month**, not $0. ⚠️ The page does not say whether inbound consumes the 10,000-email quota, and **no max size could be found** (the relevant support articles return 404). Retries: 10 attempts at increasing intervals, **and a 403 stops the retries permanently** — never return 403 on a transient error.
+- **Mailgun**: the number of routes is **not** the number of addresses. A single `catch_all()` or `match_recipient(".*@inbox.exemple.fr")` is enough, so the free plan (1 route) is technically viable under 100 mails/day. Raw MIME mode is triggered by the **URL** (if it ends in `mime` or `raw-mime`), not by size. `store()` retains for 3 days and notifies with a retrieval URL — useful for large attachments that would time out our endpoint. ⚠️ The page describing the HMAC algorithm returns 404 today: the mechanism exists (`timestamp`, `token`, `signature` are in every POST) but **its exact terms could not be re-confirmed**.
+- **Cloudflare**: free and technically elegant, but **three cumulative defects** — DMARC rejection (§1.2), a ceiling of **200 routing rules per domain** (a wall for "one address per household"; forces a catch-all + Worker), and raw MIME to parse yourself. ⚠️ The question "does the domain have to be on full setup on Cloudflare nameservers?" **could not be settled** on an official page; it is very likely since Cloudflare has to manage the MX records, but it is not sourced.
+- **SendGrid**: the pricing pages loop through redirects (`sendgrid.com/pricing` → `twilio.com/en-us/sendgrid` → …). **Impossible to establish the 2026 grid or to confirm the existence of a permanent free plan** on an official page. The product page mentions only a "*free trial — no credit card required*", which *suggests* a switch to a trial without proving it. A competitor blog dated 27 February 2026 (<https://www.pingram.io/blog/best-inbound-email-notification-apis>) announces "100 emails/day for 30 days" then $19.95/month — **an indication, not a fact**. Add to that the total absence of documented webhook security. To be ruled out.
+- **Resend**: the webhook does **not** contain the mail — "*Webhooks do not include the email body, headers, or attachments, only their metadata*". A second call is needed for the body, a third per attachment. And "*All account data, including email metadata, logs, and API records, is stored in the United States regardless of the sending region you select*": the regions concern **sending only**. The Pingram blog announcing "EU region available (Ireland)" for Resend is misleading with respect to the official docs.
+- **CloudMailin**: notable HTTP→SMTP behaviour — it **does not retry** itself, it translates our return code into an SMTP response (4xx → SMTP 554 permanent rejection + notification to the sender; 5xx → SMTP 450, the sender will retry). Clean, but an accidental 500 from our app bounces the ball back to Gmail for days. ⚠️ **`OpenAI (USA)` appears in the list of sub-processors** for "*Analysis and content detection*" (<https://www.cloudmailin.com/privacy>) — to be clarified contractually before routing personally identifiable receipts through it.
+- **Mailjet**: two unresolved inconsistencies. The official docs say the Parse API is reserved for "Crystal and above" plans, **yet no "Crystal" plan exists in the public grid of 3 August 2026** (Free / Starter $9 / Essential $17 / Premium $27 / Custom). And European hosting, its very reputation, **is not verifiable on any official page** (`/legal/dpa/` redirects to sinch.com, `/gdpr/` and `/legal/` return 403).
+- **Brevo**: an honest warning on their part, to be built into our design — "*100% success rate on inbound parsing is impossible*". Plan a fallback path for when `ExtractedMarkdownMessage` is empty or truncated.
 
-**Écartés d'emblée** (hors sujet ou modèle économique absurde) : Mailparser.io (29,95 $/mois pour **250 emails**), Parseur, Zapier Email Parser (1 mail = 1 tâche facturée), Mailosaur (outil de QA), Nylas (connecte les boîtes existantes par OAuth, ne fournit pas d'adresse dédiée sur notre domaine), Zoho Mail (API de lecture seule, pas de push), Tuta (aucune API mail — le chiffrement bout-en-bout propriétaire rend l'intégration serveur structurellement impossible), *anymail finder* (outil de prospection B2B, à ne pas confondre avec la bibliothèque `django-anymail` qui, elle, normalise les webhooks inbound de plusieurs ESP derrière une API unique — pertinente si on veut garder la portabilité entre fournisseurs).
+**Ruled out immediately** (off-topic or absurd business model): Mailparser.io ($29.95/month for **250 emails**), Parseur, Zapier Email Parser (1 mail = 1 billed task), Mailosaur (a QA tool), Nylas (connects existing mailboxes by OAuth, does not provide a dedicated address on our domain), Zoho Mail (read-only API, no push), Tuta (no mail API at all — proprietary end-to-end encryption makes server integration structurally impossible), *anymail finder* (a B2B prospecting tool, not to be confused with the `django-anymail` library which does normalise the inbound webhooks of several ESPs behind a single API — relevant if we want to retain portability between providers).
 
-### 1.5 L'option auto-hébergée : raisonnable ici, et même préférable
+### 1.5 The self-hosted option: reasonable here, and even preferable
 
-**Oui, et pour de bonnes raisons.** Le contexte est favorable : on ne fait que **recevoir**, sur un VPS qu'on a déjà.
+**Yes, and for good reasons.** The context is favourable: we only **receive**, on a VPS we already have.
 
-#### État des projets (API GitHub, interrogée le 3 août 2026)
+#### State of the projects (GitHub API, queried on 3 August 2026)
 
-| Projet | ★ | Licence | Dernier push | Hook HTTP natif |
+| Project | ★ | Licence | Last push | Native HTTP hook |
 |---|---|---|---|---|
-| **Stalwart** | 13 996 | **AGPL-3.0-only OR SELv2** (dual) | 2026-08-03 (release v0.16.16 le 02/08) | ✅ **MTA Hooks** |
-| **Postal** | 16 715 | **MIT** | 2026-08-03 | ✅ **natif** |
-| Haraka | 5 613 | MIT | 2026-08-03 | ⚠️ à écrire soi-même |
-| Maddy | 6 052 | GPL-3.0 | 2026-07-24 | ⚠️ aucun trouvé |
-| `remi-san/haraka-http-queue` | **2** | Apache-2.0 | **2014-08-14** | ❌ mort depuis 12 ans |
+| **Stalwart** | 13,996 | **AGPL-3.0-only OR SELv2** (dual) | 2026-08-03 (release v0.16.16 on 02/08) | ✅ **MTA Hooks** |
+| **Postal** | 16,715 | **MIT** | 2026-08-03 | ✅ **native** |
+| Haraka | 5,613 | MIT | 2026-08-03 | ⚠️ to be written yourself |
+| Maddy | 6,052 | GPL-3.0 | 2026-07-24 | ⚠️ none found |
+| `remi-san/haraka-http-queue` | **2** | Apache-2.0 | **2014-08-14** | ❌ dead for 12 years |
 
-#### Stalwart — MTA Hooks, « comme milter mais en HTTP »
+#### Stalwart — MTA Hooks, "like milter but over HTTP"
 
-C'est exactement ce qu'il nous faut. Le CHANGELOG note « *Pipes have been deprecated in favor of MTA hooks* ».
+This is exactly what we need. The CHANGELOG notes "*Pipes have been deprecated in favor of MTA hooks*".
 
-Structures vérifiées **dans le code source** (<https://raw.githubusercontent.com/stalwartlabs/stalwart/main/crates/smtp/src/inbound/hooks/mod.rs>) :
+Structures verified **in the source code** (<https://raw.githubusercontent.com/stalwartlabs/stalwart/main/crates/smtp/src/inbound/hooks/mod.rs>):
 
-- **Stages** : `connect`, `ehlo`, `auth`, `mail`, `rcpt`, **`data`**.
-- **Requête JSON** : `{context: {stage, client{ip,port,ptr,helo}, tls, server, queue{id}}, envelope: {from, to[]}, message: {headers[], serverHeaders[], contents, size}}` — **au stage `data`, `message.contents` contient le message complet**.
-- **Réponse attendue** : `{action: "accept"|"discard"|"reject"|"quarantine", response: {...}, modifications: [...]}`.
-- **Client HTTP** (`client.rs`) : `url`, `timeout`, **`headers` arbitraires** — donc notre propre `Authorization: Bearer …`, `max_response_size`.
+- **Stages**: `connect`, `ehlo`, `auth`, `mail`, `rcpt`, **`data`**.
+- **JSON request**: `{context: {stage, client{ip,port,ptr,helo}, tls, server, queue{id}}, envelope: {from, to[]}, message: {headers[], serverHeaders[], contents, size}}` — **at the `data` stage, `message.contents` holds the complete message**.
+- **Expected response**: `{action: "accept"|"discard"|"reject"|"quarantine", response: {...}, modifications: [...]}`.
+- **HTTP client** (`client.rs`): `url`, `timeout`, **arbitrary `headers`** — hence our own `Authorization: Bearer …`, `max_response_size`.
 
-⚠️ **La documentation web de Stalwart est une SPA non extractible** (`stalw.art/docs/` ne renvoie qu'un lien vers l'installation ; une douzaine d'URL plausibles pour les MTA Hooks renvoient 404). **Les éléments ci-dessus proviennent du code source et du CHANGELOG, pas d'une page de doc lisible.** À revérifier dans un navigateur avant implémentation.
+⚠️ **Stalwart's web documentation is a non-extractable SPA** (`stalw.art/docs/` returns only a link to installation; a dozen plausible URLs for MTA Hooks return 404). **The elements above come from the source code and the CHANGELOG, not from a readable documentation page.** To be re-checked in a browser before implementation.
 
-⚠️ **Licence AGPL-3.0** : sans effet si on héberge pour soi ; si Chaudron devient un service accessible à des tiers, l'AGPL §13 s'applique. Arbitrage à faire consciemment.
+⚠️ **AGPL-3.0 licence**: no effect if we host for ourselves; if Chaudron becomes a service accessible to third parties, AGPL §13 applies. A trade-off to be made consciously.
 
-#### Postal — l'alternative MIT
+#### Postal — the MIT alternative
 
-<https://docs.postalserver.io/developer/http-payloads> — « Receiving e-mail by HTTP », form-data ou JSON au choix.
-Format `processed` : `rcpt_to`, `mail_from`, `subject`, `message_id`, **`spam_status`**, `plain_body`, `html_body`, `attachments[]{filename, content_type, size, data}` (base64). Format `raw` : message base64 entier. Sépare automatiquement les citations et signatures. **Timeout 5 s, 18 tentatives en backoff exponentiel**, échec immédiat sur 5xx, et **bounce envoyé à l'expéditeur** en cas d'échec définitif. Aucune signature de webhook → URL secrète + HTTPS + filtrage réseau. Antispam intégrable (SpamAssassin, rspamd, ClamAV).
+<https://docs.postalserver.io/developer/http-payloads> — "Receiving e-mail by HTTP", form-data or JSON as preferred.
+`processed` format: `rcpt_to`, `mail_from`, `subject`, `message_id`, **`spam_status`**, `plain_body`, `html_body`, `attachments[]{filename, content_type, size, data}` (base64). `raw` format: entire message in base64. Automatically separates quotes and signatures. **5 s timeout, 18 attempts with exponential backoff**, immediate failure on 5xx, and a **bounce sent to the sender** on permanent failure. No webhook signature → secret URL + HTTPS + network filtering. Antispam can be integrated (SpamAssassin, rspamd, ClamAV).
 
-#### Avantages francs
+#### Frank advantages
 
-- **Contrôle total sur le rejet.** C'est le problème n°1 (§1.2) : on décide de ne rien rejeter sur DMARC. Aucun mail de commande ne disparaît silencieusement.
-- **RGPD trivial.** Les données ne quittent pas notre VPS. Pas de DPA, pas de TIA, pas de sous-traitant américain (voir §1.6).
-- **Coût marginal.** Le VPS existe déjà.
-- **Pas de plafond de règles ni de quota mensuel.**
-- **Pas de problème de réputation sortante** — voir la nuance ci-dessous.
+- **Total control over rejection.** This is problem no. 1 (§1.2): we decide to reject nothing on DMARC. No order confirmation mail disappears silently.
+- **Trivial GDPR.** The data does not leave our VPS. No DPA, no TIA, no American sub-processor (see §1.6).
+- **Marginal cost.** The VPS already exists.
+- **No rule ceiling and no monthly quota.**
+- **No outbound reputation problem** — see the nuance below.
 
-#### Inconvénients francs
+#### Frank disadvantages
 
-- **Le port 25 entrant peut être bloqué chez l'hébergeur — à vérifier AVANT tout.**
-  Hetzner : « *we block ports **25 and 465 by default on all cloud servers*** », déblocage possible après un mois d'ancienneté et paiement de la première facture, au cas par cas (<https://docs.hetzner.com/cloud/servers/faq>).
-  DigitalOcean : « *SMTP ports **25, 465, and 587** are blocked on Droplets* » (<https://docs.digitalocean.com/support/why-is-smtp-blocked/>).
-  ⚠️ **Ni l'un ni l'autre ne précise la DIRECTION du blocage.** L'usage veut que ce soit sortant, donc que la réception fonctionne, mais **ce n'est affirmé par aucune source officielle**. OVH et Scaleway : pages de politique non atteignables ce jour, **non vérifiable**.
-  → **Action de 5 minutes avant toute décision** : `nc -l 25` sur le VPS cible et test de connexion depuis l'extérieur.
-- **« Réception seule = pas de réputation à gérer » est vrai, avec deux nuances.**
-  (a) **Les bounces nous transforment en émetteur.** Il faut **rejeter à la phase SMTP** (`RCPT TO` / `DATA`) plutôt qu'après acceptation : un rejet en session ne génère aucun mail sortant, alors qu'un rejet après acceptation oblige à émettre un NDR — avec risque de *backscatter* si l'expéditeur était falsifié. Cloudflare a d'ailleurs choisi la voie radicale : « *Non-delivery reports not forwarded to original senders* ».
-  (b) On hérite quand même de la maintenance : TLS, mises à jour, antispam, anti-abus.
-- **Surface à opérer** : parsing MIME, limites de taille, filtrage spam (rspamd/SpamAssassin), sauvegarde, supervision. Ce n'est pas énorme pour de la réception seule, mais ce n'est pas zéro.
-- ⚠️ **Non vérifié faute de budget de recherche** : les exigences TLS réelles de Gmail/Outlook pour *délivrer* vers notre MX (STARTTLS obligatoire ou opportuniste ?), l'utilité de MTA-STS / DANE en réception, la nécessité d'un PTR en réception seule (il est requis pour émettre), le coût RAM/CPU de rspamd sur un petit VPS, et le volume de spam attendu sur une adresse à token aléatoire jamais publiée.
+- **Inbound port 25 may be blocked at the hosting provider — to be checked BEFORE anything else.**
+  Hetzner: "*we block ports **25 and 465 by default on all cloud servers***", unblocking possible after one month of seniority and payment of the first invoice, case by case (<https://docs.hetzner.com/cloud/servers/faq>).
+  DigitalOcean: "*SMTP ports **25, 465, and 587** are blocked on Droplets*" (<https://docs.digitalocean.com/support/why-is-smtp-blocked/>).
+  ⚠️ **Neither one specifies the DIRECTION of the block.** Common practice suggests it is outbound, hence that receiving works, but **this is asserted by no official source.** OVH and Scaleway: policy pages unreachable today, **not verifiable**.
+  → **A 5-minute action before any decision**: `nc -l 25` on the target VPS and a connection test from outside.
+- **"Receive-only = no reputation to manage" is true, with two nuances.**
+  (a) **Bounces turn us into a sender.** Rejection must happen **at the SMTP phase** (`RCPT TO` / `DATA`) rather than after acceptance: an in-session rejection generates no outbound mail, whereas a rejection after acceptance forces us to emit an NDR — with a risk of *backscatter* if the sender was forged. Cloudflare in fact chose the radical route: "*Non-delivery reports not forwarded to original senders*".
+  (b) We still inherit the maintenance: TLS, updates, antispam, anti-abuse.
+- **Surface to operate**: MIME parsing, size limits, spam filtering (rspamd/SpamAssassin), backup, monitoring. Not enormous for receive-only, but not zero.
+- ⚠️ **Not verified for lack of research budget**: Gmail/Outlook's actual TLS requirements for *delivering* to our MX (mandatory or opportunistic STARTTLS?), the usefulness of MTA-STS / DANE on reception, the need for a PTR record on receive-only (it is required for sending), the RAM/CPU cost of rspamd on a small VPS, and the volume of spam to expect on a never-published random-token address.
 
-### 1.6 RGPD — l'état du droit a bougé, et ça compte dans le choix
+### 1.6 GDPR — the state of the law has moved, and it counts in the choice
 
-- Le **Data Privacy Framework reste formellement valide** (décision d'adéquation UE 2023/1795), avec plus de 5 300 organisations américaines auto-certifiées.
-- Le recours **Latombe** a été rejeté par le Tribunal de l'UE sur des motifs procéduraux ; **un pourvoi est pendant devant la CJUE** depuis octobre 2025, sans date d'audience annoncée.
-- ⚠️ **Le 29 juin 2026, la Cour suprême des États-Unis a rendu l'arrêt *Trump v. Slaughter* (n° 25-332, 6-3)** : les restrictions empêchant le président de révoquer les commissaires de la FTC sont inconstitutionnelles. **L'indépendance de la FTC — l'un des piliers de l'adéquation — n'est plus garantie**, et le PCLOB fait face à la même objection. noyb demande une sortie immédiate du DPF. La recommandation des cabinets est de mettre à jour les *Transfer Impact Assessments* et d'« *evaluate whether EU-based or otherwise lower-risk alternatives are economically and technically viable* ».
-  Source : <https://www.activemind.legal/guides/dpf-supreme-court/> (publié le 2 juillet 2026)
+- The **Data Privacy Framework remains formally valid** (EU adequacy decision 2023/1795), with more than 5,300 self-certified American organisations.
+- The **Latombe** action was dismissed by the EU General Court on procedural grounds; **an appeal has been pending before the CJEU** since October 2025, with no hearing date announced.
+- ⚠️ **On 29 June 2026, the United States Supreme Court handed down *Trump v. Slaughter* (no. 25-332, 6-3)**: the restrictions preventing the president from removing FTC commissioners are unconstitutional. **The independence of the FTC — one of the pillars of the adequacy finding — is no longer guaranteed**, and the PCLOB faces the same objection. noyb is calling for an immediate exit from the DPF. Law firms' recommendation is to update *Transfer Impact Assessments* and to "*evaluate whether EU-based or otherwise lower-risk alternatives are economically and technically viable*".
+  Source: <https://www.activemind.legal/guides/dpf-supreme-court/> (published on 2 July 2026)
 
-**Traduction pour Chaudron** : des données de courses alimentaires nominatives, par foyer, sont des données personnelles révélatrices d'habitudes de vie (régime, allergies, convictions religieuses déductibles). Bâtir sur un fournisseur US en 2026 expose à une migration dans l'urgence si le pourvoi aboutit. Ce n'est pas un risque théorique cette année.
+**Translation for Chaudron**: named grocery-shopping data, per household, is personal data revealing lifestyle habits (diet, allergies, inferable religious convictions). Building on a US provider in 2026 exposes us to an emergency migration if the appeal succeeds. This is not a theoretical risk this year.
 
-À noter également : traiter les mails d'une boîte, c'est traiter les données de **tiers qui n'ont jamais consenti**. Il faut recommander à l'utilisateur un **filtre de transfert sélectif** (expéditeur = enseigne), ne persister que les lignes extraites, et purger les emails bruts.
+Also worth noting: processing the mail in a mailbox means processing the data of **third parties who have never consented**. The user must be advised to set up a **selective forwarding filter** (sender = retailer), to persist only the extracted lines, and to purge the raw emails.
 
-### 1.7 Recommandation pour le volet email
+### 1.7 Recommendation for the email strand
 
-**Auto-hébergement avec Stalwart + MTA Hook**, avec **CloudMailin en repli managé**.
+**Self-hosting with Stalwart + MTA Hook**, with **CloudMailin as the managed fallback**.
 
-Stalwart règle simultanément les trois problèmes : le rejet DMARC (on décide de ne rien rejeter), le RGPD (rien ne quitte le VPS), et le coût (marginal). Le hook au stage `data` livre le message complet en JSON sur notre endpoint FastAPI, avec des headers d'authentification arbitraires et une réponse `accept`/`discard`/`reject`. Le projet est massivement actif.
+Stalwart settles all three problems at once: DMARC rejection (we decide to reject nothing), GDPR (nothing leaves the VPS), and cost (marginal). The hook at the `data` stage delivers the complete message as JSON to our FastAPI endpoint, with arbitrary authentication headers and an `accept`/`discard`/`reject` response. The project is massively active.
 
-*Conditions à lever avant de s'engager* : (a) tester le port 25 entrant chez l'hébergeur ; (b) lire la doc MTA Hooks dans un navigateur ; (c) arbitrer l'AGPL. **Si l'AGPL gêne, Postal (MIT) est un substitut direct**, payload très proche, 18 retries — au prix de l'absence de signature de webhook.
+*Conditions to clear before committing*: (a) test inbound port 25 at the hosting provider; (b) read the MTA Hooks documentation in a browser; (c) arbitrate the AGPL. **If the AGPL is a problem, Postal (MIT) is a direct substitute**, with a very similar payload, 18 retries — at the price of having no webhook signature.
 
-*Si l'auto-hébergement est refusé* : **CloudMailin** est le seul managé permettant de **forcer le traitement en région UE par DNS**, avec DPA art. 28. Réserves : basic auth seulement, 512 KB sur le gratuit (serré pour un mail HTML d'enseigne — le palier utile est Professional à 45 $/mois), et le sous-traitant OpenAI à clarifier. **ImprovMX Premium (9 $/mois, datacenters FR chez OVH)** est plus simple et moins cher, au prix d'une sécurité de webhook nulle (une seule IP à allowlister) et de 2 retries seulement.
+*If self-hosting is refused*: **CloudMailin** is the only managed option that allows **forcing processing in the EU region by DNS**, with an Article 28 DPA. Caveats: basic auth only, 512 KB on the free tier (tight for a retailer's HTML mail — the useful step up is Professional at $45/month), and the OpenAI sub-processor to clarify. **ImprovMX Premium ($9/month, FR datacentres at OVH)** is simpler and cheaper, at the price of zero webhook security (a single IP to allowlist) and only 2 retries.
 
-**Règles de conception valables quel que soit le choix** :
-- L'URL du webhook contient un secret long et aléatoire, en plus du mécanisme d'auth du fournisseur.
-- **L'endpoint est idempotent**, clé `Message-ID` : les retries agressifs (Postmark 10, Postal 18, Mailtrap 10/24 h) garantissent des doublons.
-- L'adresse par foyer est un **token aléatoire non devinable**, révocable et rotatable — c'est une capability, elle doit se traiter comme un secret.
-- Prévoir un chemin de secours explicite quand le parsing échoue (Brevo a raison : 100 % est impossible).
+**Design rules valid whatever the choice**:
+- The webhook URL contains a long random secret, in addition to the provider's auth mechanism.
+- **The endpoint is idempotent**, keyed on `Message-ID`: aggressive retries (Postmark 10, Postal 18, Mailtrap 10/24 h) guarantee duplicates.
+- The per-household address is an **unguessable random token**, revocable and rotatable — it is a capability URL, and must be treated as a secret.
+- Provide an explicit fallback path for when parsing fails (Brevo is right: 100% is impossible).
 
 ---
 
-## 2. Lecture directe de la boîte mail — voie alternative
+## 2. Reading the mailbox directly — alternative route
 
-### 2.1 Gmail API : le coût est réglementaire, pas technique
+### 2.1 Gmail API: the cost is regulatory, not technical
 
-**`gmail.readonly` est bien un *restricted scope* en 2026.** La liste officielle des scopes restreints le confirme, et elle inclut aussi `gmail.metadata`, `gmail.modify` et `https://mail.google.com/` (ce dernier couvrant *tout* usage d'IMAP, SMTP et POP3).
-Sources : <https://developers.google.com/workspace/gmail/api/auth/scopes> · <https://support.google.com/cloud/answer/13464325?hl=en>
+**`gmail.readonly` is indeed a *restricted scope* in 2026.** The official list of restricted scopes confirms it, and it also includes `gmail.metadata`, `gmail.modify` and `https://mail.google.com/` (the latter covering *all* use of IMAP, SMTP and POP3).
+Sources: <https://developers.google.com/workspace/gmail/api/auth/scopes> · <https://support.google.com/cloud/answer/13464325?hl=en>
 
-**Il n'existe aucun repli moins sensible.** `gmail.metadata` est *aussi* restreint **et** ne donne pas le corps du message — donc inutile ici. Les scopes *sensitive* (non restreints) sont ceux des Workspace Add-ons, qui n'accordent qu'un accès **temporaire au message actuellement ouvert**, sans traitement en arrière-plan : l'utilisateur devrait ouvrir chaque mail et cliquer, ce qui détruit l'intérêt de l'automatisation.
-Source : <https://developers.google.com/workspace/add-ons/concepts/workspace-scopes>
-⚠️ **Incohérence documentaire relevée** : la page des scopes Gmail classe `gmail.addons.current.message.readonly` comme *sensitive*, la page Workspace add-ons le qualifie de *restricted*. Non tranché.
+**There is no less sensitive fallback.** `gmail.metadata` is *also* restricted **and** does not give the message body — hence useless here. The *sensitive* (non-restricted) scopes are those of Workspace Add-ons, which grant only **temporary access to the currently open message**, with no background processing: the user would have to open each mail and click, which destroys the point of the automation.
+Source: <https://developers.google.com/workspace/add-ons/concepts/workspace-scopes>
+⚠️ **Documentation inconsistency noted**: the Gmail scopes page classifies `gmail.addons.current.message.readonly` as *sensitive*, the Workspace add-ons page calls it *restricted*. Unresolved.
 
-#### Préalable souvent fatal : le type d'application autorisé
+#### Often-fatal prerequisite: the permitted application type
 
-Google exige que l'app appartienne à un type approuvé pour les scopes Gmail. Le n°4 est « *Applications that use information from emails to provide reporting or monitoring services for the benefit of users that **improve the email experience** (such as applications that automate travel itineraries or track flights or package delivery statuses)* ».
-Source : <https://developers.google.com/workspace/workspace-api-user-data-developer-policy>
+Google requires the app to belong to an approved type for Gmail scopes. No. 4 is "*Applications that use information from emails to provide reporting or monitoring services for the benefit of users that **improve the email experience** (such as applications that automate travel itineraries or track flights or package delivery statuses)*".
+Source: <https://developers.google.com/workspace/workspace-api-user-data-developer-policy>
 
-Chaudron ressemble à ce pattern (extraction de récap depuis un mail), mais **une app de garde-manger améliore la gestion de stock, pas l'expérience email**. **C'est un risque de rejet réel, à l'appréciation de l'équipe Trust & Safety, et non chiffrable.**
+Chaudron resembles this pattern (extracting a summary from a mail), but **a pantry app improves stock management, not the email experience**. **This is a real risk of rejection, at the discretion of the Trust & Safety team, and it cannot be quantified.**
 
-#### Vérification OAuth
+#### OAuth verification
 
-| Étape | Délai officiel |
+| Step | Official turnaround |
 |---|---|
-| Brand verification | 2–3 jours ouvrés |
-| Sensitive scope verification | 10 jours ouvrés |
-| **Restricted scope verification** | **6 semaines** |
+| Brand verification | 2–3 business days |
+| Sensitive scope verification | 10 business days |
+| **Restricted scope verification** | **6 weeks** |
 
-Source : <https://support.google.com/cloud/answer/13463817?hl=en>
+Source: <https://support.google.com/cloud/answer/13463817?hl=en>
 
-Documents exigés (<https://support.google.com/cloud/answer/13464321?hl=en>) : homepage sur un domaine possédé et décrivant réellement l'app ; politique de confidentialité **sur le même domaine**, liée depuis la homepage *et* l'écran de consentement ; **propriété du domaine vérifiée via Search Console** ; **vidéo de démo** du flux OAuth complet, **en anglais**, avec le client ID visible dans la barre d'adresse ; justification par scope.
+Documents required (<https://support.google.com/cloud/answer/13464321?hl=en>): a homepage on an owned domain actually describing the app; a privacy policy **on the same domain**, linked from the homepage *and* the consent screen; **domain ownership verified via Search Console**; a **demo video** of the complete OAuth flow, **in English**, with the client ID visible in the address bar; a justification per scope.
 
-#### CASA — le point qui tue
+#### CASA — the point that kills it
 
-**Toujours obligatoire en 2026** pour tout app à scope restreint ayant « *la capacité d'accéder aux données depuis ou via un serveur tiers* ».
-Source : <https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification>
+**Still mandatory in 2026** for any restricted-scope app having "*the ability to access data from or through a third-party server*".
+Source: <https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification>
 
-Gouvernance : le programme est porté par l'App Defense Alliance, **migrée sous la Joint Development Foundation (Linux Foundation)**, avec Google, Meta et Microsoft au comité de pilotage (<https://www.linuxfoundation.org/press/app-defense-alliance-migrates-under-jdf-with-google-meta-microsoft-as-steering-committee>). La nomenclature est passée de « Tier 2 / Tier 3 » à **Assurance Levels AL1 / AL2**, **imposés par Google** et non choisis par le développeur (<https://support.google.com/cloud/answer/13465431?hl=en> · <https://appdefensealliance.dev/casa/casa-tiering>).
+Governance: the programme is run by the App Defense Alliance, **migrated under the Joint Development Foundation (Linux Foundation)**, with Google, Meta and Microsoft on the steering committee (<https://www.linuxfoundation.org/press/app-defense-alliance-migrates-under-jdf-with-google-meta-microsoft-as-steering-committee>). The nomenclature has moved from "Tier 2 / Tier 3" to **Assurance Levels AL1 / AL2**, **imposed by Google** and not chosen by the developer (<https://support.google.com/cloud/answer/13465431?hl=en> · <https://appdefensealliance.dev/casa/casa-tiering>).
 
-🔴 **Le self-scan gratuit est mort.** « *The CASA self scanning process is **deprecated*** » (<https://appdefensealliance.dev/casa/tier-2/tier2-overview>) ; il ne subsiste que comme auto-évaluation avant le scan payant. **AL1 comme AL2 sont « Lab Tested – Lab Verified »** : passage obligatoire par un labo agréé. L'onboarding de nouveaux labos est par ailleurs **suspendu** suite à la migration — donc pas de pression concurrentielle à la baisse.
+🔴 **The free self-scan is dead.** "*The CASA self scanning process is **deprecated***" (<https://appdefensealliance.dev/casa/tier-2/tier2-overview>); it survives only as a self-assessment ahead of the paid scan. **AL1 and AL2 alike are "Lab Tested – Lab Verified"**: an accredited lab is mandatory. Onboarding of new labs is moreover **suspended** following the migration — so no downward competitive pressure.
 
-**Tarifs publics constatés le 3 août 2026** :
+**Public prices observed on 3 August 2026**:
 
-| Labo | Offre | Prix | Délai |
+| Lab | Offer | Price | Turnaround |
 |---|---|---|---|
-| TAC Security | **AL1 Basic** | **675 $** (barré 1 800 $) | 2–3 semaines |
-| TAC Security | AL1 Premium | 855 $ | 2–3 semaines |
-| TAC Security | AL2 Enterprise | 4 500 $/an | 2–4 semaines |
-| Leviathan | AL1 « No Rush » | 3 000 $ | démarrage sous 30 j |
-| Leviathan | AL1 « Priority » | 6 000 $ | démarrage sous 2 j |
+| TAC Security | **AL1 Basic** | **$675** (struck through from $1,800) | 2–3 weeks |
+| TAC Security | AL1 Premium | $855 | 2–3 weeks |
+| TAC Security | AL2 Enterprise | $4,500/year | 2–4 weeks |
+| Leviathan | AL1 "No Rush" | $3,000 | starts within 30 days |
+| Leviathan | AL1 "Priority" | $6,000 | starts within 2 days |
 
-Sources : <https://casa.tacsecurity.com/site/home> · <https://www.leviathansecurity.com/programs/google-casa-cloud-application-security-assessment> · liste des labos : <https://appdefensealliance.dev/casa/casa-assessors>
+Sources: <https://casa.tacsecurity.com/site/home> · <https://www.leviathansecurity.com/programs/google-casa-cloud-application-security-assessment> · list of labs: <https://appdefensealliance.dev/casa/casa-assessors>
 
-⚠️ **Deux chiffres à ne pas reprendre** : le « 15 000 – 75 000 $ » qui circule encore vient d'un [billet GMass de 2019/2020](https://www.gmass.co/blog/google-oauth-verification-security-assessment/) **antérieur au découpage en tiers** — obsolète. Et les grilles de blogs tiers (switchlabs, deepstrike) sont des compilations non officielles.
+⚠️ **Two figures not to reuse**: the "$15,000 – $75,000" still doing the rounds comes from a [GMass post from 2019/2020](https://www.gmass.co/blog/google-oauth-verification-security-assessment/) **predating the split into tiers** — obsolete. And the grids on third-party blogs (switchlabs, deepstrike) are unofficial compilations.
 
-**Renouvellement : annuel, non négociable**, et « *l'évaluation annuelle CASA doit être un test complet de votre app, indépendamment de tout changement apporté* » — pas de tarif « renouvellement allégé ».
-Source : <https://support.google.com/cloud/answer/13463816?hl=en>
+**Renewal: annual, non-negotiable**, and "*the annual CASA assessment must be a full test of your app, regardless of any changes made*" — no "light renewal" price.
+Source: <https://support.google.com/cloud/answer/13463816?hl=en>
 
-**Témoignage direct, juillet 2026** : un développeur notifié par Google le 16 juillet 2026 pour une app perso à scope `drive` écrit « *the cost is ~540 $/year even at the cheapest, TAC Security. And it renews every 12 months* », « *The old free self-scan is gone; you must go through an accredited lab* ». **Il a abandonné son app** et s'est replié sur `drive.file`, non restreint. C'est le scénario de référence.
-Source : <https://yurudeep.com/posts/aicoding/2026/20260717/en/>
+**First-hand account, July 2026**: a developer notified by Google on 16 July 2026 for a personal app with the `drive` scope writes "*the cost is ~$540/year even at the cheapest, TAC Security. And it renews every 12 months*", "*The old free self-scan is gone; you must go through an accredited lab*". **He abandoned his app** and fell back on `drive.file`, which is not restricted. This is the reference scenario.
+Source: <https://yurudeep.com/posts/aicoding/2026/20260717/en/>
 
-⚠️ **L'échappatoire « pas de serveur » n'est pas confirmée.** L'annonce historique indiquait que les apps stockant les données uniquement sur l'appareil échappaient à l'évaluation complète. Un développeur a posé exactement cette question sur le forum officiel le 16 mars 2026 (<https://discuss.google.dev/t/is-casa-required-for-all-access-restricted-scopes/340650>) : **elle est restée sans réponse**. Aucune page officielle 2026 ne confirme la dispense. À traiter comme un pari.
+⚠️ **The "no server" escape hatch is not confirmed.** The historical announcement indicated that apps storing data solely on the device escaped the full assessment. A developer asked exactly this question on the official forum on 16 March 2026 (<https://discuss.google.dev/t/is-casa-required-for-all-access-restricted-scopes/340650>): **it went unanswered**. No official 2026 page confirms the exemption. To be treated as a gamble.
 
-#### La nuance « Testing » vs « non vérifiée » — elle change tout
+#### The "Testing" vs "unverified" nuance — it changes everything
 
-Deux régimes que la plupart des sources confondent :
+Two regimes that most sources conflate:
 
-**Publishing status = « Testing »** (<https://support.google.com/cloud/answer/15549945?hl=en>) : 100 utilisateurs de test max, et surtout — « *A Google Cloud Platform project with an OAuth consent screen configured for an external user type and a publishing status of 'Testing' is issued **a refresh token expiring in 7 days*** » (<https://developers.google.com/identity/protocols/oauth2>). Reconnexion hebdomadaire : rédhibitoire.
+**Publishing status = "Testing"** (<https://support.google.com/cloud/answer/15549945?hl=en>): 100 test users max, and above all — "*A Google Cloud Platform project with an OAuth consent screen configured for an external user type and a publishing status of 'Testing' is issued **a refresh token expiring in 7 days***" (<https://developers.google.com/identity/protocols/oauth2>). Weekly reconnection: a deal-breaker.
 
-**Publishing status = « In production » mais non vérifiée** : écran d'avertissement avant consentement, **plafond de 100 nouveaux utilisateurs cumulé sur toute la vie du projet, non réinitialisable** — mais **les refresh tokens n'expirent pas à 7 jours**. La règle des 7 jours est attachée au statut « Testing », pas à l'absence de vérification.
+**Publishing status = "In production" but unverified**: a warning screen before consent, a **ceiling of 100 new users cumulative over the whole life of the project, non-resettable** — but **refresh tokens do not expire at 7 days**. The 7-day rule attaches to the "Testing" status, not to the absence of verification.
 
-→ **C'est le seul chemin viable sans payer.** À noter que <https://support.google.com/cloud/answer/7454865?hl=en> énonce qu'on *doit* passer la vérification avant de lancer une app destinée aux utilisateurs : c'est toléré techniquement, pas béni contractuellement.
+→ **This is the only viable path without paying.** Note that <https://support.google.com/cloud/answer/7454865?hl=en> states that one *must* pass verification before launching an app intended for users: it is tolerated technically, not blessed contractually.
 
-**Autres causes d'expiration de refresh token** (même page officielle), dont deux mordent ici :
-- « *The user changed passwords and the refresh token contains Gmail scopes* » → **tout changement de mot de passe Google casse l'intégration**.
-- Limite de **100 refresh tokens par compte Google et par client ID** ; au-delà, le plus ancien est invalidé silencieusement.
-- Non-utilisation pendant 6 mois.
+**Other causes of refresh token expiry** (same official page), two of which bite here:
+- "*The user changed passwords and the refresh token contains Gmail scopes*" → **any Google password change breaks the integration**.
+- A limit of **100 refresh tokens per Google account per client ID**; beyond that, the oldest is invalidated silently.
+- Non-use for 6 months.
 
-**Mode « Internal »** : exempte de vérification *et* du plafond, mais réservé aux membres d'une organisation Workspace/Cloud Identity. Un utilisateur externe reçoit `org_internal`. **Inapplicable à une app publique.**
+**"Internal" mode**: exempt from verification *and* from the ceiling, but reserved for members of a Workspace/Cloud Identity organisation. An external user gets `org_internal`. **Not applicable to a public app.**
 
-#### Quotas Gmail API — non-sujet
+#### Gmail API quotas — a non-issue
 
-6 000 unités/minute/utilisateur/projet, 80 000 000 unités/jour/projet avant facturation. `messages.list` = 5, `messages.get` = 20. Une synchro lisant 20 messages coûte ~405 unités : on pourrait faire ~200 000 synchros/jour dans le quota gratuit. **Les quotas ne seront jamais la contrainte — la vérification, si.**
-Source : <https://developers.google.com/workspace/gmail/api/reference/quota>
+6,000 units/minute/user/project, 80,000,000 units/day/project before billing. `messages.list` = 5, `messages.get` = 20. A sync reading 20 messages costs ~405 units: we could do ~200,000 syncs/day within the free quota. **Quotas will never be the constraint — verification will.**
+Source: <https://developers.google.com/workspace/gmail/api/reference/quota>
 
-### 2.2 IMAP chez les autres fournisseurs
+### 2.2 IMAP at the other providers
 
-| Fournisseur | Serveur | Auth 2026 | Source |
+| Provider | Server | Auth 2026 | Source |
 |---|---|---|---|
-| **Gmail** | `imap.gmail.com:993` | **App password (2FA obligatoire)** ou OAuth — mais l'OAuth IMAP exige `https://mail.google.com/`, **restreint** | <https://support.google.com/mail/answer/185833?hl=en> · <https://developers.google.com/workspace/gmail/imap/xoauth2-protocol> |
-| **Outlook.com perso** | `outlook.office365.com:993` | **OAuth 2.0 exclusivement** (auth basique retirée), scope délégué `https://outlook.office.com/IMAP.AccessAsUser.All` | <https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth> |
-| **Microsoft 365** | idem | « *Basic authentication is now disabled in all tenants* » (page MàJ 16/07/2026) | <https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/deprecation-of-basic-authentication-exchange-online> |
-| **iCloud Mail** | `imap.mail.me.com:993` | **Mot de passe spécifique obligatoire**, 2FA requise, **max 25 actifs** | <https://support.apple.com/en-us/102654> · <https://support.apple.com/en-us/102525> |
-| **Yahoo** | `imap.mail.yahoo.com:993` | App password si 2FA/Account Key | <https://help.yahoo.com/kb/SLN15241.html> |
-| **Free.fr** | `imap.free.fr:993` | **Mot de passe principal du compte** — aucun app password | <https://assistance.free.fr/articles/609> |
-| **Orange** | `imap.orange.fr:993` | Mot de passe dédié « logiciels de messagerie ». ⚠️ **POP/IMAP désactivés par défaut** sur les nouvelles boîtes — activation manuelle préalable | [assistance.orange.fr](https://assistance.orange.fr/ordinateurs-peripheriques/installer-et-utiliser/l-utilisation-du-mail-et-du-cloud/mail-orange/le-mail-orange-nouvelle-version/parametrer-la-boite-mail/mail-orange-comment-acceder-a-sa-boite-mail-orange-depuis-une-application-ou-un-logiciel-de-messagerie-non-fourni-par-orange_434630-964290) |
-| **La Poste** | `imap.laposte.net:993` | Mot de passe principal ; TLS 1.2 min depuis juillet 2023 | [aide.laposte.net](https://aide.laposte.net/contents/comment-parametrer-laposte-net-sur-mon-logiciel-de-messagerie-suite-a-l-arret-des-protocoles-en-clair-non-cryptes) |
+| **Gmail** | `imap.gmail.com:993` | **App password (2FA mandatory)** or OAuth — but IMAP OAuth requires `https://mail.google.com/`, **restricted** | <https://support.google.com/mail/answer/185833?hl=en> · <https://developers.google.com/workspace/gmail/imap/xoauth2-protocol> |
+| **Outlook.com personal** | `outlook.office365.com:993` | **OAuth 2.0 exclusively** (basic auth withdrawn), delegated scope `https://outlook.office.com/IMAP.AccessAsUser.All` | <https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth> |
+| **Microsoft 365** | ditto | "*Basic authentication is now disabled in all tenants*" (page updated 16/07/2026) | <https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/deprecation-of-basic-authentication-exchange-online> |
+| **iCloud Mail** | `imap.mail.me.com:993` | **App-specific password mandatory**, 2FA required, **max 25 active** | <https://support.apple.com/en-us/102654> · <https://support.apple.com/en-us/102525> |
+| **Yahoo** | `imap.mail.yahoo.com:993` | App password if 2FA/Account Key | <https://help.yahoo.com/kb/SLN15241.html> |
+| **Free.fr** | `imap.free.fr:993` | **Main account password** — no app password | <https://assistance.free.fr/articles/609> |
+| **Orange** | `imap.orange.fr:993` | Dedicated "mail software" password. ⚠️ **POP/IMAP disabled by default** on new mailboxes — manual activation required first | [assistance.orange.fr](https://assistance.orange.fr/ordinateurs-peripheriques/installer-et-utiliser/l-utilisation-du-mail-et-du-cloud/mail-orange/le-mail-orange-nouvelle-version/parametrer-la-boite-mail/mail-orange-comment-acceder-a-sa-boite-mail-orange-depuis-une-application-ou-un-logiciel-de-messagerie-non-fourni-par-orange_434630-964290) |
+| **La Poste** | `imap.laposte.net:993` | Main password; TLS 1.2 minimum since July 2023 | [aide.laposte.net](https://aide.laposte.net/contents/comment-parametrer-laposte-net-sur-mon-logiciel-de-messagerie-suite-a-l-arret-des-protocoles-en-clair-non-cryptes) |
 
-**Le point contre-intuitif** : sur Gmail, **IMAP+OAuth est plus lourd que l'API Gmail**, pas moins — Google écrit lui-même « *If your app doesn't require `https://mail.google.com/`, migrate to the Gmail API* ». Seul l'app password contourne tout.
+**The counter-intuitive point**: on Gmail, **IMAP+OAuth is heavier than the Gmail API**, not lighter — Google itself writes "*If your app doesn't require `https://mail.google.com/`, migrate to the Gmail API*". Only the app password sidesteps everything.
 
-**Le point favorable** : **Microsoft est le seul grand fournisseur où un dev solo peut faire les choses proprement et gratuitement.** OAuth délégué sur `IMAP.AccessAsUser.All` fonctionne pour Microsoft 365 **et** pour les comptes Outlook.com personnels ; il n'existe **aucun équivalent de CASA, aucun audit payant** ; et la *publisher verification* est **gratuite** (« *Microsoft doesn't charge developers for publisher verification* », <https://learn.microsoft.com/en-us/entra/identity-platform/publisher-verification-overview>) et non bloquante pour des comptes personnels — elle exige toutefois un compte Microsoft AI Cloud Partner Program et une app enregistrée avec un compte work/school, pas un compte Microsoft personnel.
+**The favourable point**: **Microsoft is the only large provider where a solo developer can do things properly and for free.** Delegated OAuth on `IMAP.AccessAsUser.All` works for Microsoft 365 **and** for personal Outlook.com accounts; there is **no CASA equivalent, no paid audit**; and *publisher verification* is **free** ("*Microsoft doesn't charge developers for publisher verification*", <https://learn.microsoft.com/en-us/entra/identity-platform/publisher-verification-overview>) and non-blocking for personal accounts — it does however require a Microsoft AI Cloud Partner Program account and an app registered with a work/school account, not a personal Microsoft account.
 
-⚠️ **Non vérifiés** : la date exacte de fin de l'auth basique sur Outlook.com personnel (le 16 septembre 2024 revient de façon cohérente mais la page canonique reste vague) ; la date de bascule LSA pour les comptes @gmail.com personnels ; la limite de 25 mots de passe iCloud (pages Apple tronquées au fetch, corroborée par le forum développeur).
+⚠️ **Not verified**: the exact end date of basic auth on personal Outlook.com (16 September 2024 comes up consistently but the canonical page stays vague); the LSA cutover date for personal @gmail.com accounts; the limit of 25 iCloud passwords (Apple pages truncated on fetch, corroborated by the developer forum).
 
-### 2.3 Le risque de stocker des mots de passe d'application
+### 2.3 The risk of storing application passwords
 
-Un app password est un **secret réutilisable, longue durée, non révocable granulairement par notre app**, et qui donne souvent un accès **en écriture et en suppression** à toute la boîte — pas seulement en lecture. Une fuite de notre base = compromission totale des boîtes mail de tous nos utilisateurs, avec réinitialisation de mot de passe possible sur tous leurs autres services. Profil de risque très supérieur à un refresh token OAuth (scopé, révocable côté fournisseur).
+An app password is a **reusable, long-lived secret, not revocable granularly by our app**, and it often grants **write and delete access** to the whole mailbox — not just read. A leak of our database = total compromise of all our users' mailboxes, with password resets possible on all their other services. A far worse risk profile than an OAuth refresh token (scoped, revocable on the provider's side).
 
-Obligation RGPD (art. 32) : le hachage est inapplicable puisqu'il faut rejouer le secret. La CNIL admet le **chiffrement réversible** dans ce cas, mais **exige des mesures supplémentaires** — clé hors base (KMS/HSM ou secret d'environnement jamais versionné), rotation, journalisation des accès.
-Source : <https://www.cnil.fr/fr/mots-de-passe-une-nouvelle-recommandation-pour-maitriser-sa-securite>
+GDPR obligation (Article 32): hashing is inapplicable since the secret has to be replayed. The CNIL accepts **reversible encryption** in this case, but **requires additional measures** — key outside the database (KMS/HSM or an environment secret never committed), rotation, access logging.
+Source: <https://www.cnil.fr/fr/mots-de-passe-une-nouvelle-recommandation-pour-maitriser-sa-securite>
 
-### 2.4 Conclusion tranchée
+### 2.4 Clear-cut conclusion
 
-**Non, la lecture directe ne vaut pas le coup pour Chaudron.**
+**No, reading the mailbox directly is not worth it for Chaudron.**
 
-L'arithmétique est brutale : 6 semaines de vérification, une homepage et un domaine vérifié en Search Console, une vidéo de démo en anglais, la nécessité de convaincre Google qu'une app de garde-manger « améliore l'expérience email », et **675 $ minimum tous les ans à perpétuité** pour un audit complet à chaque renouvellement — pour un projet sans revenu. Le self-scan gratuit qui rendait ça supportable n'existe plus.
+The arithmetic is brutal: 6 weeks of verification, a homepage and a domain verified in Search Console, a demo video in English, the need to convince Google that a pantry app "improves the email experience", and **$675 minimum every year in perpetuity** for a full audit at every renewal — for a project with no revenue. The free self-scan that made this bearable no longer exists.
 
-**Si l'automatisation par lecture de boîte est absolument voulue malgré tout**, l'ordre est : (1) publier « In production » sans vérification et assumer le plafond de 100 utilisateurs à vie — les refresh tokens n'expirent pas dans ce régime, le coût est nul ; (2) commencer par **Microsoft**, pas par Google, si plusieurs fournisseurs doivent être couverts ; (3) IMAP + app passwords en dernier recours seulement, et seulement si l'on est prêt à traiter sa base comme un coffre-fort.
+**If automation by mailbox reading is absolutely wanted anyway**, the order is: (1) publish "In production" without verification and accept the lifetime ceiling of 100 users — refresh tokens do not expire under this regime, and the cost is nil; (2) start with **Microsoft**, not Google, if several providers have to be covered; (3) IMAP + app passwords only as a last resort, and only if one is prepared to treat one's database as a vault.
 
-**La voie email entrant (§1) supprime entièrement ce problème** : aucune vérification d'aucun fournisseur, aucun secret d'utilisateur stocké, aucun accès à la boîte. C'est l'argument décisif en sa faveur.
+**The inbound email route (§1) removes this problem entirely**: no verification from any provider, no user secret stored, no mailbox access. That is the decisive argument in its favour.
 
 ---
 
-## 3. Parsing des tickets de caisse par modèle multimodal
+## 3. Parsing till receipts with a multimodal model
 
-### 3.1 Coût — ce n'est pas le critère de décision, mais c'est le foyer qui paie
+### 3.1 Cost — not the deciding criterion, but the household is the one paying
 
-⚠️ **Cadrage imposé par les ADR-0005 et 0007** : Chaudron ne choisit pas un modèle, il expose cinq adaptateurs et **chaque foyer configure le sien** (BYOK, Ollama local, ou la clé du propriétaire d'instance). Les chiffres ci-dessous ne servent donc **pas** à arbitrer une dépense d'exploitation — il n'y en a pas — mais à deux choses : (a) recommander un **défaut honnête** dans l'interface de sélection, puisque l'ADR-0007 note que « quatre fournisseurs à choisir, c'est aussi une charge de décision » ; (b) donner à l'utilisateur un ordre de grandeur de ce que son propre scan lui coûtera. Les repères sont donnés sur Claude parce que `claude-opus-5` est le défaut documenté de l'ADR-0005 ; ils se transposent aux autres adaptateurs.
+⚠️ **Framing imposed by ADR-0005 and 0007**: Chaudron does not choose a model, it exposes five adapters and **each household configures its own** (BYOK, local Ollama, or the instance owner's key). The figures below therefore serve **not** to arbitrate an operating expense — there is none — but two purposes: (a) to recommend an **honest default** in the selection interface, since ADR-0007 notes that "four providers to choose from is also a decision burden"; (b) to give the user an order of magnitude of what their own scan will cost them. The reference points are given on Claude because `claude-opus-5` is the documented default of ADR-0005; they transpose to the other adapters.
 
-**Comptage des tokens d'image chez Claude** : l'image est découpée en **patches de 28×28 px**, soit `⌈largeur/28⌉ × ⌈hauteur/28⌉` tokens visuels, avec double plafond (bord long **2576 px** et **4784 tokens** sur les modèles haute résolution ; **1568 px / 1568 tokens** sur palier standard comme Haiku 4.5). Au-delà, redimensionnement automatique.
-Source : <https://platform.claude.com/docs/en/build-with-claude/vision>
+**Image token counting at Claude**: the image is cut into **28×28 px patches**, i.e. `⌈width/28⌉ × ⌈height/28⌉` visual tokens, with a double ceiling (long edge **2576 px** and **4784 tokens** on high-resolution models; **1568 px / 1568 tokens** on the standard tier such as Haiku 4.5). Beyond that, automatic resizing.
+Source: <https://platform.claude.com/docs/en/build-with-claude/vision>
 
-Pour une image 1500×2000 px : `54 × 72 = 3888 tokens visuels`, sans redimensionnement (valeur confirmée dans le tableau officiel).
-**Bonne nouvelle sur la forme d'un ticket** : un format très allongé coûte *moins* cher, car le plafond du bord long mord avant celui des tokens. 1000×3000 → redimensionné en 858×2576 → **2852 tokens**, contre 3888 pour du 1500×2000.
+For a 1500×2000 px image: `54 × 72 = 3888 visual tokens`, with no resizing (value confirmed in the official table).
+**Good news about the shape of a receipt**: a very elongated format costs *less*, because the long-edge ceiling bites before the token ceiling. 1000×3000 → resized to 858×2576 → **2852 tokens**, against 3888 for 1500×2000.
 
-**Coût par ticket** (hypothèses : image 1500×2000, prompt 600 tokens, sortie JSON 800 tokens, une passe, pas de cache) :
+**Cost per receipt** (assumptions: 1500×2000 image, 600-token prompt, 800-token JSON output, one pass, no cache):
 
-| Option | Coût / ticket | 1 000 tickets |
+> **Why the table says 1564 and the paragraph above says 1568 — both are right.** 1568 is the *ceiling* on the standard tier; 1564 is the *realised* patch count for the receipt assumed here, and it is the number the costs below are computed from. The derivation is the formula given above, applied to the resized image: a 1500×2000 source fits under the 1568 px long-edge ceiling at **1269×952** (the figure §3.7 states for Haiku 4.5), and `⌈1269/28⌉ × ⌈952/28⌉ = 46 × 34 = 1564`. It lands just under the cap, as it must. Checked against the published Haiku 4.5 rates ($1 / $5 per MTok): `(1564 + 600) × $1/MTok + 800 × $5/MTok = $0.006164`, i.e. **$6.16 per 1,000** — the figure in the table. Recomputing with 1568 gives $6.17, which is not. So do not "fix" 1564 to 1568; if the image assumption changes, both the patch count and the costs have to be recomputed together.
+
+| Option | Cost / receipt | 1,000 receipts |
 |---|---|---|
-| Claude Haiku 4.5 (palier standard, 1564 tokens image) | **0,6 ¢** | 6,16 $ |
-| Claude Haiku 4.5 en Batch API (−50 %) | 0,3 ¢ | 3,08 $ |
-| **Google Document AI / AWS Textract AnalyzeExpense / Azure prebuilt-receipt** | **1,0 ¢** | 10 $ |
-| Claude Sonnet 5 (tarif intro jusqu'au 31/08/2026) | 1,7 ¢ | 16,98 $ |
-| Claude Sonnet 5 (tarif standard) | 2,5 ¢ | 25,46 $ |
-| Claude Opus 5 | 4,2 ¢ | 42,44 $ |
+| Claude Haiku 4.5 (standard tier, 1564 image tokens) | **0.6 ¢** | $6.16 |
+| Claude Haiku 4.5 on the Batch API (−50%) | 0.3 ¢ | $3.08 |
+| **Google Document AI / AWS Textract AnalyzeExpense / Azure prebuilt-receipt** | **1.0 ¢** | $10 |
+| Claude Sonnet 5 (intro pricing until 31/08/2026) | 1.7 ¢ | $16.98 |
+| Claude Sonnet 5 (standard pricing) | 2.5 ¢ | $25.46 |
+| Claude Opus 5 | 4.2 ¢ | $42.44 |
 | Taggun | 4–6 ¢ | |
-| Mindee | ≈ 5 ¢ (tarification ambiguë) | |
-| Veryfi / Asprise | 8 ¢ (+ 500 $/mois de minimum chez Veryfi) | |
-| Auto-hébergé (RTX 4090, > 50 k/mois) | ≈ 0,02 ¢ | + coût d'exploitation humain |
+| Mindee | ≈ 5 ¢ (ambiguous pricing) | |
+| Veryfi / Asprise | 8 ¢ (+ $500/month minimum at Veryfi) | |
+| Self-hosted (RTX 4090, > 50k/month) | ≈ 0.02 ¢ | + human operating cost |
 
-Sources : <https://aws.amazon.com/textract/pricing/> · <https://cloud.google.com/document-ai/pricing> · <https://azure.microsoft.com/en-us/pricing/details/document-intelligence/> · <https://www.veryfi.com/pricing/> · <https://www.taggun.io/pricing> · <https://www.mindee.com/pricing>
+Sources: <https://aws.amazon.com/textract/pricing/> · <https://cloud.google.com/document-ai/pricing> · <https://azure.microsoft.com/en-us/pricing/details/document-intelligence/> · <https://www.veryfi.com/pricing/> · <https://www.taggun.io/pricing> · <https://www.mindee.com/pricing>
 
-⚠️ **Correction d'une erreur qui circule** : plusieurs blogs traduisent le « $0.10 for every 10 pages » de Google en « 1 $ / 1000 pages ». C'est faux : 0,10 $ ÷ 10 = 0,01 $/page = **10 $/1000**. Le chiffre correct converge avec AWS et Azure au centime près, ce qui est un bon contrôle de cohérence.
-⚠️ **Non vérifiés** : la page de tarifs Google Document AI n'a jamais chargé intégralement (chiffre issu d'un extrait pointant la page officielle) ; la page Azure affiche des placeholders `$-` (chiffre issu d'un consensus de sources secondaires) ; Mindee se contredit entre « 6 000 crédits par mois » et « par an » — écart de ×12 sur le prix/page, seul ancrage fiable = dépassement à partir de 0,05 $/crédit.
+⚠️ **Correction of an error in circulation**: several blogs translate Google's "$0.10 for every 10 pages" into "$1 / 1000 pages". That is wrong: $0.10 ÷ 10 = $0.01/page = **$10/1000**. The correct figure converges with AWS and Azure to the cent, which is a good consistency check.
+⚠️ **Not verified**: the Google Document AI pricing page never loaded in full (figure taken from an extract pointing at the official page); the Azure page displays `$-` placeholders (figure taken from a consensus of secondary sources); Mindee contradicts itself between "6,000 credits per month" and "per year" — a ×12 discrepancy on the price per page, the only reliable anchor being overage from $0.05/credit.
 
-**Trois enseignements** :
-1. **L'image représente ~87 % des tokens d'entrée.** Le prompt système est du bruit dans le budget.
-2. **Le cache de prompt ne sert quasiment à rien ici** — l'image change à chaque ticket, et le préfixe stable (600 tokens) est sous le minimum cacheable de Sonnet 5 (1024 tokens). Ne pas architecturer autour du caching.
-3. **L'écart entre les options viables (0,6 ¢ à 2,5 ¢) est négligeable devant le coût d'une erreur non détectée dans un stock alimentaire.** Le coût n'est pas le critère. La suite l'est.
+**Three lessons**:
+1. **The image accounts for ~87% of input tokens.** The system prompt is noise in the budget.
+2. **Prompt caching is close to useless here** — the image changes with every receipt, and the stable prefix (600 tokens) is below Sonnet 5's cacheable minimum (1024 tokens). Do not architect around caching.
+3. **The gap between the viable options (0.6 ¢ to 2.5 ¢) is negligible next to the cost of an undetected error in a food stock.** Cost is not the criterion. What follows is.
 
-### 3.2 Le vrai différenciateur : les libellés d'enseigne
+### 3.2 The real differentiator: retailer labels
 
-Les parsers `receipt` de Google, AWS et Azure sont entraînés sur des tickets majoritairement anglophones et **retournent le libellé tel quel**. Ils ne savent pas que « PDT NOUV 1KG » est une pomme de terre nouvelle. Un modèle de langue le sait — c'est exactement ce que la connaissance du monde apporte. **Mais c'est aussi ce qui produit l'hallucination (§3.4).**
+The `receipt` parsers from Google, AWS and Azure are trained on predominantly English-language receipts and **return the label as-is**. They do not know that "PDT NOUV 1KG" is a new potato. A language model does — that is exactly what world knowledge brings. **But it is also what produces hallucination (§3.4).**
 
-⚠️ **Constat de recherche, à connaître avant de planifier** :
-- **Aucune source publique ne documente les abréviations de libellés produits des enseignes françaises** (Leclerc, Intermarché, Carrefour, Super U, Lidl, Aldi, Auchan). La longueur max de ~20–24 caractères découle du format d'impression thermique (58 mm ≈ 32 colonnes, 80 mm ≈ 42–48 colonnes) mais **aucune source ne documente la politique de troncature de ces enseignes**.
-- **Aucun dataset public de tickets français n'existe.** La [collection French OCR datasets sur HF](https://huggingface.co/collections/lbourdois/french-ocr-datasets-67c8d3152330f11227e0d108) contient 3 datasets, tous de transcription générique. Aucun projet open source français de scan de tickets trouvé sur GitHub.
+⚠️ **Research finding, to be known before planning**:
+- **No public source documents the product-label abbreviations of French retailers** (Leclerc, Intermarché, Carrefour, Super U, Lidl, Aldi, Auchan). The max length of ~20–24 characters follows from the thermal printing format (58 mm ≈ 32 columns, 80 mm ≈ 42–48 columns) but **no source documents these retailers' truncation policy**.
+- **No public dataset of French receipts exists.** The [French OCR datasets collection on HF](https://huggingface.co/collections/lbourdois/french-ocr-datasets-67c8d3152330f11227e0d108) contains 3 datasets, all of generic transcription. No French open source receipt-scanning project found on GitHub.
 
-**Ce lexique est donc à la fois notre principal coût de démarrage et notre principal actif défendable.** Il n'existe nulle part et se construit empiriquement.
+**This lexicon is therefore both our main start-up cost and our main defensible asset.** It exists nowhere and is built empirically.
 
-Datasets internationaux exploitables : **CORD** (1 000 tickets indonésiens, **30 entités hiérarchiques** sous `menu`/`subtotal`/`total` — la structure la plus proche de notre besoin), **SROIE** (1 000 tickets anglais, mais **4 champs seulement, pas de lignes de détail** — inutile ici), **CORU/ReceiptSense** (20 000 tickets arabe-anglais). Licences à vérifier individuellement avant usage commercial.
-Sources : <https://rrc.cvc.uab.es/?ch=13> · <https://openreview.net/pdf?id=SJl3z659UH> · <https://arxiv.org/pdf/2406.04493>
+Usable international datasets: **CORD** (1,000 Indonesian receipts, **30 hierarchical entities** under `menu`/`subtotal`/`total` — the structure closest to our need), **SROIE** (1,000 English receipts, but **only 4 fields, no line items** — useless here), **CORU/ReceiptSense** (20,000 Arabic-English receipts). Licences to be checked individually before commercial use.
+Sources: <https://rrc.cvc.uab.es/?ch=13> · <https://openreview.net/pdf?id=SJl3z659UH> · <https://arxiv.org/pdf/2406.04493>
 
-### 3.3 Pièges physiques
+### 3.3 Physical pitfalls
 
-**Papier thermique — la dégradation est chimiquement réversible.** Le mécanisme est un couple leuco-colorant + révélateur encapsulé : ce n'est pas un pigment fixé dans la fibre, c'est un mélange physique que rien ne verrouille.
+**Thermal paper — the degradation is chemically reversible.** The mechanism is a leuco-dye + encapsulated developer pair: it is not a pigment fixed in the fibre, it is a physical mixture that nothing locks in place.
 
-| Grade | Lisibilité |
+| Grade | Legibility |
 |---|---|
-| **Économie (le plus courant en caisse)** | **7 à 30 jours** |
-| Résistant huile/eau | 1–2 ans |
-| Archival | 3–7 ans |
+| **Economy (the most common at the till)** | **7 to 30 days** |
+| Oil/water resistant | 1–2 years |
+| Archival | 3–7 years |
 
-**L'accélérateur le plus destructeur est le contact avec huiles, plastifiants et solvants** — donc un **portefeuille PVC ou une pochette plastique**, exactement ce que font les gens qui « gardent leurs tickets pour les scanner plus tard ».
-Sources : <https://www.ygtape.com/article/why-your-receipts-disappear> · <https://www.jotamachinery.com/academy/thermal-paper-fading/> · brevet <https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/9656498>
-⚠️ Sources = blogs de fabricants (qui vendent le grade supérieur), mécanisme confirmé par la littérature brevets. **Aucune étude académique ne quantifie la chute du taux OCR en fonction de l'âge du ticket.**
+**The most destructive accelerator is contact with oils, plasticisers and solvents** — hence a **PVC wallet or a plastic sleeve**, exactly what people who "keep their receipts to scan later" do.
+Sources: <https://www.ygtape.com/article/why-your-receipts-disappear> · <https://www.jotamachinery.com/academy/thermal-paper-fading/> · patent <https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/9656498>
+⚠️ Sources = manufacturer blogs (who sell the higher grade), mechanism confirmed by the patent literature. **No academic study quantifies the drop in OCR rate as a function of receipt age.**
 
-→ **Conséquence produit directe : l'app doit pousser au scan immédiat**, pas offrir un confortable « mode rattrapage du week-end ».
+→ **Direct product consequence: the app must push for immediate scanning**, not offer a comfortable "weekend catch-up mode".
 
-**Angle, froissage, flou — l'angle est de loin le pire facteur.**
+**Angle, crumpling, blur — angle is by far the worst factor.**
 
-| Perturbation | Effet |
+| Perturbation | Effect |
 |---|---|
-| **Angle de prise de vue** | précision **0,514 à 0° → 0,331 à 15° → 0,170 à 30°** — division par 3 |
-| Inclinaison 5° | −3 à −8 % |
-| Flou gaussien 0 → 1,5 | WER 0,24 → 0,34 |
+| **Shooting angle** | precision **0.514 at 0° → 0.331 at 15° → 0.170 at 30°** — divided by 3 |
+| 5° tilt | −3 to −8% |
+| Gaussian blur 0 → 1.5 | WER 0.24 → 0.34 |
 
-⚠️ Chiffres issus de snippets, PDF source non extractible — **non vérifiés dans leur contexte méthodologique**.
+⚠️ Figures taken from snippets, source PDF not extractable — **not verified in their methodological context**.
 
-→ **Recommandation : imposer un guide de cadrage visuel côté PWA et refuser la capture au-delà de ~10° d'angle détecté.** Le gain est probablement supérieur à celui d'un pipeline de *dewarping*. Si l'on veut quand même du dewarping, l'état de l'art le plus déployable est <https://arxiv.org/abs/2501.03145> (YOLOv8 + interpolation polynomiale cubique, CER 0,0235, meilleur que RectiNet/DocGeoNet/DocTr++ pour nettement moins de calcul).
-⚠️ Les benchmarks de dewarping sont minuscules (DocUNet = 30 documents) ; toute annonce de SOTA dessus est statistiquement fragile. Et **personne n'a publié de comparaison « VLM avec vs sans dewarping sur tickets froissés »** — ReceiptBench reconnaît explicitement n'avoir mené aucune évaluation systématique d'augmentation visuelle.
+→ **Recommendation: impose a visual framing guide on the PWA side and refuse capture beyond ~10° of detected angle.** The gain is probably greater than that of a *dewarping* pipeline. If dewarping is wanted anyway, the most deployable state of the art is <https://arxiv.org/abs/2501.03145> (YOLOv8 + cubic polynomial interpolation, CER 0.0235, better than RectiNet/DocGeoNet/DocTr++ for markedly less compute).
+⚠️ Dewarping benchmarks are tiny (DocUNet = 30 documents); any SOTA claim on them is statistically fragile. And **nobody has published a "VLM with vs without dewarping on crumpled receipts" comparison** — ReceiptBench explicitly acknowledges having run no systematic evaluation of visual augmentation.
 
-**Tickets longs en plusieurs photos — territoire non défriché.** Attention au piège de vocabulaire : *multi-receipt detection* (N tickets distincts sur une photo — ce que font Mindee et Veryfi) n'est **pas** *long receipt capture* (1 ticket en N morceaux — notre problème). Presque toute la doc vendeur parle du premier.
-- **Mindee** : le Multi-Receipt Detector isole plusieurs tickets d'une photo, et pour les PDF « chaque page est traitée comme une image séparée » → **ne recoud pas** (<https://www.mindee.com/blog/multi-receipt-detector-api>).
-- **Veryfi** est le seul à revendiquer la fonctionnalité (« *automatically stitches together multiple pictures of a receipt in real time* »), mais la page « Detect, Crop & Stitch » est **« available per request »** — aucun paramètre d'API, aucune limite de pages, aucune spécification technique publiée.
-- ⚠️ **Aucune publication académique ni article d'ingénierie sur le *receipt image stitching*.** Le stitching générique (SIFT/ORB + homographie) fonctionne mal sur du texte monospace répétitif à faible texture — précisément la nature d'un ticket. Aucune source non plus sur le tuilage avec chevauchement appliqué aux VLM sur tickets.
+**Long receipts in several photos — uncharted territory.** Mind the vocabulary trap: *multi-receipt detection* (N distinct receipts in one photo — what Mindee and Veryfi do) is **not** *long receipt capture* (1 receipt in N pieces — our problem). Almost all vendor documentation talks about the former.
+- **Mindee**: the Multi-Receipt Detector isolates several receipts from one photo, and for PDFs "each page is processed as a separate image" → **it does not stitch** (<https://www.mindee.com/blog/multi-receipt-detector-api>).
+- **Veryfi** is the only one claiming the feature ("*automatically stitches together multiple pictures of a receipt in real time*"), but the "Detect, Crop & Stitch" page is **"available per request"** — no API parameter, no page limit, no published technical specification.
+- ⚠️ **No academic publication and no engineering article on *receipt image stitching*.** Generic stitching (SIFT/ORB + homography) works badly on repetitive low-texture monospace text — precisely the nature of a receipt. No source either on overlapping tiling applied to VLMs on receipts.
 
-→ **Piste pragmatique, à valider empiriquement** : plutôt qu'un stitching pixel, envoyer les N photos **dans une seule requête** (jusqu'à 100 images ; au-delà de 20 images, redimensionner chacune à ≤ 2000 px de côté sous peine d'`invalid_request_error`), étiquetées « Image 1 : », « Image 2 : » comme le recommande la doc vision, avec instruction explicite de déduplication de la zone de recouvrement. On délègue le raccord au modèle plutôt qu'à OpenCV.
+→ **Pragmatic lead, to be validated empirically**: rather than pixel stitching, send the N photos **in a single request** (up to 100 images; beyond 20 images, resize each to ≤ 2000 px on a side, on pain of `invalid_request_error`), labelled "Image 1:", "Image 2:" as the vision documentation recommends, with an explicit instruction to deduplicate the overlapping area. We delegate the joining to the model rather than to OpenCV.
 
-**Spécificités métier FR — ⚠️ non couvertes par cette recherche** : impression des produits au poids variable (prix/kg + quantité type 0,432 kg), remises et promos en lignes négatives, lots « 2+1 gratuit », « carte fidélité −X € », récapitulatif TVA multi-taux (5,5 / 10 / 20 %), consignes d'emballage, frais de sac. Pistes à explorer : article 289 du CGI, arrêté du 3 octobre 1983 (note remise au consommateur), fiche service-public « Facture et note : mentions obligatoires ».
+**FR domain specifics — ⚠️ not covered by this research**: printing of variable-weight products (price/kg + a quantity such as 0.432 kg), discounts and promotions as negative lines, "2+1 free" bundles, "loyalty card −X €", multi-rate VAT summary (5.5 / 10 / 20%), packaging deposits, bag charges. Leads to explore: article 289 of the CGI, the order of 3 October 1983 (note given to the consumer), the service-public fact sheet "Facture et note : mentions obligatoires".
 
-**Un élément est en revanche déjà acquis, et il faut le réutiliser** : l'ADR-0008 a établi que les articles à **poids variable** portent des **codes internes magasin à préfixe `02` et `20`–`29`**, qui **embarquent le prix** — ils changent donc à chaque achat et ne figureront jamais dans un référentiel public. Côté scan, la décision est de les détecter côté client et de basculer en saisie manuelle sans appel réseau. **Côté ticket, la conséquence est différente et importante : une ligne au poids ne doit jamais être routée vers une recherche OFF par code, seulement vers le rapprochement par libellé, et de préférence vers le pivot Ciqual** (§3.6) puisqu'il s'agit typiquement de fruits, légumes, boucherie et vrac — précisément les catégories sans code-barres.
+**One element is however already settled, and must be reused**: ADR-0008 established that **variable-weight** items carry **in-store internal codes prefixed `02` and `20`–`29`**, which **embed the price** — they therefore change with every purchase and will never appear in a public reference database. On the scanning side, the decision is to detect them client-side and switch to manual entry with no network call. **On the receipt side, the consequence is different and important: a weight-priced line must never be routed to an OFF lookup by code, only to label matching, and preferably to the Ciqual pivot** (§3.6) since these are typically fruit, vegetables, butchery and loose goods — precisely the categories with no barcode.
 
-### 3.4 Le piège central : le modèle maquille l'arithmétique
+### 3.4 The central trap: the model doctors the arithmetic
 
-**ReceiptBench (2026)** — 10 656 tickets réels, 19 champs, 4 tâches. Les scores par champ sont éloquents :
+**ReceiptBench (2026)** — 10,656 real receipts, 19 fields, 4 tasks. The per-field scores are eloquent:
 
-| Modèle | Global | Perception | Normalisation | Raisonnement | **Structure (lignes)** |
+| Model | Overall | Perception | Normalisation | Reasoning | **Structure (line items)** |
 |---|---|---|---|---|---|
-| **Qwen3-VL-8B (SFT+GRPO)** | 0,7950 | 0,8488 | 0,9416 | 0,8547 | **0,6373** |
-| Gemini-3-Pro | 0,7373 | 0,7360 | 0,9086 | 0,8714 | **0,5781** |
-| GPT-5 | 0,7076 | 0,7304 | 0,8743 | 0,8706 | **0,4893** |
+| **Qwen3-VL-8B (SFT+GRPO)** | 0.7950 | 0.8488 | 0.9416 | 0.8547 | **0.6373** |
+| Gemini-3-Pro | 0.7373 | 0.7360 | 0.9086 | 0.8714 | **0.5781** |
+| GPT-5 | 0.7076 | 0.7304 | 0.8743 | 0.8706 | **0.4893** |
 
-Source : <https://arxiv.org/html/2605.22413v1>
+Source: <https://arxiv.org/html/2605.22413v1>
 
-**Le champ « lignes de détail » — exactement ce que nous voulons extraire — est de très loin le pire.** Les modèles frontier plafonnent entre 0,49 et 0,58 de F1, tandis qu'un 8B fine-tuné bat GPT-5 de +30 % relatif.
-⚠️ **Composition linguistique : 98,0 % anglais, seulement 60 échantillons en français sur 10 656.** Les auteurs reconnaissent le biais anglo-centré. **Aucun benchmark public ne mesure sérieusement la performance sur tickets français.**
+**The "line items" field — exactly what we want to extract — is by far the worst.** The frontier models plateau between 0.49 and 0.58 F1, while a fine-tuned 8B beats GPT-5 by +30% relative.
+⚠️ **Language composition: 98.0% English, only 60 French samples out of 10,656.** The authors acknowledge the anglocentric bias. **No public benchmark seriously measures performance on French receipts.**
 
-**Le comportement le plus dangereux**, nommé par les auteurs « *hallucination for arithmetic consistency* » :
+**The most dangerous behaviour**, named by the authors "*hallucination for arithmetic consistency*":
 
-> **Les modèles fabriquent ou modifient des lignes pour forcer la somme à correspondre au total imprimé.**
+> **Models fabricate or modify line items to force the sum to match the printed total.**
 
-C'est directement notre question « le total ne tombe pas ». **Le modèle ne signale pas l'incohérence — il maquille les lignes pour la faire disparaître.** C'est le pire comportement possible : il transforme une erreur détectable en erreur silencieuse, **et il neutralise partiellement le contrôle arithmétique que nous comptions utiliser comme garde-fou.**
+This bears directly on our question "the total does not add up". **The model does not flag the inconsistency — it doctors the line items to make it disappear.** This is the worst possible behaviour: it turns a detectable error into a silent one, **and it partially neutralises the arithmetic check we were counting on as a safeguard.**
 
-**Pourquoi c'est architectural et non corrigeable par prompt** — benchmark PP-OCRv6, taux de sorties sans contenu halluciné :
+**Why this is architectural and not fixable by prompting** — PP-OCRv6 benchmark, rate of outputs free of hallucinated content:
 
-| Système | Précision anti-hallucination |
+| System | Anti-hallucination precision |
 |---|---|
-| **PP-OCRv6 medium** (OCR spécialisé, 34,5 M params) | **93,20 %** |
-| Qwen3-VL-235B | 80,56 % |
-| **GPT-5.5** | **78,00 %** |
+| **PP-OCRv6 medium** (specialised OCR, 34.5 M params) | **93.20%** |
+| Qwen3-VL-235B | 80.56% |
+| **GPT-5.5** | **78.00%** |
 
-Source : <https://arxiv.org/html/2606.13108> (Table 7)
+Source: <https://arxiv.org/html/2606.13108> (Table 7)
 
-Explication mécaniste des auteurs : les VLM « *ont tendance à corriger ce qu'ils perçoivent comme des fautes d'orthographe ou de grammaire dans l'image source, produisant un texte linguistiquement plausible mais factuellement incohérent avec l'entrée visuelle* », là où l'OCR spécialisé « *reproduit fidèlement le contenu exact — y compris les fautes délibérées — sans injecter de a priori linguistique* ».
+The authors' mechanistic explanation: VLMs "*tend to correct what they perceive as spelling or grammar mistakes in the source image, producing linguistically plausible text that is factually inconsistent with the visual input*", whereas specialised OCR "*faithfully reproduces the exact content — including deliberate errors — without injecting linguistic priors*".
 
-**Traduction pour Chaudron : un VLM face à « CRQ MONSIEUR X4 » subit une pression statistique à écrire « CROQUE MONSIEUR X4 ». Face à un chiffre partiellement effacé, il subit la même pression à produire le chiffre vraisemblable. C'est la même propriété qui nous fait gagner sur l'expansion des abréviations et perdre sur les montants. On ne peut pas avoir l'une sans l'autre.** D'où l'architecture hybride en §3.7.
+**Translation for Chaudron: a VLM faced with "CRQ MONSIEUR X4" is under statistical pressure to write "CROQUE MONSIEUR X4". Faced with a partly erased digit, it is under the same pressure to produce the plausible digit. It is the same property that makes us win on abbreviation expansion and lose on amounts. You cannot have one without the other.** Hence the hybrid architecture in §3.7.
 
-**Contrepoint honnête** : sur les documents dégradés, les VLM restent nettement meilleurs que les moteurs classiques — CER 3 à 4× inférieur sur scans bruités et tickets ; sur factures scannées, Gemini 2.5 Pro 94 % et Claude 3.5 Sonnet 90 % contre AWS Textract 82 % et Tesseract 80–85 %.
-⚠️ Chiffres agrégés de sources tierces par <https://parsli.co/blog/llm-ocr-vs-traditional-ocr>, non mesurés par eux, sur des modèles d'une génération en arrière.
+**Honest counterpoint**: on degraded documents, VLMs remain markedly better than classic engines — CER 3 to 4× lower on noisy scans and receipts; on scanned invoices, Gemini 2.5 Pro 94% and Claude 3.5 Sonnet 90% against AWS Textract 82% and Tesseract 80–85%.
+⚠️ Figures aggregated from third-party sources by <https://parsli.co/blog/llm-ocr-vs-traditional-ocr>, not measured by them, on models one generation behind.
 
-### 3.5 Valider la sortie
+### 3.5 Validating the output
 
-**Sortie structurée garantie — GA chez Anthropic en 2026.** `output_config.format` avec `type: "json_schema"` procède par **échantillonnage contraint par grammaire compilée** : la sortie est *garantie* valide contre le schéma, pas validée après coup. `strict: true` fait l'équivalent sur les définitions d'outil.
-Source : <https://platform.claude.com/docs/en/build-with-claude/structured-outputs>
-(Le paramètre s'appelle bien `output_config.format` ; l'ancien `output_format` et le header beta `structured-outputs-2025-11-13` sont dépréciés.)
+**Guaranteed structured output — GA at Anthropic in 2026.** `output_config.format` with `type: "json_schema"` proceeds by **sampling constrained by a compiled grammar**: the output is *guaranteed* valid against the schema, not validated afterwards. `strict: true` does the equivalent on tool definitions.
+Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs>
+(The parameter is indeed called `output_config.format`; the old `output_format` and the beta header `structured-outputs-2025-11-13` are deprecated.)
 
-⚠️ **Le piège qui nous concerne directement** : `minimum`, `maximum`, `multipleOf`, `minLength`, `maxLength` **ne sont pas supportés**. **On ne peut donc pas contraindre un prix à être positif par une borne numérique.** `additionalProperties: false` est obligatoire sur tout objet. En revanche `enum` est supporté sur les nombres → **`{"type": "number", "enum": [5.5, 10, 20]}` est un contrainte valide pour les taux de TVA**. Pour tout le reste, les SDK transforment automatiquement le schéma (contrainte retirée, injectée en texte dans `description`, validation côté client) : **c'est exactement le pattern Pydantic, à assumer côté FastAPI.**
+⚠️ **The trap that concerns us directly**: `minimum`, `maximum`, `multipleOf`, `minLength`, `maxLength` **are not supported**. **We therefore cannot constrain a price to be positive via a numeric bound.** `additionalProperties: false` is mandatory on every object. On the other hand `enum` is supported on numbers → **`{"type": "number", "enum": [5.5, 10, 20]}` is a valid constraint for VAT rates**. For everything else, the SDKs transform the schema automatically (constraint removed, injected as text into `description`, client-side validation): **this is exactly the Pydantic pattern, to be owned on the FastAPI side.**
 
-Autres points opérationnels : compilation de grammaire au premier appel puis **cache 24 h** ; incompatible avec les citations et le prefill ; **vérifier `stop_reason` AVANT de parser** (`"refusal"` ou `"max_tokens"` → la sortie peut ne pas respecter le schéma).
+Other operational points: grammar compilation on the first call then a **24 h cache**; incompatible with citations and prefill; **check `stop_reason` BEFORE parsing** (`"refusal"` or `"max_tokens"` → the output may not respect the schema).
 
-**Contrôles arithmétiques** — utiles, mais **pas suffisants** au vu de §3.4 :
-1. `Σ(prix_ligne) == sous_total`
-2. `sous_total + TVA − remises == total_imprimé`
-3. `Σ(base_HT par taux × taux) == TVA totale`
-4. Lignes au poids : `quantité × prix_unitaire == prix_ligne` (±1 centime)
-5. Cohérence des taux : produit alimentaire → 5,5 % attendu
+**Arithmetic checks** — useful, but **not sufficient** in light of §3.4:
+1. `Σ(line_price) == subtotal`
+2. `subtotal + VAT − discounts == printed_total`
+3. `Σ(net base per rate × rate) == total VAT`
+4. Weight-priced lines: `quantity × unit_price == line_price` (±1 cent)
+5. Rate consistency: food product → 5.5% expected
 
-| Écart | Action |
+| Discrepancy | Action |
 |---|---|
-| 0 | Confiance relative — **mais pas de validation automatique aveugle** (cf. maquillage) |
-| ±1 à 3 centimes | Arrondi TVA, tolérer |
-| Écart = prix exact d'une ligne | Ligne dupliquée ou manquante → relecture ciblée |
-| Quelconque | Écran de revue humaine, ligne par ligne |
+| 0 | Relative confidence — **but no blind automatic validation** (cf. doctoring) |
+| ±1 to 3 cents | VAT rounding, tolerate |
+| Discrepancy = exact price of one line | Duplicated or missing line → targeted re-read |
+| Any | Human review screen, line by line |
 
-**Principe** : **valider contre l'image, pas contre la cohérence interne de la sortie.** Le contrôle arithmétique reste un détecteur d'échec franc, pas un certificat de justesse.
+**Principle**: **validate against the image, not against the internal consistency of the output.** The arithmetic check remains a detector of outright failure, not a certificate of correctness.
 
-**Score de confiance — l'API Claude n'expose pas de logprobs.** Vérifié sur la référence complète de la Messages API : aucun `logprobs`, aucun `top_logprobs`, aucun score par token, ni en entrée ni en sortie.
-Source : <https://platform.claude.com/docs/en/api/messages> (demande communautaire ancienne et non satisfaite, cf. <https://github.com/anerli/anthropic-logprobs>)
-→ **Conséquence d'architecture, renforcée par l'ADR-0005** : non seulement Anthropic n'expose pas de logprobs, mais **le port `ModelProvider` ne peut de toute façon pas dépendre d'une fonctionnalité propre à un adaptateur**. Le signal de confiance doit donc vivre **au-dessus du port**, dans le domaine, et fonctionner identiquement que le foyer soit sur Claude, Mistral ou un petit modèle Ollama. C'est un argument décisif en faveur de la corroboration croisée ci-dessous : elle est la seule technique qui ne demande rien au fournisseur.
+**Confidence score — the Claude API does not expose logprobs.** Verified against the complete Messages API reference: no `logprobs`, no `top_logprobs`, no per-token score, neither on input nor on output.
+Source: <https://platform.claude.com/docs/en/api/messages> (a long-standing and unmet community request, cf. <https://github.com/anerli/anthropic-logprobs>)
+→ **Architectural consequence, reinforced by ADR-0005**: not only does Anthropic not expose logprobs, but **the `ModelProvider` port cannot in any case depend on a feature specific to one adapter**. The confidence signal must therefore live **above the port**, in the domain, and work identically whether the household is on Claude, Mistral or a small Ollama model. That is a decisive argument in favour of the cross-corroboration below: it is the only technique that asks nothing of the provider.
 
-Même remarque pour la sortie structurée : `output_config.format` est spécifique à Anthropic. L'ADR-0005 prévoit la **dégradation par capacités détectées** — le domaine doit donc traiter « schéma garanti par grammaire » comme un *bonus* et non comme un invariant, et la validation Pydantic côté serveur reste obligatoire dans tous les cas.
+The same remark applies to structured output: `output_config.format` is specific to Anthropic. ADR-0005 provides for **degradation by detected capabilities** — the domain must therefore treat "schema guaranteed by grammar" as a *bonus* and not as an invariant, and server-side Pydantic validation remains mandatory in all cases.
 
-Alternatives, par rapport coût/signal :
+Alternatives, by cost/signal ratio:
 
-| Technique | Coût | Fiabilité |
+| Technique | Cost | Reliability |
 |---|---|---|
-| **Corroboration croisée VLM × OCR classique** | +ε (CPU) | **Le plus adapté à notre problème** — voir ci-dessous |
-| Auto-consistance N=2 | ×2 | Très bon rapport : *Two Samples Are Enough* montre que 2 échantillons suffisent à une estimation robuste (<https://openreview.net/forum?id=66D3rZrNjV>) |
-| Confiance verbalisée seule | ×1 | ⚠️ **Mal calibrée sans entraînement** (<https://arxiv.org/pdf/2603.17839>). **Ne pas utiliser seule.** |
+| **Cross-corroboration VLM × classic OCR** | +ε (CPU) | **The best fit for our problem** — see below |
+| Self-consistency N=2 | ×2 | Very good ratio: *Two Samples Are Enough* shows that 2 samples suffice for a robust estimate (<https://openreview.net/forum?id=66D3rZrNjV>) |
+| Verbalised confidence alone | ×1 | ⚠️ **Poorly calibrated without training** (<https://arxiv.org/pdf/2603.17839>). **Do not use alone.** |
 
-**La corroboration croisée est directement justifiée par le mécanisme de §3.4** : l'OCR classique (PP-OCRv6, PaddleOCR, docTR) est fidèle au pixel et **ne réécrit pas**, mais ne structure pas ; le VLM structure et expanse les abréviations, mais réécrit. **Faire tourner les deux en parallèle et signaler les divergences numériques transforme deux faiblesses complémentaires en détecteur d'erreur.** Coût quasi nul (CPU).
-⚠️ **Aucun papier ne publie cette architecture appliquée aux tickets** — c'est un raisonnement dérivé des sources, pas une recommandation sourcée.
+**Cross-corroboration is directly justified by the mechanism of §3.4**: classic OCR (PP-OCRv6, PaddleOCR, docTR) is faithful to the pixel and **does not rewrite**, but does not structure; the VLM structures and expands abbreviations, but rewrites. **Running both in parallel and flagging numerical divergences turns two complementary weaknesses into an error detector.** Cost is near zero (CPU).
+⚠️ **No paper publishes this architecture applied to receipts** — it is reasoning derived from the sources, not a sourced recommendation.
 
-**Écran de revue humaine.** Mindee est le plus explicite et reconnaît frontalement le problème (« *L'encre des imprimantes thermiques se dégrade rapidement* ») : **score de confiance par champ** sur une échelle Low/High/Certain, **routage conditionnel** (écriture auto quand certain, opérateur humain pour les documents endommagés), et **mémorisation des corrections** appliquées instantanément aux documents similaires.
-Source : <https://www.mindee.com/blog/receipt-data-extraction-ai-guide>
-(Veryfi annonce 97 % de précision : ⚠️ chiffre commercial non audité, sans définition publique de la métrique.)
+**Human review screen.** Mindee is the most explicit and confronts the problem head-on ("*Thermal printer ink degrades quickly*"): a **per-field confidence score** on a Low/High/Certain scale, **conditional routing** (automatic write when certain, human operator for damaged documents), and **memorisation of corrections** applied instantly to similar documents.
+Source: <https://www.mindee.com/blog/receipt-data-extraction-ai-guide>
+(Veryfi advertises 97% precision: ⚠️ a commercial, unaudited figure, with no public definition of the metric.)
 
-**Ce que notre écran de revue doit montrer** :
-1. La photo du ticket **à côté** du JSON, avec surlignage de la zone source de chaque ligne quand le modèle sait rendre des bounding boxes (coordonnées absolues, approximatives — <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates>)
-2. Le résultat du contrôle arithmétique, en vert/rouge, **avec l'écart chiffré**
-3. **Les lignes en divergence VLM ↔ OCR, en premier**
-4. Les libellés non appariés à une fiche produit, groupés
-5. **Zéro pré-validation par défaut au départ** : le premier ticket d'une enseigne se valide intégralement ; les suivants profitent de la table d'alias.
+**What our review screen must show**:
+1. The photo of the receipt **next to** the JSON, with highlighting of the source area of each line when the model can produce bounding boxes (absolute, approximate coordinates — <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates>)
+2. The result of the arithmetic check, in green/red, **with the discrepancy quantified**
+3. **The lines where VLM and OCR diverge, first**
+4. The labels not matched to a product record, grouped
+5. **Zero pre-validation by default at the start**: the first receipt from a retailer is validated in full; the following ones benefit from the alias table.
 
-### 3.6 Rapprochement libellé → fiche produit
+### 3.6 Matching label → product record
 
-> **Cette sous-section se raccorde à l'existant, elle ne le rejoue pas.** La stratégie Open Food Facts est déjà tranchée par [ADR-0008](adr/0008-open-food-facts-integration.md) et instruite par [`technical-notes-scanning.md`](technical-notes-scanning.md) : cache d'abord (condition de fonctionnement, pas optimisation), catalogue partagé matérialisé par `household_id IS NULL`, API **v3** (la v2 est dépréciée, contrat d'erreur différent), `User-Agent` honnête, environnement de recette `world.openfoodfacts.net` en développement, et **import du dump local en prérequis dès la phase 2**. Ce qui suit ne fait qu'ajouter ce que le rapprochement *libellé de ticket → fiche produit* impose en plus du scan EAN.
+> **This subsection plugs into what exists, it does not replay it.** The Open Food Facts strategy is already settled by [ADR-0008](adr/0008-open-food-facts-integration.md) and worked up by [`technical-notes-scanning.md`](technical-notes-scanning.md): cache first (a condition of operation, not an optimisation), shared catalogue materialised by `household_id IS NULL`, API **v3** (v2 is deprecated, different error contract), honest `User-Agent`, staging environment `world.openfoodfacts.net` in development, and **import of the local dump as a prerequisite from phase 2**. What follows only adds what matching *receipt label → product record* requires on top of EAN scanning.
 
-#### Open Food Facts — l'API en ligne est inutilisable, le dump l'est
+#### Open Food Facts — the online API is unusable, the dump is not
 
-**Rate limits officiels, et ils sont durs** :
+**Official rate limits, and they are hard**:
 
-| Opération | Limite |
+| Operation | Limit |
 |---|---|
-| Lecture produit | **15 requêtes / min / IP** |
-| **Recherche** | **10 requêtes / min / IP** |
-| Écriture | aucune |
+| Product read | **15 requests / min / IP** |
+| **Search** | **10 requests / min / IP** |
+| Write | none |
 
-**User-Agent personnalisé obligatoire** (`AppName/Version (ContactEmail)`), et OFF « *se réserve le droit de refuser l'accès par bannissement d'adresse IP* ».
-Sources : <https://openfoodfacts.github.io/openfoodfacts-server/api/> · <https://support.openfoodfacts.org/help/en-gb/12-api-data-reuse/94-are-there-conditions-to-use-the-api>
+**A custom User-Agent is mandatory** (`AppName/Version (ContactEmail)`), and OFF "*reserves the right to deny access by banning an IP address*".
+Sources: <https://openfoodfacts.github.io/openfoodfacts-server/api/> · <https://support.openfoodfacts.org/help/en-gb/12-api-data-reuse/94-are-there-conditions-to-use-the-api>
 
-→ **10 recherches/min ≈ 1 ticket de 10 lignes par minute. Le design correct est un dump local en base, l'API ne servant que de fallback pour les codes-barres inconnus.** Ce n'est pas négociable.
+→ **10 searches/min ≈ 1 receipt of 10 lines per minute. The correct design is a local dump in the database, with the API serving only as a fallback for unknown barcodes.** This is not negotiable.
 
-**Et cela avance l'échéance fixée par l'ADR-0008.** Celui-ci reporte l'import du dump à la phase 2, au motif que le plafond (~15 req/min en lecture produit) reste tenable en phase 1 pour du scan EAN. **Le rapprochement de libellés ne relève pas du même plafond** : il consomme l'endpoint de *recherche*, plafonné à **10 req/min**, et il émet une requête **par ligne de ticket** au lieu d'une par scan. Un seul ticket de courses sature donc la minute. **Conséquence : dès que l'ingestion par ticket entre en service, le dump local devient un prérequis de phase 1, pas de phase 2.** C'est le principal impact de cette note sur les décisions déjà prises, et il mérite un amendement d'ADR-0008.
+**And it brings forward the deadline set by ADR-0008.** That ADR defers importing the dump to phase 2, on the grounds that the ceiling (~15 req/min on product read) remains tenable in phase 1 for EAN scanning. **Label matching does not fall under the same ceiling**: it consumes the *search* endpoint, capped at **10 req/min**, and it issues one request **per receipt line** instead of one per scan. A single grocery receipt therefore saturates the minute. **Consequence: as soon as receipt ingestion goes into service, the local dump becomes a phase 1 prerequisite, not phase 2.** This is the main impact of this note on decisions already taken, and it warrants an amendment to ADR-0008.
 
-Autre subtilité : **la recherche plein texte n'existe pas dans l'API v2** (`/api/v2/search` est une recherche *structurée* sur `categories_tags`/`brands_tags`/`code`). La recherche par nom est migrée vers **Search-a-licious** (backend Elasticsearch, `search.openfoodfacts.org`, `q` acceptant la syntaxe Lucene — utile pour filtrer par catégorie/marque tout en laissant les tokens libres partir en full-text).
+Another subtlety: **full-text search does not exist in API v2** (`/api/v2/search` is a *structured* search on `categories_tags`/`brands_tags`/`code`). Search by name has migrated to **Search-a-licious** (Elasticsearch backend, `search.openfoodfacts.org`, with `q` accepting Lucene syntax — useful for filtering by category/brand while letting free tokens go to full text).
 
-**Volumes au 3 août 2026** : 4,72 M produits toutes bases ; **1 255 083 pour la France** (~28 % du catalogue mondial, le meilleur ratio de couverture nationale). Filtrer `countries_tags: en:france` met la table dans la zone confortable de `pg_trgm`.
-Source : <https://fr.openfoodfacts.org/>
+**Volumes as of 3 August 2026**: 4.72 M products across all bases; **1,255,083 for France** (~28% of the world catalogue, the best national coverage ratio). Filtering on `countries_tags: en:france` puts the table in `pg_trgm`'s comfort zone.
+Source: <https://fr.openfoodfacts.org/>
 
-**Exports** : préférer le **Parquet** (>150 colonnes, schéma typé, chargeable via DuckDB ou pyarrow → `COPY` binaire) au CSV (~0,9 Go compressé / ~9 Go décompressé, et un champ de mines : quoting, retours ligne dans les noms, colonnes qui bougent). Miroir français ODbL sur data.gouv.fr, Parquet mis à jour le 2 août 2026.
-Sources : <https://world.openfoodfacts.org/data> · <https://www.data.gouv.fr/datasets/open-food-facts-produits-alimentaires-ingredients-nutrition-labels>
+> **Two counts of the same thing, and both are real.** [`technical-notes-scanning.md`](technical-notes-scanning.md) §3.3 gives **4,663,574** and **1,255,052** for the same day. That is not a contradiction between the two notes: the figures above were read off the `fr.openfoodfacts.org` landing page, the other pair was measured through `GET /api/v2/search`, and the two endpoints do not return the same number. *Which* population each one counts was never established, so neither figure supersedes the other. The France counts differ by 31 products, which is noise; the world counts differ by about 1.2%, which is not, and it is why the ratio above (~28%) is loose — both pairs actually give closer to 27%. The derived row counts inherit the split and round in opposite directions: **~1.25 M** in this document, **~1.26 M** in the other, off the same ~1.255 M measurement. Re-measure before sizing anything on either.
 
-**Licence ODbL — les implications concrètes** :
+**Exports**: prefer **Parquet** (>150 columns, typed schema, loadable via DuckDB or pyarrow → binary `COPY`) over CSV (~0.9 GB compressed / ~9 GB uncompressed, and a minefield: quoting, line breaks inside names, columns that move). French ODbL mirror on data.gouv.fr, Parquet updated on 2 August 2026.
+Sources: <https://world.openfoodfacts.org/data> · <https://www.data.gouv.fr/datasets/open-food-facts-produits-alimentaires-ingredients-nutrition-labels>
 
-| Objet | Licence |
+**ODbL licence — the concrete implications**:
+
+| Object | Licence |
 |---|---|
-| **Structure** de la base | **ODbL 1.0** |
-| Contenus individuels | DbCL 1.0 |
-| Photos produits | CC-BY-SA 3.0 |
+| **Structure** of the database | **ODbL 1.0** |
+| Individual contents | DbCL 1.0 |
+| Product photos | CC-BY-SA 3.0 |
 
-Source : <https://world.openfoodfacts.org/terms-of-use>
+Source: <https://world.openfoodfacts.org/terms-of-use>
 
-La distinction qui décide de tout : **notre copie locale enrichie est une *Derivative Database*** (la stocker n'oblige à rien tant qu'on ne la distribue pas publiquement ; dès qu'on la publie, elle repart sous ODbL, enrichissements inclus), tandis que **notre PWA, nos écrans et nos exports sont un *Produced Work*** — **l'ODbL ne contamine pas le code de Chaudron**, seule la **notice d'attribution** avec lien vers openfoodfacts.org est due dès qu'il y a diffusion publique. Les marques et le droit à l'image sur les emballages ne sont **pas** concédés par OFF.
+The distinction that decides everything: **our enriched local copy is a *Derivative Database*** (storing it obliges nothing as long as we do not distribute it publicly; as soon as we publish it, it goes back out under ODbL, enrichments included), whereas **our PWA, our screens and our exports are a *Produced Work*** — **ODbL does not contaminate Chaudron's code**, only the **attribution notice** with a link to openfoodfacts.org is owed as soon as there is public distribution. Trademarks and image rights on packaging are **not** granted by OFF.
 
-→ **Conseil d'architecture juridique : garder la table d'alias apprises dans une table séparée référençant les codes-barres, plutôt qu'en colonnes ajoutées à la copie OFF.** Ça garde la frontière ODbL lisible si le service s'ouvre un jour.
+→ **Legal architecture advice: keep the learned alias table in a separate table referencing the barcodes, rather than as columns added to the OFF copy.** That keeps the ODbL boundary legible if the service ever opens up.
 
-**Limites de qualité pour le matching par nom** : `product_name` est saisi par des contributeurs sans schéma et mélange marque, dénomination, parfum et grammage (« Nutella » / « Nutella 400g » / « Pâte à tartiner Nutella ») ; **`product_name_fr` n'est pas garanti rempli** sur une fiche française (`COALESCE` obligatoire) ; `quantity` est du texte libre. Une requête « lait demi-écrémé » renvoie des milliers de fiches quasi identiques — **le problème n'est pas le rappel, c'est la précision.**
-⚠️ **Le taux de complétion de `product_name_fr` / `brands` / `quantity` sur le sous-ensemble France n'est publié nulle part.** C'est le chiffre le plus important pour ce volet, il se calcule en dix minutes de SQL sur le dump, et il détermine si l'approche tient debout. **À mesurer avant d'écrire une ligne de code.**
+**Quality limits for name matching**: `product_name` is entered by contributors with no schema and mixes brand, denomination, flavour and weight ("Nutella" / "Nutella 400g" / "Pâte à tartiner Nutella"); **`product_name_fr` is not guaranteed to be filled in** on a French record (`COALESCE` mandatory); `quantity` is free text. A query for "lait demi-écrémé" returns thousands of near-identical records — **the problem is not recall, it is precision.**
+⚠️ **The completion rate of `product_name_fr` / `brands` / `quantity` on the France subset is published nowhere.** It is the most important figure for this strand, it can be computed in ten minutes of SQL on the dump, and it determines whether the approach stands up. **To be measured before writing a line of code.**
 
-**Deux sources complémentaires** :
-- **Open Prices** (<https://prices.openfoodfacts.org>) — 285 467 prix et 112 637 preuves au 3/08/2026. Faible comme catalogue (~6 % de couverture), **mais fort comme source de vérité sur les libellés d'enseigne** : les preuves sont des **photos de tickets**, avec association ticket ↔ code-barres. **C'est le seul gisement public identifié contenant à la fois un libellé de caisse français et un GTIN.** À creuser sérieusement pour amorcer le lexique.
-- **Ciqual / ANSES** (<https://www.anses.fr/en/content/ciqual-nutritional-composition-table>) — 3 484 aliments, **Licence Ouverte / Etalab** (réutilisation commerciale libre + attribution). Inutile comme catalogue produits, **précieux comme référentiel d'aliments génériques** : « PDT NOUV 1KG » n'a **aucune fiche OFF possible** (pas de code-barres) mais a une entrée Ciqual évidente.
-→ **Architecture à deux catalogues : OFF pour l'emballé, Ciqual pour le frais et le vrac.**
+**Two complementary sources**:
+- **Open Prices** (<https://prices.openfoodfacts.org>) — 285,467 prices and 112,637 proofs as of 3/08/2026. Weak as a catalogue (~6% coverage), **but strong as a source of truth on retailer labels**: the proofs are **photos of receipts**, with a receipt ↔ barcode association. **It is the only public deposit identified that contains both a French till label and a GTIN.** Worth digging into seriously to bootstrap the lexicon.
+- **Ciqual / ANSES** (<https://www.anses.fr/en/content/ciqual-nutritional-composition-table>) — 3,484 foods, **Licence Ouverte / Etalab** (free commercial reuse + attribution). Useless as a product catalogue, **valuable as a reference base of generic foods**: "PDT NOUV 1KG" can have **no OFF record at all** (no barcode) but has an obvious Ciqual entry.
+→ **A two-catalogue architecture: OFF for packaged goods, Ciqual for fresh and loose.**
 
-#### Le fossé de registre — le vrai point dur
+#### The register gap — the real hard point
 
-**« PDT NOUV 1KG » et « Pommes de terre nouvelles de Noirmoutier, 1 kg » ne partagent presque aucun trigramme et aucun lexème après stemming.** Aucun moteur de similarité de chaînes ne rattrapera ça, quel que soit le moteur. **Il faut une couche d'expansion d'abréviations en amont** (PDT→pomme de terre, CRQ→croque, NOUV→nouvelle, LT DEM 1/2 ECR→lait demi-écrémé), **puis** seulement de la recherche. C'est là que se joue le taux de réussite, pas dans le choix HNSW vs IVFFlat.
+**"PDT NOUV 1KG" and "Pommes de terre nouvelles de Noirmoutier, 1 kg" share almost no trigram and no lexeme after stemming.** No string-similarity engine will make that up, whatever the engine. **An abbreviation expansion layer is needed upstream** (PDT→pomme de terre, CRQ→croque, NOUV→nouvelle, LT DEM 1/2 ECR→lait demi-écrémé), **and only then** search. That is where the success rate is decided, not in the choice of HNSW vs IVFFlat.
 
-Littérature la plus proche : **Gorman, Kirov, Roark & Sproat, « Structured abbreviation expansion in context »** (<https://arxiv.org/abs/2110.01140>) traite exactement des abréviations *ad hoc*, intentionnelles, s'écartant substantiellement du mot d'origine et résolues par le contexte — littéralement « PDT NOUV ». Et **Tomanek, Cai & Venugopalan** (<https://arxiv.org/abs/2312.14327>) traitent la personnalisation avec très peu de données utilisateur, transposable à une boucle d'apprentissage par foyer.
-⚠️ **Aucun corpus ni projet open source dédié aux abréviations de tickets de caisse français.**
+The closest literature: **Gorman, Kirov, Roark & Sproat, "Structured abbreviation expansion in context"** (<https://arxiv.org/abs/2110.01140>) deals with exactly the *ad hoc*, intentional abbreviations that depart substantially from the original word and are resolved by context — literally "PDT NOUV". And **Tomanek, Cai & Venugopalan** (<https://arxiv.org/abs/2312.14327>) address personalisation with very little user data, transposable to a per-household learning loop.
+⚠️ **No corpus and no open source project dedicated to French till-receipt abbreviations.**
 
-#### Repères PostgreSQL
+#### PostgreSQL reference points
 
-**`pg_trgm`** (contrib standard, PG 16/17/18) — **le point décisif : utiliser `word_similarity` (`<%` / `%>`, seuil 0.6), pas `similarity` (`%`, seuil 0.3)**. `similarity('CRQ MONSIEUR X4', 'Croque-monsieur jambon fromage')` sera catastrophique (le dénominateur trigrammes écrase le score), tandis que `word_similarity` cherche la meilleure sous-séquence continue de la seconde chaîne — exactement la forme du problème (libellé court à retrouver *dans* un nom long).
-⚠️ `set_limit()` / `show_limit()` sont dépréciées → `SET pg_trgm.similarity_threshold`.
-**GIN pour le pré-filtre** (1,25 M → quelques centaines de candidats) puis tri applicatif ; GiST n'est nécessaire que pour du KNN `ORDER BY col <-> 'txt' LIMIT n`.
-⚠️ **Aucun benchmark fiable de pg_trgm sur 50 k – 2 M lignes n'a été trouvé.** Le risque documenté est le seuil trop bas : à 0.1 sur 1 M lignes, les candidats explosent et le planner bascule en seq scan. À mesurer.
-Source : <https://www.postgresql.org/docs/18/pgtrgm.html>
+**`pg_trgm`** (standard contrib, PG 16/17/18) — **the decisive point: use `word_similarity` (`<%` / `%>`, threshold 0.6), not `similarity` (`%`, threshold 0.3)**. `similarity('CRQ MONSIEUR X4', 'Croque-monsieur jambon fromage')` will be catastrophic (the trigram denominator crushes the score), whereas `word_similarity` looks for the best continuous subsequence of the second string — exactly the shape of the problem (a short label to be found *within* a long name).
+⚠️ `set_limit()` / `show_limit()` are deprecated → `SET pg_trgm.similarity_threshold`.
+**GIN for the pre-filter** (1.25 M → a few hundred candidates) then application-side sorting; GiST is only necessary for KNN `ORDER BY col <-> 'txt' LIMIT n`.
+⚠️ **No reliable benchmark of pg_trgm on 50k – 2M rows was found.** The documented risk is too low a threshold: at 0.1 on 1 M rows, candidates explode and the planner switches to a seq scan. To be measured.
+Source: <https://www.postgresql.org/docs/18/pgtrgm.html>
 
-**`unaccent` — le piège de l'IMMUTABLE.** `unaccent()` est `STABLE`, donc `CREATE INDEX ... (unaccent(nom))` échoue. Le wrapper correct nomme explicitement le dictionnaire :
+**`unaccent` — the IMMUTABLE trap.** `unaccent()` is `STABLE`, so `CREATE INDEX ... (unaccent(name))` fails. The correct wrapper names the dictionary explicitly:
 
 ```sql
 CREATE OR REPLACE FUNCTION f_unaccent(text) RETURNS text AS
@@ -585,36 +589,36 @@ CREATE INDEX idx_produits_nom_trgm
   ON produits USING gin (f_unaccent(lower(product_name)) gin_trgm_ops);
 ```
 
-⚠️ L'index n'est utilisé que si la requête réécrit **exactement** la même expression, même ordre.
+⚠️ The index is only used if the query rewrites **exactly** the same expression, in the same order.
 
-**FTS française** : configuration `french` standard, à combiner avec unaccent comme dictionnaire *filtrant* (avant le stemmer). `websearch_to_tsquery` est le seul parser qui **ne lève jamais d'erreur de syntaxe** → le seul sûr sur une entrée brute. `ts_rank_cd` (cover density, tient compte de la proximité) plutôt que `ts_rank`. **PostgreSQL 18 n'apporte aucune nouveauté FTS et toujours pas de BM25 en core.**
+**French FTS**: the standard `french` configuration, to be combined with unaccent as a *filtering* dictionary (before the stemmer). `websearch_to_tsquery` is the only parser that **never raises a syntax error** → the only safe one on raw input. `ts_rank_cd` (cover density, which accounts for proximity) rather than `ts_rank`. **PostgreSQL 18 brings no FTS novelty and still no BM25 in core.**
 
-**BM25** : `pg_search` de ParadeDB (v0.25.0 du 28/07/2026, 9,1 k ★, releases hebdomadaires, PG 15+) est mature — ⚠️ **mais AGPL-3.0** : sans effet en auto-hébergement pur, l'§13 s'applique si Chaudron devient un service accessible à des tiers. **Arbitrage à faire consciemment, pas à découvrir plus tard.**
+**BM25**: ParadeDB's `pg_search` (v0.25.0 of 28/07/2026, 9.1k ★, weekly releases, PG 15+) is mature — ⚠️ **but AGPL-3.0**: no effect under pure self-hosting, §13 applies if Chaudron becomes a service accessible to third parties. **A trade-off to be made consciously, not discovered later.**
 
-**`pgvector` — épingler ≥ 0.8.6** (publiée le 29 juillet 2026). Historique récent : **six correctifs en cinq mois, dont une corruption d'index HNSW au vacuum (0.8.3) et deux buffer overflows**. Ce n'est pas un motif de rejet (le projet corrige vite et publiquement), mais ne pas rester sur une 0.8.x antérieure.
-Source : <https://github.com/pgvector/pgvector/blob/master/CHANGELOG.md>
+**`pgvector` — pin ≥ 0.8.6** (released on 29 July 2026). Recent history: **six fixes in five months, including an HNSW index corruption on vacuum (0.8.3) and two buffer overflows**. This is not grounds for rejection (the project fixes fast and publicly), but do not stay on an earlier 0.8.x.
+Source: <https://github.com/pgvector/pgvector/blob/master/CHANGELOG.md>
 
-**Embeddings** : **Qwen3-Embedding-0.6B** (Apache 2.0, MTEB multilingual 64,33) — le **MRL permet de tronquer à 256 ou 384 dims sans réentraîner**, ce qui divise par 3–4 la taille de l'index HNSW ; sur des libellés de 3–6 tokens, 1024 dims est du gaspillage. Alternative : **BGE-M3** (MIT), qui produit **dense + sparse dans le même forward pass** → les deux jambes de la fusion sans extension BM25 AGPL. Pour du français pur, **Solon-embeddings-large-0.1** (MIT) a les seuls chiffres FR publiés (MTEB-FR 0,7490).
-⚠️ **Aucun de ces benchmarks n'évalue du libellé abrégé.** Prévoir un jeu d'évaluation maison de 200–300 paires annotées : c'est le seul chiffre qui comptera.
+**Embeddings**: **Qwen3-Embedding-0.6B** (Apache 2.0, MTEB multilingual 64.33) — **MRL allows truncation to 256 or 384 dims without retraining**, which divides the size of the HNSW index by 3–4; on labels of 3–6 tokens, 1024 dims is waste. Alternative: **BGE-M3** (MIT), which produces **dense + sparse in the same forward pass** → both legs of the fusion without an AGPL BM25 extension. For pure French, **Solon-embeddings-large-0.1** (MIT) has the only published FR figures (MTEB-FR 0.7490).
+⚠️ **None of these benchmarks evaluates abbreviated labels.** Plan an in-house evaluation set of 200–300 annotated pairs: that is the only figure that will count.
 
-**Fusion hybride — RRF, k=60** : `score(d) = Σ_r 1/(k + rank_r(d))`. Le principe qui fait que ça marche : on ne fusionne pas des **scores** (incomparables entre BM25 et cosinus) mais des **rangs**, ce qui rend la fusion insensible à la calibration de chaque moteur. Implémentation PostgreSQL de référence : <https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search/rrf.py> — deux CTE, rang par window function, **`FULL OUTER JOIN`** + `COALESCE` (détail qui compte : un document trouvé par un seul moteur reste candidat).
-→ **Ajouter une troisième jambe trigramme dans la même fusion : sur des libellés abrégés, le trigramme rattrape ce que le stemmer français et l'embedding ratent tous les deux — les troncations (`CRQ`, `PDT`) qui ne sont ni des lexèmes ni sémantiquement porteuses.**
-⚠️ La valeur k=60 est confirmée par l'implémentation pgvector, pas par le papier source (Cormack et al., SIGIR 2009, non récupérable).
+**Hybrid fusion — RRF, k=60**: `score(d) = Σ_r 1/(k + rank_r(d))`. The principle that makes it work: we do not merge **scores** (incomparable between BM25 and cosine) but **ranks**, which makes the fusion insensitive to each engine's calibration. Reference PostgreSQL implementation: <https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search/rrf.py> — two CTEs, rank by window function, **`FULL OUTER JOIN`** + `COALESCE` (a detail that matters: a document found by only one engine stays a candidate).
+→ **Add a third trigram leg to the same fusion: on abbreviated labels, the trigram catches what the French stemmer and the embedding both miss — the truncations (`CRQ`, `PDT`) that are neither lexemes nor semantically meaningful.**
+⚠️ The value k=60 is confirmed by the pgvector implementation, not by the source paper (Cormack et al., SIGIR 2009, not retrievable).
 
-**`RapidFuzz`** (MIT, cœur C++) en **re-ranking sur 50–200 candidats déjà sortis de PostgreSQL, jamais en scan complet** ; `token_set_ratio` quand le libellé est un sous-ensemble désordonné du nom produit.
+**`RapidFuzz`** (MIT, C++ core) for **re-ranking 50–200 candidates already returned by PostgreSQL, never for a full scan**; `token_set_ratio` when the label is an unordered subset of the product name.
 
-#### Boucle d'apprentissage
+#### Learning loop
 
-⚠️ **Cette sous-section n'est pas sourcée** — c'est du raisonnement d'ingénierie appuyé sur les papiers cités.
+⚠️ **This subsection is not sourced** — it is engineering reasoning grounded in the papers cited.
 
 ```sql
 CREATE TABLE receipt_alias (
     id               bigserial PRIMARY KEY,
-    raw_label        text NOT NULL,          -- libellé brut, tel qu'imprimé
-    normalized_label text NOT NULL,          -- lower + unaccent + espaces normalisés
-    retailer         text,                   -- les abréviations sont propres à l'enseigne
-    product_code     text,                   -- GTIN Open Food Facts, nullable
-    ciqual_code      text,                   -- pivot frais/vrac, nullable
+    raw_label        text NOT NULL,          -- raw label, as printed
+    normalized_label text NOT NULL,          -- lower + unaccent + normalised spaces
+    retailer         text,                   -- abbreviations are retailer-specific
+    product_code     text,                   -- Open Food Facts GTIN, nullable
+    ciqual_code      text,                   -- fresh/loose pivot, nullable
     confirmed_by     text NOT NULL,
     confirmed_at     timestamptz NOT NULL DEFAULT now(),
     hit_count        integer NOT NULL DEFAULT 0,
@@ -624,329 +628,329 @@ CREATE TABLE receipt_alias (
 CREATE UNIQUE INDEX ON receipt_alias (normalized_label, coalesce(retailer, ''));
 ```
 
-Quatre points non négociables :
+Four non-negotiable points:
 
-1. **La clé est (libellé normalisé, enseigne)**, pas le libellé seul. « CRQ » chez Leclerc et chez Carrefour ne dénotent pas forcément la même chose, et **un alias faux appris globalement empoisonne tout le corpus**.
-2. **Garder le libellé brut ET normalisé** : le jour où la fonction de normalisation change, il faut pouvoir rejouer sur le brut.
-3. **Consigner aussi les rejets.** L'utilisateur qui refuse la proposition n°1 et choisit la n°3 produit un signal négatif — exactement le « hard negative » de Block-SCL (<https://arxiv.org/abs/2207.02008>), **et le signal le plus cher à obtenir**. Une table qui n'enregistre que les succès jette la moitié de l'information.
-4. **Le lookup d'alias court-circuite tout le pipeline** : un `SELECT ... WHERE normalized_label = ? AND retailer = ?` en O(1) **avant** de toucher pg_trgm ou l'embedding. Après quelques dizaines de courses, l'essentiel du panier récurrent d'un foyer est couvert, et le pipeline coûteux ne sert plus qu'aux nouveautés. **C'est ce qui rend le projet viable économiquement.**
+1. **The key is (normalised label, retailer)**, not the label alone. "CRQ" at Leclerc and at Carrefour do not necessarily denote the same thing, and **a false alias learned globally poisons the whole corpus**.
+2. **Keep the raw label AND the normalised one**: the day the normalisation function changes, it must be possible to replay on the raw one.
+3. **Record the rejections too.** A user who refuses proposal no. 1 and picks no. 3 produces a negative signal — exactly the "hard negative" of Block-SCL (<https://arxiv.org/abs/2207.02008>), **and the most expensive signal to obtain**. A table that records only the successes throws away half the information.
+4. **The alias lookup short-circuits the whole pipeline**: a `SELECT ... WHERE normalized_label = ? AND retailer = ?` in O(1) **before** touching pg_trgm or the embedding. After a few dozen shopping trips, the bulk of a household's recurring basket is covered, and the expensive pipeline only serves novelties. **That is what makes the project economically viable.**
 
-Et le dictionnaire d'abréviations s'auto-alimente : chaque alias confirmé donne un alignement libellé ↔ nom produit, dont on extrait les correspondances token à token. **Notre boucle d'apprentissage réelle n'est pas du fine-tuning de modèle, c'est de l'accumulation de dictionnaire.**
+And the abbreviation dictionary feeds itself: every confirmed alias gives a label ↔ product name alignment, from which token-to-token correspondences are extracted. **Our real learning loop is not model fine-tuning, it is dictionary accumulation.**
 
-### 3.7 Architecture proposée pour le volet ticket
+### 3.7 Proposed architecture for the receipt strand
 
 ```
 PWA (client)
-  └─ guide de cadrage, rejet si angle > 10°, downscale contrôlé
+  └─ framing guide, rejection if angle > 10°, controlled downscale
      │
-     ├─► [1] OCR classique (PP-OCRv6 / docTR, CPU, ~0 €)
-     │        └─ texte fidèle au pixel, non structuré
+     ├─► [1] classic OCR (PP-OCRv6 / docTR, CPU, ~€0)
+     │        └─ pixel-faithful text, unstructured
      │
-     └─► [2] VLM (Claude Sonnet 5, ou modèle auto-hébergé)
-              └─ output_config.format + JSON Schema → lignes structurées
+     └─► [2] VLM (Claude Sonnet 5, or a self-hosted model)
+              └─ output_config.format + JSON Schema → structured lines
      │
-  [3] CORROBORATION : divergences numériques [1] × [2] → score de confiance
+  [3] CORROBORATION: numerical divergences [1] × [2] → confidence score
      │
-  [4] Validation Pydantic + contrôles arithmétiques
-     │   (⚠️ détecteur d'échec franc, PAS certificat de justesse — cf. §3.4)
+  [4] Pydantic validation + arithmetic checks
+     │   (⚠️ outright-failure detector, NOT a certificate of correctness — cf. §3.4)
      │
-  [5] Matching libellé → produit
-     ├─ lookup receipt_alias (normalized_label, retailer)   ← O(1), court-circuit
-     ├─ expansion d'abréviations (dictionnaire auto-alimenté)
-     ├─ blocking pg_trgm word_similarity sur f_unaccent(lower(...)) → ~200 candidats
-     └─ RRF k=60 sur 3 jambes : trigramme + FTS fr_unaccent + vecteur (Qwen3-0.6B @256d)
+  [5] Label → product matching
+     ├─ receipt_alias lookup (normalized_label, retailer)   ← O(1), short-circuit
+     ├─ abbreviation expansion (self-feeding dictionary)
+     ├─ pg_trgm word_similarity blocking on f_unaccent(lower(...)) → ~200 candidates
+     └─ RRF k=60 over 3 legs: trigram + FTS fr_unaccent + vector (Qwen3-0.6B @256d)
      │
-  [6] Écran de revue humaine (photo + JSON + écarts + divergences)
+  [6] Human review screen (photo + JSON + discrepancies + divergences)
      │
-  [7] Écriture en base + apprentissage (alias confirmés ET rejetés)
+  [7] Write to database + learning (aliases confirmed AND rejected)
 ```
 
-**Défaut recommandé dans l'interface de sélection (ADR-0005/0007) : Claude Sonnet 5** pour l'extraction de ticket, avec Haiku 4.5 évalué en parallèle — il est structurellement avantagé côté coût car sur palier standard (1564 tokens là où Sonnet en paie 3888), mais il voit une image redimensionnée à 1269×952, ce qui peut être rédhibitoire sur un ticket. Ce n'est **pas** un choix d'architecture : c'est la valeur que l'interface propose par défaut, et que le foyer reste libre de changer.
+**Recommended default in the selection interface (ADR-0005/0007): Claude Sonnet 5** for receipt extraction, with Haiku 4.5 evaluated in parallel — it is structurally advantaged on cost because it is on the standard tier (1564 tokens where Sonnet pays 3888), but it sees an image resized to 1269×952, which may be disqualifying on a receipt. This is **not** an architectural choice: it is the value the interface proposes by default, and which the household remains free to change.
 
-⚠️ **Point de vigilance sur la dégradation par capacités.** L'ADR-0007 anticipe déjà que « l'extraction de ticket sur papier thermique abîmé fonctionne bien avec un modèle propriétaire récent, médiocrement avec un petit modèle ouvert ». Les chiffres de §3.4 le confirment et l'aggravent : **même les modèles frontier plafonnent à 0,49–0,58 de F1 sur les lignes de détail**. Il faut donc afficher une attente honnête dès la configuration, et **ne jamais désactiver l'écran de revue humaine en fonction du fournisseur** — la tentation de « faire confiance à Opus et pas à Ollama » est exactement le raccourci que le maquillage arithmétique rend dangereux.
+⚠️ **Point of vigilance on degradation by capabilities.** ADR-0007 already anticipates that "receipt extraction on damaged thermal paper works well with a recent proprietary model, poorly with a small open model". The figures in §3.4 confirm and aggravate this: **even the frontier models plateau at 0.49–0.58 F1 on line items**. An honest expectation must therefore be displayed from configuration onwards, and **the human review screen must never be disabled based on the provider** — the temptation to "trust Opus but not Ollama" is exactly the shortcut that arithmetic doctoring makes dangerous.
 
-**Chemin de démarrage** :
-1. Constituer **200–500 tickets français annotés** (enseigne, date, total, TVA par taux, lignes) en incluant délibérément du froissé, du thermique décoloré, du photographié de travers.
-2. Mesurer le **taux de complétion des champs OFF France** (10 min de SQL) — ça conditionne toute la stratégie de matching.
-3. Comparer sur ce corpus : Claude Sonnet 5, Claude Haiku 4.5, Google Expense Parser (1 ¢), et PaddleOCR-VL-1.6 / LightOnOCR-2-1B en local.
-4. **Mesurer au niveau champ** (exact match sur le total, F1 sur les lignes), **pas au niveau caractère**. Un CER de 2 % qui tombe sur le chiffre des centimes est un échec métier.
-5. Explorer Open Prices comme amorce de lexique libellé-caisse ↔ GTIN.
+**Starting path**:
+1. Assemble **200–500 annotated French receipts** (retailer, date, total, VAT per rate, lines) deliberately including crumpled ones, faded thermal ones, ones photographed askew.
+2. Measure the **completion rate of the OFF France fields** (10 min of SQL) — it conditions the whole matching strategy.
+3. Compare on that corpus: Claude Sonnet 5, Claude Haiku 4.5, Google Expense Parser (1 ¢), and PaddleOCR-VL-1.6 / LightOnOCR-2-1B locally.
+4. **Measure at field level** (exact match on the total, F1 on the lines), **not at character level**. A CER of 2% that lands on the cents digit is a business failure.
+5. Explore Open Prices as a bootstrap for a till-label ↔ GTIN lexicon.
 
-**Note sur l'auto-hébergement** : le paysage a basculé en 2026 — sur OmniDocBench v1.6, **PaddleOCR-VL-1.6 (0,9 B, Apache 2.0) obtient 96,34, devant Gemini 3 Pro (92,91) et Qwen3-VL-235B (89,78)**. Les modèles pertinents pèsent 2 à 3,5 Go en fp16 : une RTX 4090 24 Go suffit largement. Deux candidats à surveiller pour le français : **PaddleOCR-VL 1.6** (109 langues, français nommé) et **LightOnOCR-2-1B** (Apache 2.0, français, entraînement ciblant explicitement les « *scans, French documents* », 5,71 pages/s sur une H100 — mais **Tables 45,4**, faible, à tester sérieusement si l'on extrait les lignes en tabulaire).
-⚠️ **Licences bloquantes à connaître** : Nanonets-OCR (Qwen Research License, **usage commercial interdit**), Surya (poids non commerciaux au-delà d'un seuil de CA), Qwen2.5-VL (le 7B est Apache 2.0, **le 3B et le 72B ne le sont pas**), MinerU (addendum possible). Florence-2 est à écarter (score 0 en zero-shot sur DocVQA).
-Source : <https://github.com/opendatalab/OmniDocBench>
+**Note on self-hosting**: the landscape flipped in 2026 — on OmniDocBench v1.6, **PaddleOCR-VL-1.6 (0.9 B, Apache 2.0) scores 96.34, ahead of Gemini 3 Pro (92.91) and Qwen3-VL-235B (89.78)**. The relevant models weigh 2 to 3.5 GB in fp16: an RTX 4090 24 GB is plenty. Two candidates to watch for French: **PaddleOCR-VL 1.6** (109 languages, French named) and **LightOnOCR-2-1B** (Apache 2.0, French, training explicitly targeting "*scans, French documents*", 5.71 pages/s on an H100 — but **Tables 45.4**, weak, to be tested seriously if line items are extracted in tabular form).
+⚠️ **Blocking licences to know about**: Nanonets-OCR (Qwen Research License, **commercial use prohibited**), Surya (non-commercial weights above a revenue threshold), Qwen2.5-VL (the 7B is Apache 2.0, **the 3B and the 72B are not**), MinerU (possible addendum). Florence-2 is to be ruled out (a score of 0 zero-shot on DocVQA).
+Source: <https://github.com/opendatalab/OmniDocBench>
 
-**Ces modèles ouverts sont la vraie substance du mode `ollama` de l'ADR-0007.** Celui-ci décrit l'inférence locale comme un mode de premier rang, mais la qualité y était une inconnue. Le classement OmniDocBench la lève partiellement : un modèle **Apache 2.0 de 0,9 B** tenant sur n'importe quel GPU grand public bat Gemini 3 Pro sur le parsing documentaire. **Pour l'extraction de ticket spécifiquement, le mode local n'est donc pas le parent pauvre** — il l'est en revanche pour les suggestions de recettes, qui demandent du raisonnement généraliste. Cette asymétrie mérite d'être dite à l'utilisateur au moment de la configuration, plutôt que de laisser croire à une dégradation uniforme.
+**These open models are the real substance of ADR-0007's `ollama` mode.** That ADR describes local inference as a first-class mode, but quality there was an unknown. The OmniDocBench ranking partly resolves it: an **Apache 2.0 model of 0.9 B** fitting on any consumer GPU beats Gemini 3 Pro on document parsing. **For receipt extraction specifically, local mode is therefore not the poor relation** — it is, on the other hand, for recipe suggestions, which demand generalist reasoning. This asymmetry deserves to be stated to the user at configuration time, rather than letting them believe in a uniform degradation.
 
-**Seuil de bascule vers l'auto-hébergement** : sous 50 000 tickets/mois, l'API cloud reste plus rentable (le temps d'ingénierie coûte plus que l'écart). Au-delà de 350 000/mois, l'auto-hébergement gagne d'un facteur 4 à 10. **À toute volumétrie si l'argument est RGPD/souveraineté** — un ticket de caisse est une donnée personnelle révélatrice (habitudes de consommation, géolocalisation implicite). C'est exactement la logique déjà retenue par l'ADR-0007, qui met en avant `ollama` et `byok` Mistral (hébergé UE) comme les deux configurations gardant les données sous juridiction européenne.
+**Switchover threshold to self-hosting**: below 50,000 receipts/month, the cloud API stays more economical (engineering time costs more than the difference). Above 350,000/month, self-hosting wins by a factor of 4 to 10. **At any volume if the argument is GDPR/sovereignty** — a till receipt is revealing personal data (consumption habits, implicit geolocation). This is exactly the logic already adopted by ADR-0007, which puts forward `ollama` and `byok` Mistral (EU-hosted) as the two configurations keeping the data under European jurisdiction.
 
 ---
 
-## 4. Export de la liste de courses
+## 4. Shopping-list export
 
-### 4.1 Le résultat qui change l'architecture
+### 4.1 The finding that changes the architecture
 
-La question « comment écrire dans les Rappels iCloud ? » est mal posée, et c'est ce qui piège tout le monde. Il faut séparer deux choses que le web confond systématiquement :
+The question "how do we write into iCloud Reminders?" is badly posed, and that is what traps everyone. Two things the web systematically conflates must be separated:
 
-| | État 2026 |
+| | State in 2026 |
 |---|---|
-| **iCloud comme serveur**, exposant *ses* Rappels en CalDAV à un tiers | ❌ **Mort depuis iOS 13** |
-| **L'app Rappels comme client CalDAV d'un serveur tiers** (le nôtre) | ✅ **Fonctionne, prouvé en avril 2026 sur iOS 26.4.1** |
+| **iCloud as a server**, exposing *its* Reminders over CalDAV to a third party | ❌ **Dead since iOS 13** |
+| **The Reminders app as the CalDAV client of a third-party server** (ours) | ✅ **Works, proven in April 2026 on iOS 26.4.1** |
 
-**N'essayons pas d'écrire dans iCloud. Soyons le serveur CalDAV.**
+**Let us not try to write into iCloud. Let us be the CalDAV server.**
 
-### 4.2 Rappels iCloud — trois impasses et une ouverture
+### 4.2 iCloud Reminders — three dead ends and one opening
 
-**Aucune API publique Apple.** EventKit est strictement local (framework on-device pour app native signée, surveillant la base Calendar de l'appareil — <https://developer.apple.com/documentation/eventkit>). CloudKit Web Services ne donne accès qu'à **nos propres conteneurs** : la structure d'URL est `https://api.apple-cloudkit.com/database/1/[container]/...` où « *The container ID begins with `iCloud.`* » et se crée dans **notre** compte développeur. **Aucun mécanisme documenté ne permet de cibler le conteneur d'une autre app**, a fortiori une app système Apple.
-Source : <https://developer.apple.com/library/archive/documentation/DataManagement/Conceptual/CloudKitWebServicesReference/SettingUpWebServices.html>
+**No public Apple API.** EventKit is strictly local (an on-device framework for a signed native app, watching the device's Calendar database — <https://developer.apple.com/documentation/eventkit>). CloudKit Web Services only gives access to **our own containers**: the URL structure is `https://api.apple-cloudkit.com/database/1/[container]/...` where "*The container ID begins with `iCloud.`*" and is created in **our** developer account. **No documented mechanism allows targeting another app's container**, let alone an Apple system app.
+Source: <https://developer.apple.com/library/archive/documentation/DataManagement/Conceptual/CloudKitWebServicesReference/SettingUpWebServices.html>
 
-**Le CalDAV d'iCloud n'expose plus les Rappels.** C'était votre question, et la réponse est sourcée :
+**iCloud's CalDAV no longer exposes Reminders.** That was your question, and the answer is sourced:
 
-> « *Reminders sync has been **disabled by Apple** and is only available when you use very old iOS versions and never upgraded it.* »
-> — DAVx⁵, client CalDAV de référence sur Android : <https://www.davx5.com/tested-with/icloud>
+> "*Reminders sync has been **disabled by Apple** and is only available when you use very old iOS versions and never upgraded it.*"
+> — DAVx⁵, the reference CalDAV client on Android: <https://www.davx5.com/tested-with/icloud>
 
-Corroborations convergentes :
-- **Tasks.org** : « *The new Apple Reminders app introduced in iOS 13 and macOS 10.15 uses a proprietary format that is not compatible with Tasks* » (<https://tasks.org/docs/caldav_icloud.html>)
-- **BusyMac** : à l'upgrade iOS 13/Catalina, « *the new Reminders app migrates all your to-do-only calendars off of CalDAV and into a **private silo that only the Apple Reminders app can access*** » (<https://www.busymac.com/docs/faqs/112990-reminders-in-ios-13-and-macos-catalina-drops-support-for-caldav/>)
-- **python-caldav** — source primaire parlante : le profil iCloud dans `compatibility_hints.py` est **commenté/désactivé** et porte le drapeau **`'no_todo'`**. L'issue de référence est **close depuis mars 2021** : « *I will close this issue, as no more work is planned to be done on icloud support* » (<https://github.com/python-caldav/caldav/issues/3>)
-- **Home Assistant** : les listes de rappels iCloud remontent comme collections CalDAV mais « *never show events* » ; le ticket de février 2025 signalant qu'elles arrivent « *with a warning and do not have the correct content* » a été **fermé en "not planned"** (<https://github.com/home-assistant/core/issues/138121>)
+Converging corroborations:
+- **Tasks.org**: "*The new Apple Reminders app introduced in iOS 13 and macOS 10.15 uses a proprietary format that is not compatible with Tasks*" (<https://tasks.org/docs/caldav_icloud.html>)
+- **BusyMac**: on upgrading to iOS 13/Catalina, "*the new Reminders app migrates all your to-do-only calendars off of CalDAV and into a **private silo that only the Apple Reminders app can access***" (<https://www.busymac.com/docs/faqs/112990-reminders-in-ios-13-and-macos-catalina-drops-support-for-caldav/>)
+- **python-caldav** — a telling primary source: the iCloud profile in `compatibility_hints.py` is **commented out/disabled** and carries the **`'no_todo'`** flag. The reference issue has been **closed since March 2021**: "*I will close this issue, as no more work is planned to be done on icloud support*" (<https://github.com/python-caldav/caldav/issues/3>)
+- **Home Assistant**: iCloud reminder lists come back as CalDAV collections but "*never show events*"; the February 2025 ticket reporting that they arrive "*with a warning and do not have the correct content*" was **closed as "not planned"** (<https://github.com/home-assistant/core/issues/138121>)
 
-⚠️ **Contre-indice signalé par honnêteté** : un billet technique montre une config vdirsyncer avec `item_types = ["VTODO"]` contre `caldav.icloud.com`, tout en précisant que « *the built-in iCloud integration for Reminders and Calendars doesn't use the same CalDav endpoint* » (<https://heywoodlh.io/cross-platform-icloud/>). Lecture la plus cohérente : des VTODO existent bien côté serveur mais dans un **silo parallèle invisible de l'app Rappels native**. Non tranché sans test sur compte réel — **ne rien bâtir dessus**.
+⚠️ **Counter-indication reported for honesty**: a technical post shows a vdirsyncer configuration with `item_types = ["VTODO"]` against `caldav.icloud.com`, while noting that "*the built-in iCloud integration for Reminders and Calendars doesn't use the same CalDav endpoint*" (<https://heywoodlh.io/cross-platform-icloud/>). The most coherent reading: VTODOs do exist on the server side but in a **parallel silo invisible to the native Reminders app**. Unresolved without a test on a real account — **build nothing on it**.
 
-**L'authentification est de toute façon hostile.** Mot de passe d'application obligatoire, généré sur **`account.apple.com`** (plus `appleid.apple.com`), **2FA requise**, **max 25 actifs**, et surtout : « *Any time you change or reset your primary Apple Account password, **all of your app-specific passwords are revoked automatically***. » Les services couverts sont énumérés comme « *mail, contacts, and calendars* » — **les Rappels n'y sont jamais mentionnés**.
-Source : <https://support.apple.com/en-us/102654> (page publiée le 8 octobre 2025)
-Aucune annonce de dépréciation trouvée — à considérer comme non vérifié plutôt que comme un non.
+**Authentication is hostile in any case.** An app-specific password is mandatory, generated on **`account.apple.com`** (no longer `appleid.apple.com`), **2FA required**, **max 25 active**, and above all: "*Any time you change or reset your primary Apple Account password, **all of your app-specific passwords are revoked automatically***." The services covered are enumerated as "*mail, contacts, and calendars*" — **Reminders are never mentioned among them**.
+Source: <https://support.apple.com/en-us/102654> (page published on 8 October 2025)
+No deprecation announcement found — to be treated as unverified rather than as a no.
 
-**Fragilité opérationnelle** : rate limiting **non documenté** (un développeur maintenant une synchro CardDAV iCloud depuis 8 ans rapporte des « rate limit exceeded » soudains, avec « *nothing in Apple's documentation relating to these limits* » — <https://developer.apple.com/forums/thread/722170>), vagues de 503 (<https://mjtsai.com/blog/2022/01/24/increased-icloud-errors/>), et Apple n'a **jamais officiellement supporté CalDAV**.
+**Operational fragility**: rate limiting **not documented** (a developer who has maintained an iCloud CardDAV sync for 8 years reports sudden "rate limit exceeded" errors, with "*nothing in Apple's documentation relating to these limits*" — <https://developer.apple.com/forums/thread/722170>), waves of 503s (<https://mjtsai.com/blog/2022/01/24/increased-icloud-errors/>), and Apple has **never officially supported CalDAV**.
 
-**L'ouverture : Apple Rappels comme CLIENT d'un serveur CalDAV tiers fonctionne toujours.** Réglages → Calendrier → Comptes → Autre → Ajouter un compte CalDAV expose un interrupteur **« Rappels »** en plus de « Calendriers ».
+**The opening: Apple Reminders as a CLIENT of a third-party CalDAV server still works.** Settings → Calendar → Accounts → Other → Add CalDAV Account exposes a **"Reminders"** switch alongside "Calendars".
 
-> **Preuve décisive et récente** : ticket Vikunja #2658, ouvert le **19 avril 2026** sur **iOS 26.4.1** — « *iOS Reminders correctly **pushes** changes to Vikunja over CalDAV, but doesn't fetch changes made on the Vikunja side* ». C'est une **régression de fetch** : la connexion existe et fonctionne en production (le push marche). Corrigé par la PR #2721.
+> **Decisive and recent proof**: Vikunja ticket #2658, opened on **19 April 2026** on **iOS 26.4.1** — "*iOS Reminders correctly **pushes** changes to Vikunja over CalDAV, but doesn't fetch changes made on the Vikunja side*". This is a **fetch regression**: the connection exists and works in production (the push works). Fixed by PR #2721.
 > <https://github.com/go-vikunja/vikunja/issues/2658>
 
-Corroboré par <https://tasks.org/docs/client_apple_reminders/> (« *Your Tasks.org lists will appear in Reminders* »), <https://github.com/nextcloud/tasks>, et [une procédure pas-à-pas](https://portal.thobson.com/knowledgebase/226/How-to-sync-calendars-and-tasks-to-an-iOS-device-using-CalDAV.html) mentionnant l'étape « *Choose Calendars and/or Reminders (tasks)* ».
+Corroborated by <https://tasks.org/docs/client_apple_reminders/> ("*Your Tasks.org lists will appear in Reminders*"), <https://github.com/nextcloud/tasks>, and [a step-by-step procedure](https://portal.thobson.com/knowledgebase/226/How-to-sync-calendars-and-tasks-to-an-iOS-device-using-CalDAV.html) mentioning the step "*Choose Calendars and/or Reminders (tasks)*".
 
-Frictions connues : **sous-tâches aplaties** (la hiérarchie `RELATED-TO` s'affiche à plat), cas de listes invisibles sur iOS alors que macOS fonctionne (<https://github.com/sabre-io/Baikal/issues/995>, non résolu).
+Known friction: **flattened subtasks** (the `RELATED-TO` hierarchy displays flat), cases of lists invisible on iOS while macOS works (<https://github.com/sabre-io/Baikal/issues/995>, unresolved).
 
 ### 4.3 Google Tasks / Keep / Assistant
 
-**Google Tasks API : oui, et c'est la seule voie Google viable.** `tasks v1`, `https://tasks.googleapis.com`. Création triviale : `POST /tasks/v1/lists/{tasklist}/tasks` avec `{"title": "Lait"}` (title ≤ 1024 caractères). **Pas de batch documenté** → 1 requête HTTP par article. Quota : **50 000 requêtes/jour**, aucune limite par minute publiée, aucune tarification (absence de page pricing, pas une déclaration explicite de gratuité).
-Sources : <https://developers.google.com/workspace/tasks/overview> · <https://developers.google.com/workspace/tasks/reference/rest/v1/tasks/insert> · <https://developers.google.com/workspace/tasks/limits>
+**Google Tasks API: yes, and it is the only viable Google route.** `tasks v1`, `https://tasks.googleapis.com`. Creation is trivial: `POST /tasks/v1/lists/{tasklist}/tasks` with `{"title": "Lait"}` (title ≤ 1024 characters). **No documented batch** → 1 HTTP request per item. Quota: **50,000 requests/day**, no published per-minute limit, no pricing (absence of a pricing page, not an explicit declaration of being free).
+Sources: <https://developers.google.com/workspace/tasks/overview> · <https://developers.google.com/workspace/tasks/reference/rest/v1/tasks/insert> · <https://developers.google.com/workspace/tasks/limits>
 
-**Classification du scope — le point qui coûte.** ✅ `auth/tasks` **n'est PAS restricted** : la liste des scopes restreints est fermée et énumérée (Gmail, Drive, Fit, Chat, Data Portability, Photos Ambient, Health). ⚠️ **Il est donc *sensitive*** par application de la définition officielle (« *Sensitive scopes are scopes that request access to private user data* ») — mais **aucune page Google ne le nomme littéralement comme tel**. C'est une déduction rigoureuse, pas une citation. **Test décisif de 2 minutes : ajouter le scope dans Google Cloud Console → Google Auth Platform → Data Access et regarder sous quelle section il tombe.** À faire avant tout engagement.
+**Scope classification — the point that costs.** ✅ `auth/tasks` is **NOT restricted**: the list of restricted scopes is closed and enumerated (Gmail, Drive, Fit, Chat, Data Portability, Photos Ambient, Health). ⚠️ **It is therefore *sensitive*** by application of the official definition ("*Sensitive scopes are scopes that request access to private user data*") — but **no Google page names it literally as such**. This is a rigorous deduction, not a citation. **A decisive 2-minute test: add the scope in Google Cloud Console → Google Auth Platform → Data Access and see which section it falls under.** To be done before any commitment.
 
-Conséquences si sensitive (scénario probable) : domaine vérifié en Search Console, homepage, politique de confidentialité sur le même domaine, vidéo YouTube du flux OAuth, jusqu'à **10 jours** de review (page MàJ 17 juillet 2026) — **mais pas de CASA et pas de re-certification annuelle**, ce qui change radicalement le calcul par rapport à Gmail (§2.1).
-Sources : <https://support.google.com/cloud/answer/13464325> · <https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification> · <https://support.google.com/cloud/answer/13465431>
+Consequences if sensitive (the likely scenario): domain verified in Search Console, homepage, privacy policy on the same domain, YouTube video of the OAuth flow, up to **10 days** of review (page updated 17 July 2026) — **but no CASA and no annual re-certification**, which radically changes the calculation compared with Gmail (§2.1).
+Sources: <https://support.google.com/cloud/answer/13464325> · <https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification> · <https://support.google.com/cloud/answer/13465431>
 
-Exemption sous 100 utilisateurs toujours valable (« *Personal Use apps: if the app is for your personal use (fewer than 100 users)… users will be allowed to click through "unverified app" warning screens* »), **plafond cumulé sur la vie du projet, non réinitialisable**.
-Et **le piège « Testing » s'applique ici aussi** : « *Authorizations by a test user will expire seven days from the time of consent… that token will also expire* » → **passer en « In production » dès le départ**.
-Sources : <https://support.google.com/cloud/answer/13464323> · <https://support.google.com/cloud/answer/15549945>
+The exemption under 100 users still applies ("*Personal Use apps: if the app is for your personal use (fewer than 100 users)… users will be allowed to click through "unverified app" warning screens*"), a **ceiling cumulative over the life of the project, non-resettable**.
+And **the "Testing" trap applies here too**: "*Authorizations by a test user will expire seven days from the time of consent… that token will also expire*" → **switch to "In production" from the outset**.
+Sources: <https://support.google.com/cloud/answer/13464323> · <https://support.google.com/cloud/answer/15549945>
 
-**Point de veille** : depuis le 1er mai 2026 Google resserre les quotas Workspace (Gmail/Calendar/Drive d'abord), et « *Later in 2026 […] API usage over standard daily thresholds will generate charges on your Google Cloud bill* » (<https://developers.google.com/workspace/tools-safety>).
+**Watch item**: since 1 May 2026 Google has been tightening Workspace quotas (Gmail/Calendar/Drive first), and "*Later in 2026 […] API usage over standard daily thresholds will generate charges on your Google Cloud bill*" (<https://developers.google.com/workspace/tools-safety>).
 
-**Google Keep API : modèle de données parfait, chemin d'autorisation inaccessible.** L'API existe (`keep v1`, `notes.create`, ressource `Note` avec `body.list` / `ListItem{text, checked}` jusqu'à 1000 items) — c'est **exactement** une liste de courses. Mais : « *The Google Keep API is used **in an enterprise environment*** », « *allowing **enterprise administrators** to manage Google Keep notes* », et **les deux seuls modes d'autorisation documentés sont des variantes de la délégation à l'échelle du domaine**, le quickstart exigeant « *domain-wide delegation of authority in the Google Workspace Admin console by a **super administrator account*** ». Un compte @gmail.com n'a ni domaine, ni console d'admin, ni super-admin.
-Sources : <https://developers.google.com/workspace/keep/api/reference/rest> · <https://developers.google.com/workspace/keep/api/guides>
-⚠️ **Non vérifié** : **aucune phrase Google n'interdit explicitement les comptes personnels**, ni ne liste les éditions Workspace requises (cherché dans la référence REST, les guides, le quickstart, la page produit, le discovery doc, les archives Workspace Updates). La restriction est massivement indiquée par tout le chemin d'autorisation, **jamais énoncée noir sur blanc**. → **Écarter : concevoir dessus, c'est parier sur un comportement non documenté.**
+**Google Keep API: perfect data model, inaccessible authorisation path.** The API exists (`keep v1`, `notes.create`, a `Note` resource with `body.list` / `ListItem{text, checked}` up to 1000 items) — it is **exactly** a shopping list. But: "*The Google Keep API is used **in an enterprise environment***", "*allowing **enterprise administrators** to manage Google Keep notes*", and **the only two documented authorisation modes are variants of domain-wide delegation**, with the quickstart requiring "*domain-wide delegation of authority in the Google Workspace Admin console by a **super administrator account***". A @gmail.com account has no domain, no admin console and no super-admin.
+Sources: <https://developers.google.com/workspace/keep/api/reference/rest> · <https://developers.google.com/workspace/keep/api/guides>
+⚠️ **Not verified**: **no Google sentence explicitly forbids personal accounts**, nor lists the required Workspace editions (searched in the REST reference, the guides, the quickstart, the product page, the discovery doc, the Workspace Updates archives). The restriction is massively implied by the whole authorisation path, **never stated in black and white**. → **Rule it out: designing on it means betting on undocumented behaviour.**
 
-**Shopping list / Assistant lists : aucune API, et il n'y en a jamais eu.** Preuve machine-readable : l'annuaire officiel de découverte de toutes les APIs Google publiques (**523 APIs** au 3 août 2026) ne contient comme entrées approchantes que `keep v1`, `tasks v1`, `content v2.1` (Merchant Center, sans rapport) et `homegraph v1`. **Aucune API de listes.**
-Source : <https://www.googleapis.com/discovery/v1/apis>
-Historique : les listes Assistant ont quitté Keep pour Google Home/Express en avril 2017, puis y sont revenues (données non migrées supprimées après le 1er mai 2024) ; les **Conversational Actions — seule surface dev Assistant tierce — sont « *deprecated on June 13, 2023* »** et n'ont de toute façon jamais exposé les listes de l'utilisateur ; les Google Home APIs actuelles ont un périmètre Matter/Thread/appareils (0 occurrence de « shopping list » ou « grocery » sur leurs index).
-Sources : <https://support.google.com/assistant/answer/14171370> · <https://developers.google.com/assistant/ca-sunset> · <https://developers.home.google.com/>
+**Shopping list / Assistant lists: no API, and there never has been one.** Machine-readable proof: the official discovery directory of all public Google APIs (**523 APIs** as of 3 August 2026) contains as near entries only `keep v1`, `tasks v1`, `content v2.1` (Merchant Center, unrelated) and `homegraph v1`. **No list API.**
+Source: <https://www.googleapis.com/discovery/v1/apis>
+History: Assistant lists left Keep for Google Home/Express in April 2017, then came back (unmigrated data deleted after 1 May 2024); the **Conversational Actions — the only third-party Assistant developer surface — are "*deprecated on June 13, 2023*"** and never exposed the user's lists anyway; the current Google Home APIs have a Matter/Thread/device scope (0 occurrences of "shopping list" or "grocery" on their indexes).
+Sources: <https://support.google.com/assistant/answer/14171370> · <https://developers.google.com/assistant/ca-sunset> · <https://developers.home.google.com/>
 
-**Google Calendar + CalDAV VTODO : refus explicite.**
-> « *Data exposed in the CalDAV interface is formatted according to the iCalendar specification. **Doesn't support `VTODO` or `VJOURNAL` data.*** »
+**Google Calendar + CalDAV VTODO: explicit refusal.**
+> "*Data exposed in the CalDAV interface is formatted according to the iCalendar specification. **Doesn't support `VTODO` or `VJOURNAL` data.***"
 > <https://developers.google.com/workspace/calendar/caldav/v2/guide>
 
-### 4.4 Raccourcis Apple — entièrement faisable, deux points à tester
+### 4.4 Apple Shortcuts — entirely feasible, two points to test
 
-**`Get Contents of URL`** supporte GET, POST, PUT, PATCH, DELETE, et « *Request Body allows you to send **JSON**, a Form, or a File* ».
-Source : <https://support.apple.com/guide/shortcuts/request-your-first-api-apd58d46713f/ios>
-⚠️ **Les en-têtes HTTP ne sont PAS documentés par Apple** — vérifié sur cette page (iOS et Mac) et sur toute la section « Use Web APIs in Shortcuts » : zéro occurrence de « Headers », aucune page sur l'authentification. Le paramètre **existe** (action `is.workflow.actions.downloadurl`, paramètres URL / Method / **Headers** / Request Body) mais n'est sourçable que via une base tierce sérieuse (<https://matthewcassinelli.com/actions/get-contents-of-url/>, ex-équipe Workflow/Shortcuts). **Un `Authorization: Bearer …` est faisable, à valider sur appareil.**
+**`Get Contents of URL`** supports GET, POST, PUT, PATCH, DELETE, and "*Request Body allows you to send **JSON**, a Form, or a File*".
+Source: <https://support.apple.com/guide/shortcuts/request-your-first-api-apd58d46713f/ios>
+⚠️ **HTTP headers are NOT documented by Apple** — checked on that page (iOS and Mac) and across the whole "Use Web APIs in Shortcuts" section: zero occurrences of "Headers", no page on authentication. The parameter **does exist** (action `is.workflow.actions.downloadurl`, parameters URL / Method / **Headers** / Request Body) but is only sourceable through a serious third-party database (<https://matthewcassinelli.com/actions/get-contents-of-url/>, ex-Workflow/Shortcuts team). **An `Authorization: Bearer …` is feasible, to be validated on a device.**
 
-Limite officielle notable : « *OAuth 2 […] is currently **not supported*** » (<https://support.apple.com/guide/shortcuts/api-limitations-apd891a6c84e/9.0/ios/26>) → prévoir un **token statique**, pas un flux OAuth.
+A notable official limit: "*OAuth 2 […] is currently **not supported***" (<https://support.apple.com/guide/shortcuts/api-limitations-apd891a6c84e/9.0/ios/26>) → plan for a **static token**, not an OAuth flow.
 
-**Chaîne complète, entièrement documentée par Apple** :
-`Get Contents of URL (POST/JSON)` → `Get Dictionary Value` (« *The data dictionary is actually a **list of dictionaries*** ») → `Repeat with Each` (« *runs the same group of actions **one time for each item*** », variable `Repeat Item`) → **`Add New Reminder`** (« *Creates a new reminder and adds it to the **selected list of reminders*** », paramètres Reminder / **List** / Alert / Priority / Flag / URL / Notes).
-→ **Oui, on peut cibler une liste « Courses » précise.**
-Sources : <https://support.apple.com/guide/shortcuts/get-dictionary-value-action-apdf01294032/ios> · <https://support.apple.com/guide/shortcuts/use-repeat-actions-apdc11deb2c1/ios> · <https://matthewcassinelli.com/actions/add-new-reminder/>
-⚠️ **Non vérifié** : le nom exact de l'action livrée en iOS 26 stable — Apple teste depuis iOS 18 un remplacement App Intents nommé `Create Reminder`, et ne publie aucun référentiel officiel d'actions.
+**Complete chain, entirely documented by Apple**:
+`Get Contents of URL (POST/JSON)` → `Get Dictionary Value` ("*The data dictionary is actually a **list of dictionaries***") → `Repeat with Each` ("*runs the same group of actions **one time for each item***", variable `Repeat Item`) → **`Add New Reminder`** ("*Creates a new reminder and adds it to the **selected list of reminders***", parameters Reminder / **List** / Alert / Priority / Flag / URL / Notes).
+→ **Yes, a specific "Courses" list can be targeted.**
+Sources: <https://support.apple.com/guide/shortcuts/get-dictionary-value-action-apdf01294032/ios> · <https://support.apple.com/guide/shortcuts/use-repeat-actions-apdc11deb2c1/ios> · <https://matthewcassinelli.com/actions/add-new-reminder/>
+⚠️ **Not verified**: the exact name of the action shipped in iOS 26 stable — Apple has been testing an App Intents replacement named `Create Reminder` since iOS 18, and publishes no official action reference.
 
-**Distribution : le réglage « Raccourcis non fiables » n'existe plus.** Preuve par diff de **la même page du guide Apple à deux versions** :
+**Distribution: the "Untrusted Shortcuts" setting no longer exists.** Proof by diffing **the same Apple guide page at two versions**:
 
-| Version | Titre | Contenu |
+| Version | Title | Content |
 |---|---|---|
-| Guide 3.2 (ère iOS 14) | « Enable shared shortcuts » | Activer Réglages → Raccourcis → **Allow Untrusted Shortcuts** |
-| Guide 9.0 / iOS 26 | « Advanced Privacy and security settings » | **Aucune** mention ; ne reste que « Allow Running Scripts » et l'analyse anti-malware |
+| Guide 3.2 (iOS 14 era) | "Enable shared shortcuts" | Enable Settings → Shortcuts → **Allow Untrusted Shortcuts** |
+| Guide 9.0 / iOS 26 | "Advanced Privacy and security settings" | **No** mention; only "Allow Running Scripts" and the anti-malware analysis remain |
 
 <https://support.apple.com/en-kz/guide/shortcuts/enable-shared-shortcuts-apdfeb05586f/3.2/ios> vs <https://support.apple.com/guide/shortcuts/apdfeb05586f/9.0/ios/26>
-(Le retrait est daté d'iOS 15 par les fils communautaires — date non confirmée officiellement, mais **l'absence actuelle du réglage est établie par la doc Apple**.)
+(The removal is dated to iOS 15 by community threads — a date not officially confirmed, but **the current absence of the setting is established by Apple's documentation**.)
 
-**Parcours réel en 2026** : lien iCloud → écran de présentation → **« Get Shortcut »**, sans avertissement. Le partage « Anyone » implique que « *Apple will receive a copy of your shortcut for validation* » ; révocable via « Stop Sharing ».
-**Et la brique clé : les Import Questions** — « *When the recipient runs the shortcut, they're presented with the import questions […] the shortcut is populated with the user's own information* », et le champ « *is cleared when the shortcut is shared* ». **C'est le mécanisme prévu pour faire saisir à chaque utilisateur son URL d'API et son token, sans coder de secret dans le raccourci partagé.**
-Sources : <https://support.apple.com/guide/shortcuts/share-shortcuts-apdf01f8c054/ios> · <https://support.apple.com/guide/shortcuts/add-import-questions-to-shared-shortcuts-apdf330fd3a0/9.0/ios/26>
+**Actual journey in 2026**: iCloud link → presentation screen → **"Get Shortcut"**, with no warning. Sharing with "Anyone" implies that "*Apple will receive a copy of your shortcut for validation*"; revocable via "Stop Sharing".
+**And the key building block: Import Questions** — "*When the recipient runs the shortcut, they're presented with the import questions […] the shortcut is populated with the user's own information*", and the field "*is cleared when the shortcut is shared*". **This is the mechanism designed to make each user enter their own API URL and token, without hard-coding a secret in the shared shortcut.**
+Sources: <https://support.apple.com/guide/shortcuts/share-shortcuts-apdf01f8c054/ios> · <https://support.apple.com/guide/shortcuts/add-import-questions-to-shared-shortcuts-apdf330fd3a0/9.0/ios/26>
 
-**Automatisations horaires sans interaction : oui.** « *Some personal automations can run without asking you for confirmation* » (désactiver « Ask Before Running », puis « Don't Ask ») ; déclencheur **Time of Day** documenté. Contrepartie : en mode « Run Immediately », **la notification devient obligatoire** (le toggle « Notify When Run » disparaît). Et **les automatisations sont locales à l'appareil, elles ne se synchronisent pas.**
-Sources : <https://support.apple.com/guide/shortcuts/enable-or-disable-a-personal-automation-apd602971e63/ios> · <https://support.apple.com/guide/shortcuts/event-triggers-apd932ff833f/ios>
+**Hourly automations without interaction: yes.** "*Some personal automations can run without asking you for confirmation*" (disable "Ask Before Running", then "Don't Ask"); the **Time of Day** trigger is documented. The trade-off: in "Run Immediately" mode, **the notification becomes mandatory** (the "Notify When Run" toggle disappears). And **automations are local to the device, they do not sync.**
+Sources: <https://support.apple.com/guide/shortcuts/enable-or-disable-a-personal-automation-apd602971e63/ios> · <https://support.apple.com/guide/shortcuts/event-triggers-apd932ff833f/ios>
 
-⚠️ **Deux angles morts à tester sur appareil (une demi-journée)** : (a) le paramètre `Headers`, non documenté par Apple ; (b) le prompt de confidentialité au premier accès réseau — Apple documente le dialogue générique (Allow Once / Always Allow / Don't Allow) mais **aucune page ne décrit un prompt par domaine web**, et des fils communautaires décrivent des demandes répétées. **C'est le principal risque UX de ce scénario.**
+⚠️ **Two blind spots to test on a device (half a day)**: (a) the `Headers` parameter, undocumented by Apple; (b) the privacy prompt on first network access — Apple documents the generic dialogue (Allow Once / Always Allow / Don't Allow) but **no page describes a per-web-domain prompt**, and community threads describe repeated requests. **This is the main UX risk of this scenario.**
 
-**Android : l'écart est structurel, et il n'est pas où on l'attend.** L'appel HTTP est un problème résolu et gratuit — **HTTP Shortcuts** (`ch.rmy.android.http_shortcuts`, MIT, v4.6.0 du 18 juin 2026 sur F-Droid) fait toutes les méthodes, auth Basic/Digest/**Bearer**/certificat client, en-têtes et corps personnalisés, JavaScript avant/après ; **Tasker** (~4,49 USD) aussi, l'exemple de sa doc étant littéralement `Authorization:Bearer MY_ACCESS_TOKEN`.
-**Le maillon manquant est l'écriture dans une liste grand public** : il n'existe **aucun contract Android standard** pour les tâches (le framework a `CalendarContract`, rien pour les listes) ; `actions.intent.UPDATE_ITEM_LIST` est un intent qu'une app **déclare pour recevoir** des commandes Assistant, pas un canal d'injection, il est **en dépréciation** et en-US uniquement ; pour Keep, le seul mécanisme constaté est `Intent.ACTION_SEND` vers `com.google.android.keep` — **non documenté**, crée une nouvelle note, ne cible pas une liste. Et le plugin Tasker officiel de Tasks.org « *can only set the title, due date, due time, priority, and description* » — **le choix de la liste n'est pas exposé**.
-Sources : <https://f-droid.org/en/packages/ch.rmy.android.http_shortcuts/> · <https://tasker.joaoapps.com/userguide/en/help/ah_http_request.html> · <https://developer.android.com/reference/app-actions/built-in-intents/productivity/update-item-list> · <https://tasks.org/docs/tasker/>
+**Android: the gap is structural, and it is not where you expect.** The HTTP call is a solved and free problem — **HTTP Shortcuts** (`ch.rmy.android.http_shortcuts`, MIT, v4.6.0 of 18 June 2026 on F-Droid) does every method, Basic/Digest/**Bearer**/client-certificate auth, custom headers and bodies, JavaScript before/after; **Tasker** (~4.49 USD) too, its documentation example being literally `Authorization:Bearer MY_ACCESS_TOKEN`.
+**The missing link is writing into a mainstream list**: there is **no standard Android contract** for tasks (the framework has `CalendarContract`, nothing for lists); `actions.intent.UPDATE_ITEM_LIST` is an intent an app **declares in order to receive** Assistant commands, not an injection channel, it is **being deprecated** and en-US only; for Keep, the only observed mechanism is `Intent.ACTION_SEND` to `com.google.android.keep` — **undocumented**, creates a new note, does not target a list. And Tasks.org's official Tasker plugin "*can only set the title, due date, due time, priority, and description*" — **choosing the list is not exposed**.
+Sources: <https://f-droid.org/en/packages/ch.rmy.android.http_shortcuts/> · <https://tasker.joaoapps.com/userguide/en/help/ah_http_request.html> · <https://developer.android.com/reference/app-actions/built-in-intents/productivity/update-item-list> · <https://tasks.org/docs/tasker/>
 
-| | iOS / Raccourcis | Android |
+| | iOS / Shortcuts | Android |
 |---|---|---|
-| App d'automatisation | **Préinstallée** | À installer |
-| Installation en 1 lien | **Oui** (lien iCloud) | **Non** — pas d'équivalent |
-| Saisie URL/token par l'utilisateur | **Import questions**, prévu pour | Variables à créer à la main |
-| Écriture dans l'app de tâches native | **Oui, liste au choix** | **Non** |
-| Planification | Intégrée | Tasker/MacroDroid en plus |
+| Automation app | **Preinstalled** | To be installed |
+| Installation in 1 link | **Yes** (iCloud link) | **No** — no equivalent |
+| URL/token entry by the user | **Import questions**, designed for it | Variables to be created by hand |
+| Writing into the native task app | **Yes, list of your choice** | **No** |
+| Scheduling | Built in | Tasker/MacroDroid on top |
 
-→ **Sur Android, la vraie solution n'est pas sur le téléphone, elle est côté serveur.** Pour un public non technique, « rien à installer » bat structurellement « installer Tasker et configurer une macro ».
+→ **On Android, the real solution is not on the phone, it is on the server side.** For a non-technical audience, "nothing to install" structurally beats "install Tasker and configure a macro".
 
-### 4.5 Standards ouverts
+### 4.5 Open standards
 
-**RFC 4791** = le protocole CalDAV ; **RFC 5545** = le format iCalendar dont `VTODO` (§3.6.2). Contrainte à connaître : RFC 4791 §4.1 **interdit** de mélanger VEVENT et VTODO dans une même ressource-objet. Évolution en cours : `draft-ietf-calext-ical-tasks-17` (10 décembre 2025), soumis à l'IESG.
-Sources : <https://www.ietf.org/rfc/rfc4791.txt> · <https://www.rfc-editor.org/rfc/rfc5545.html> · <https://datatracker.ietf.org/doc/draft-ietf-calext-ical-tasks/>
+**RFC 4791** = the CalDAV protocol; **RFC 5545** = the iCalendar format, including `VTODO` (§3.6.2). A constraint to know: RFC 4791 §4.1 **forbids** mixing VEVENT and VTODO in the same object resource. Ongoing evolution: `draft-ietf-calext-ical-tasks-17` (10 December 2025), submitted to the IESG.
+Sources: <https://www.ietf.org/rfc/rfc4791.txt> · <https://www.rfc-editor.org/rfc/rfc5545.html> · <https://datatracker.ietf.org/doc/draft-ietf-calext-ical-tasks/>
 
-**Qui consomme réellement des VTODO** : Apple Rappels (comme client d'un serveur tiers — §4.2), Thunderbird (« *implements `VEVENT` events and `VTODO` tasks* »), DAVx⁵ qui route les VTODO vers **jtx Board, OpenTasks et Tasks.org**, Nextcloud Tasks, Nextcloud Deck, Vikunja, Evolution. **Google Calendar : non, refus explicite.**
-⚠️ **Modèle économique à connaître** : chez Tasks.org, Google Tasks et Microsoft To Do sont sans abonnement, mais **CalDAV nécessite un abonnement in-app** (ou un parrainage GitHub) — <https://tasks.org/docs/sync/>. C'est une friction réelle sur Android.
+**Who actually consumes VTODOs**: Apple Reminders (as the client of a third-party server — §4.2), Thunderbird ("*implements `VEVENT` events and `VTODO` tasks*"), DAVx⁵ which routes VTODOs to **jtx Board, OpenTasks and Tasks.org**, Nextcloud Tasks, Nextcloud Deck, Vikunja, Evolution. **Google Calendar: no, explicit refusal.**
+⚠️ **Business model to know about**: at Tasks.org, Google Tasks and Microsoft To Do come with no subscription, but **CalDAV requires an in-app subscription** (or a GitHub sponsorship) — <https://tasks.org/docs/sync/>. This is real friction on Android.
 
-**Flux .ics / webcal:// contenant des VTODO — l'intuition est probablement juste, sans preuve formelle.**
-- **Google Calendar ignore les VTODO** : « *When you import from an ICS file into Google Calendar, it only imports calendar entries from that file; **it ignores tasks ("VTODO" entries)*** » (<https://groups.google.com/g/tasks-backup/c/YVUSYThNtl8>, modérateur du projet). ⚠️ La citation porte sur l'**import de fichier** ; aucune source Google explicite sur « Ajouter par URL ». Cohérent, non prouvé.
-- **iOS : NON VÉRIFIABLE FORMELLEMENT.** Deux éléments seulement : un rapport utilisateur direct **resté sans réponse valable** (1er octobre 2023, « *I have created a subscribed calendar with some reminders (VTODO) being generated, but these reminders are not appearing in the Reminders app* » — <https://discussions.apple.com/thread/255169909>) ; et un **signal industriel fort** — Todoist, qui a exactement ce besoin, **n'émet pas de VTODO** dans son flux iCal, il convertit les tâches en événements (« *Tasks with a date but without a time will appear as all-day events* »). S'il existait un chemin abonnement → Rappels, Todoist l'utiliserait.
-- Contre-exemple utile : **Tasks.org ne sait pas** s'abonner à un flux ICS de VTODO — ticket ouvert **depuis le 28 janvier 2015**, aucune PR (<https://github.com/tasks/tasks/issues/235>).
-→ **Ne pas investir dans cette voie.** Si l'on veut un flux, émettre des **VEVENT** (approche Todoist) — mais ça atterrit dans l'agenda, pas dans une liste cochable.
+**.ics / webcal:// feeds containing VTODOs — the intuition is probably right, without formal proof.**
+- **Google Calendar ignores VTODOs**: "*When you import from an ICS file into Google Calendar, it only imports calendar entries from that file; **it ignores tasks ("VTODO" entries)***" (<https://groups.google.com/g/tasks-backup/c/YVUSYThNtl8>, project moderator). ⚠️ The quote is about **file import**; no explicit Google source on "Add by URL". Consistent, not proven.
+- **iOS: NOT FORMALLY VERIFIABLE.** Two elements only: a direct user report that **went without a valid answer** (1 October 2023, "*I have created a subscribed calendar with some reminders (VTODO) being generated, but these reminders are not appearing in the Reminders app*" — <https://discussions.apple.com/thread/255169909>); and a **strong industry signal** — Todoist, which has exactly this need, **does not emit VTODOs** in its iCal feed, it converts tasks into events ("*Tasks with a date but without a time will appear as all-day events*"). If a subscription → Reminders path existed, Todoist would use it.
+- A useful counter-example: **Tasks.org cannot** subscribe to an ICS feed of VTODOs — a ticket open **since 28 January 2015**, no PR (<https://github.com/tasks/tasks/issues/235>).
+→ **Do not invest in this route.** If a feed is wanted, emit **VEVENT**s (the Todoist approach) — but that lands in the calendar, not in a tickable list.
 
-**Web Share API — le meilleur rapport couverture/effort.** Support **90,3 % global** au 3 août 2026 : Safari iOS ✅ (12.2+), Chrome Android ✅, Chrome desktop ✅ (128+), Edge ✅ (95+), **Firefox desktop ❌**.
-Source : <https://caniuse.com/web-share>
-Contraintes : HTTPS obligatoire ; **activation transitoire requise** (« *must be triggered off a UI event like a button click* », sinon `NotAllowedError`) ; iframes tiers nécessitent `allow="web-share"`.
-Sur iOS, **Rappels est bien une cible de la feuille de partage native**.
+**Web Share API — the best coverage/effort ratio.** Support **90.3% globally** as of 3 August 2026: Safari iOS ✅ (12.2+), Chrome Android ✅, Chrome desktop ✅ (128+), Edge ✅ (95+), **Firefox desktop ❌**.
+Source: <https://caniuse.com/web-share>
+Constraints: HTTPS mandatory; **transient activation required** ("*must be triggered off a UI event like a button click*", otherwise `NotAllowedError`); third-party iframes need `allow="web-share"`.
+On iOS, **Reminders is indeed a target of the native share sheet**.
 
-⚠️ **Deux bugs iOS documentés et toujours signalés en mars 2024** (<https://developer.apple.com/forums/thread/724641>) : (1) la **query string est supprimée** au partage via Messages/Messenger ; (2) une **URL cross-domain est remplacée par l'URL de la page courante**. Contournement rapporté : mettre l'URL dans `text`.
-→ **Conséquence directe : sur iOS, `url` est traité comme « l'URL de la page qu'on partage », pas comme une donnée arbitraire. Pour une liste de courses, tout mettre dans `text` et ne pas fournir `url` du tout.**
+⚠️ **Two documented iOS bugs still being reported in March 2024** (<https://developer.apple.com/forums/thread/724641>): (1) the **query string is stripped** when sharing via Messages/Messenger; (2) a **cross-domain URL is replaced by the current page's URL**. Reported workaround: put the URL in `text`.
+→ **Direct consequence: on iOS, `url` is treated as "the URL of the page being shared", not as arbitrary data. For a shopping list, put everything in `text` and do not supply `url` at all.**
 
-⚠️ Un article du 7 janvier 2026 note que pour du texte sélectionné, « *Longer selections often **generate multiple suggested reminders at once*** » — **mais cela relève d'Apple Intelligence**, donc conditionné au matériel et aux réglages langue/région. Bonus non garanti, à ne pas promettre.
-Source : <https://appleinsider.com/articles/26/01/08/how-to-turn-emails-webpages-notes-into-reminders-with-apple-intelligence>
+⚠️ An article of 7 January 2026 notes that for selected text, "*Longer selections often **generate multiple suggested reminders at once***" — **but that comes under Apple Intelligence**, hence conditioned on the hardware and on language/region settings. An unguaranteed bonus, not to be promised.
+Source: <https://appleinsider.com/articles/26/01/08/how-to-turn-emails-webpages-notes-into-reminders-with-apple-intelligence>
 
-**Web Share *Target*** (PWA qui *reçoit* un partage) : Chrome desktop 89, Chrome Android 76, Edge, Samsung — **Firefox `false`, Safari `false`, Safari iOS `false`**. **Android/Chromium uniquement, aucun chemin iOS.**
+**Web Share *Target*** (a PWA that *receives* a share): Chrome desktop 89, Chrome Android 76, Edge, Samsung — **Firefox `false`, Safari `false`, Safari iOS `false`**. **Android/Chromium only, no iOS path.**
 
-**Copier-coller multi-lignes : non, et c'est une régression.** Sur Apple Rappels, coller un bloc multi-lignes crée **UN SEUL rappel** contenant toute la liste — « *pasting a list into Reminders **stopped** creating a list of reminders items* » (23 janvier 2021), confirmé sur macOS Sonoma 14.1 en novembre 2023.
-Sources : <https://nowicki.dev/how-to-import-a-list-into-apple-reminders/> · <https://discussions.apple.com/thread/255303302> · <https://talk.tidbits.com/t/importing-a-list-into-reminders/21034>
-Contournement fiable, le « truc Notes » : coller dans **Notes** → convertir en checklist → copier → coller dans **Rappels** → un rappel par ligne. ⚠️ Non documenté par Apple, instable dans le temps.
-⚠️ **Google Keep : NON VÉRIFIÉ** — aucune source, ni première ni seconde main, ne confirme qu'un collage multi-lignes crée une case par ligne. Google ne documente que la conversion manuelle. **À tester avant d'en faire une hypothèse d'architecture.**
+**Multi-line copy-paste: no, and it is a regression.** In Apple Reminders, pasting a multi-line block creates **ONE SINGLE reminder** containing the whole list — "*pasting a list into Reminders **stopped** creating a list of reminders items*" (23 January 2021), confirmed on macOS Sonoma 14.1 in November 2023.
+Sources: <https://nowicki.dev/how-to-import-a-list-into-apple-reminders/> · <https://discussions.apple.com/thread/255303302> · <https://talk.tidbits.com/t/importing-a-list-into-reminders/21034>
+A reliable workaround, the "Notes trick": paste into **Notes** → convert to a checklist → copy → paste into **Reminders** → one reminder per line. ⚠️ Undocumented by Apple, unstable over time.
+⚠️ **Google Keep: NOT VERIFIED** — no source, first- or second-hand, confirms that a multi-line paste creates one checkbox per line. Google documents only manual conversion. **To be tested before making it an architectural assumption.**
 
-### 4.6 Alternatives tierces, sous-estimées
+### 4.6 Third-party alternatives, underestimated
 
-- **Todoist REST v1** : « *You can use our API for free* », OAuth2 **ou token personnel**, création de tâche dans un projet, endpoint `/sync` pour le batch. Effort quasi nul. <https://developer.todoist.com/api/v1/>
-- **Microsoft To Do via Graph** : `POST /me/todo/lists/{id}/tasks`, avec `checklistItem` pour les sous-éléments, delta query, permissions déléguées. Fonctionne sur comptes personnels **et** pro. <https://learn.microsoft.com/en-us/graph/api/resources/todo-overview>
-- **Bring!** (l'app de courses dominante en Suisse) : **aucune API officielle**. Les intégrations (node-bring-api, Home Assistant) reposent sur une API non documentée et reverse-engineered, avec disclaimer explicite « *in no way endorsed by or affiliated with Bring! Labs AG* ». Techniquement ça marche et c'est très utilisé, **mais c'est un pari sur un endpoint privé** — exactement le motif pour lequel l'ADR écarte les drives d'enseignes. **Cohérence oblige : non.**
+- **Todoist REST v1**: "*You can use our API for free*", OAuth2 **or a personal token**, task creation in a project, `/sync` endpoint for batching. Near-zero effort. <https://developer.todoist.com/api/v1/>
+- **Microsoft To Do via Graph**: `POST /me/todo/lists/{id}/tasks`, with `checklistItem` for sub-items, delta query, delegated permissions. Works on personal **and** work accounts. <https://learn.microsoft.com/en-us/graph/api/resources/todo-overview>
+- **Bring!** (the dominant shopping app in Switzerland): **no official API**. The integrations (node-bring-api, Home Assistant) rest on an undocumented, reverse-engineered API, with an explicit disclaimer "*in no way endorsed by or affiliated with Bring! Labs AG*". Technically it works and it is widely used, **but it is a bet on a private endpoint** — exactly the reason the ADR rules out retailer drives. **Consistency requires: no.**
   <https://github.com/foxriver76/node-bring-api>
 
-### 4.7 Classement effort / valeur
+### 4.7 Effort / value ranking
 
-| Rang | Voie | Effort | Couverture | Verdict |
+| Rank | Route | Effort | Coverage | Verdict |
 |---|---|---|---|---|
-| **1** | **`navigator.share({ text })`** + repli `clipboard.writeText()` | **~1 jour** | iOS ✅ Android ✅ desktop ✅ (sauf Firefox) | ✅ **À faire en premier, sans discussion.** ~90 % du bénéfice pour ~5 % de l'effort. Sans `url`. |
-| **2** | **Endpoint CalDAV / VTODO** servi par notre backend | **Élevé** (serveur CalDAV, auth, ETags, sync-tokens) | iOS ✅ (compte natif) Android ✅ (DAVx⁵ + Tasks.org) desktop ✅ | ✅ **Le seul vrai standard ouvert qui aboutit dans les apps natives des deux plateformes, avec ZÉRO installation côté téléphone.** Le contrat est un RFC, pas une API propriétaire qui peut fermer. |
-| **3** | **Raccourci iOS** par lien iCloud + import questions | ~2–3 j + doc utilisateur | iOS uniquement | ✅ **Excellent sur iPhone.** Zéro friction d'installation depuis iOS 15, un rappel par article dans la bonne liste, automatisation horaire possible. **2 tests à faire d'abord** (Headers, prompt réseau). |
-| **4** | **Google Tasks API** | Moyen (OAuth + review ~10 j) | Android surtout | ⚠️ Seule voie Google. **Pas de CASA, pas de re-certif annuelle** — c'est le bon côté du sensitive. Bloquants : plafond **100 utilisateurs cumulés à vie** sans vérification, et Google Tasks n'est pas là où les gens font leurs courses. |
-| **5** | **Todoist / Microsoft To Do** | Faible | Utilisateurs de ces apps | ⚠️ Effort quasi nul, public restreint. Bon candidat « bonus ». |
-| ❌ | Flux .ics / webcal:// de VTODO | Faible | **Probablement nulle sur mobile** | Aucun client grand public mobile ne le consomme de façon prouvée. |
-| ❌ | Automatisation Android (Tasker / HTTP Shortcuts) | Élevé **pour l'utilisateur** | Android technophile | L'appel HTTP est gratuit et mature, mais **rien ne permet d'écrire dans Keep ou Tasks depuis le téléphone**. |
-| ❌ | Google Keep API | — | Workspace uniquement | Modèle de données idéal, chemin d'autorisation entreprise-only. |
-| ❌ | Bring! | Moyen | Utilisateurs Bring! | API non officielle — incohérent avec l'ADR sur les drives. |
-| ❌ | Écrire dans les Rappels iCloud depuis un serveur | — | — | **Impossible.** Ni API, ni CloudKit, ni CalDAV. Pas une question d'effort. |
+| **1** | **`navigator.share({ text })`** + `clipboard.writeText()` fallback | **~1 day** | iOS ✅ Android ✅ desktop ✅ (except Firefox) | ✅ **To be done first, no discussion.** ~90% of the benefit for ~5% of the effort. Without `url`. |
+| **2** | **CalDAV / VTODO endpoint** served by our backend | **High** (CalDAV server, auth, ETags, sync-tokens) | iOS ✅ (native account) Android ✅ (DAVx⁵ + Tasks.org) desktop ✅ | ✅ **The only genuine open standard that lands in the native apps of both platforms, with ZERO installation on the phone.** The contract is an RFC, not a proprietary API that can shut down. |
+| **3** | **iOS Shortcut** via iCloud link + import questions | ~2–3 days + user documentation | iOS only | ✅ **Excellent on iPhone.** Zero installation friction since iOS 15, one reminder per item in the right list, hourly automation possible. **2 tests to run first** (Headers, network prompt). |
+| **4** | **Google Tasks API** | Medium (OAuth + ~10-day review) | Android mainly | ⚠️ The only Google route. **No CASA, no annual re-certification** — that is the good side of being sensitive. Blockers: a ceiling of **100 cumulative users for life** without verification, and Google Tasks is not where people do their shopping. |
+| **5** | **Todoist / Microsoft To Do** | Low | Users of those apps | ⚠️ Near-zero effort, restricted audience. A good "bonus" candidate. |
+| ❌ | .ics / webcal:// feed of VTODOs | Low | **Probably nil on mobile** | No mainstream mobile client consumes it in a proven way. |
+| ❌ | Android automation (Tasker / HTTP Shortcuts) | High **for the user** | Tech-savvy Android | The HTTP call is free and mature, but **nothing allows writing into Keep or Tasks from the phone**. |
+| ❌ | Google Keep API | — | Workspace only | Ideal data model, enterprise-only authorisation path. |
+| ❌ | Bring! | Medium | Bring! users | Unofficial API — inconsistent with the ADR on drives. |
+| ❌ | Writing into iCloud Reminders from a server | — | — | **Impossible.** No API, no CloudKit, no CalDAV. Not a question of effort. |
 
 ---
 
-## 5. Récapitulatif des coûts cachés
+## 5. Summary of hidden costs
 
-| Coût | Où il se cache | Montant / impact |
+| Cost | Where it hides | Amount / impact |
 |---|---|---|
-| **Audit CASA annuel** | Gmail API (`gmail.readonly` = restricted) | **675 $/an minimum, à perpétuité**, self-scan gratuit supprimé, audit complet à chaque renouvellement |
-| **Plafond 100 utilisateurs à vie** | Toute app Google non vérifiée (Gmail **et** Tasks) | Non réinitialisable, cumulé sur la vie du projet |
-| **Refresh tokens à 7 jours** | Publishing status « Testing » (Gmail et Tasks) | Reconnexion hebdomadaire — rédhibitoire |
-| **Changement de mot de passe utilisateur** | Google (scopes Gmail) et Apple (app passwords) | Casse l'intégration **silencieusement** ; flux de tickets support garanti |
-| **Rejet DMARC sur mails transférés** | Cloudflare Email Routing | Perte **silencieuse** de mails de commande |
-| **Ticket d'entrée inbound Postmark** | Absent de Free et Basic | 16,50 $/mois, pas 0 $ |
-| **Le modèle maquille l'arithmétique** | VLM sur tickets | Neutralise partiellement le contrôle `Σ lignes == total` |
-| **Absence de logprobs chez Anthropic** | API Claude | Aucun signal de confiance natif : coût structurel à budgéter dès la conception |
-| **10 recherches/min chez Open Food Facts** | API en ligne | ≈ 1 ticket/minute → dump local obligatoire |
-| **Lexique d'abréviations d'enseignes FR** | N'existe nulle part | Coût de démarrage entièrement à notre charge (et notre seul actif défendable) |
-| **AGPL** | Stalwart, ParadeDB `pg_search` | S'applique si Chaudron devient un service tiers |
-| **Abonnement Tasks.org** | Connecteur CalDAV sur Android | Friction utilisateur réelle |
-| **Papier thermique** | Physique | Ticket illisible en **7 à 30 jours** ; le portefeuille PVC accélère la destruction |
+| **Annual CASA audit** | Gmail API (`gmail.readonly` = restricted) | **$675/year minimum, in perpetuity**, free self-scan removed, full audit at every renewal |
+| **100-user lifetime ceiling** | Any unverified Google app (Gmail **and** Tasks) | Non-resettable, cumulative over the life of the project |
+| **7-day refresh tokens** | Publishing status "Testing" (Gmail and Tasks) | Weekly reconnection — a deal-breaker |
+| **User password change** | Google (Gmail scopes) and Apple (app passwords) | Breaks the integration **silently**; a stream of support tickets guaranteed |
+| **DMARC rejection on forwarded mail** | Cloudflare Email Routing | **Silent** loss of order confirmation mails |
+| **Postmark inbound entry ticket** | Absent from Free and Basic | $16.50/month, not $0 |
+| **The model doctors the arithmetic** | VLM on receipts | Partially neutralises the `Σ lines == total` check |
+| **No logprobs at Anthropic** | Claude API | No native confidence signal: a structural cost to budget from the design stage |
+| **10 searches/min at Open Food Facts** | Online API | ≈ 1 receipt/minute → local dump mandatory |
+| **Lexicon of FR retailer abbreviations** | Exists nowhere | Start-up cost entirely on us (and our only defensible asset) |
+| **AGPL** | Stalwart, ParadeDB `pg_search` | Applies if Chaudron becomes a third-party service |
+| **Tasks.org subscription** | CalDAV connector on Android | Real user friction |
+| **Thermal paper** | Physics | Receipt unreadable in **7 to 30 days**; the PVC wallet accelerates the destruction |
 
-## 6. Points explicitement non vérifiés
+## 6. Points explicitly not verified
 
-**Bloquants pour une décision** :
-1. **Le port 25 entrant est-il bloqué chez notre hébergeur ?** Ni Hetzner ni DigitalOcean ne précisent la direction du blocage. → test `nc -l 25`, 5 minutes.
-2. **Classification exacte du scope `auth/tasks`** — déduite rigoureusement, jamais citée par Google. → test en console Cloud, 2 minutes.
-3. **Taux de complétion `product_name_fr` / `brands` / `quantity` sur le sous-ensemble France d'OFF** — publié nulle part, détermine la stratégie de matching. → 10 min de SQL sur le dump.
-4. **Le paramètre `Headers` de « Get Contents of URL »** — absent de toute la doc Apple. → test sur appareil.
-5. **Le prompt de confidentialité réseau dans Raccourcis** (par domaine ou non) — aucune page Apple. → test sur appareil.
+**Blocking for a decision**:
+1. **Is inbound port 25 blocked at our hosting provider?** Neither Hetzner nor DigitalOcean specifies the direction of the block. → `nc -l 25` test, 5 minutes.
+2. **Exact classification of the `auth/tasks` scope** — rigorously deduced, never stated by Google. → test in the Cloud console, 2 minutes.
+3. **Completion rate of `product_name_fr` / `brands` / `quantity` on the France subset of OFF** — published nowhere, determines the matching strategy. → 10 min of SQL on the dump.
+4. **The `Headers` parameter of "Get Contents of URL"** — absent from all Apple documentation. → test on a device.
+5. **The network privacy prompt in Shortcuts** (per domain or not) — no Apple page. → test on a device.
 
-**Non tranchés faute de source** :
-6. Dispense de CASA pour les apps stockant les données uniquement côté client (question posée sur le forum officiel Google en mars 2026, **restée sans réponse**).
-7. Classification de `gmail.addons.current.message.readonly` (deux pages officielles se contredisent).
-8. Recevabilité d'une app de garde-manger au titre du type autorisé n°4 de Google.
-9. Tarification 2026 de SendGrid (pages en boucle de redirection) et de Brevo (montants en JS).
-10. Plan Mailjet ouvrant la Parse API (« Crystal » n'existe plus) et localisation de ses données.
-11. Taille max de message inbound chez Postmark, Brevo, ImprovMX, Resend, Mailtrap.
-12. MX de la région EU chez Mailgun ; où sont stockés les mails **reçus** chez Resend.
-13. Cloudflare Email Routing exige-t-il un domaine en full setup ?
-14. Périmètre exact du sous-traitant OpenAI chez CloudMailin.
-15. Blocage de l'auto-forwarding externe chez Microsoft 365 (source = blog, pas learn.microsoft.com).
-16. Comportement d'un abonnement webcal:// contenant des VTODO sur iOS 26/27.
-17. Interdiction explicite des comptes @gmail.com sur l'API Keep (introuvable, mais massivement indiquée).
-18. Collage multi-lignes dans une checklist Google Keep — zéro source.
-19. Nom exact de l'action Rappels en iOS 26 (`Add New Reminder` vs `Create Reminder`).
-20. Dépréciation des mots de passe d'app Apple — aucune annonce trouvée.
+**Unresolved for lack of a source**:
+6. CASA exemption for apps storing data solely client-side (question asked on the official Google forum in March 2026, **left unanswered**).
+7. Classification of `gmail.addons.current.message.readonly` (two official pages contradict each other).
+8. Admissibility of a pantry app under Google's permitted type no. 4.
+9. SendGrid's 2026 pricing (pages in a redirect loop) and Brevo's (amounts in JS).
+10. The Mailjet plan that unlocks the Parse API ("Crystal" no longer exists) and the location of its data.
+11. Max inbound message size at Postmark, Brevo, ImprovMX, Resend, Mailtrap.
+12. Mailgun's EU-region MX; where mail **received** at Resend is stored.
+13. Does Cloudflare Email Routing require a domain on full setup?
+14. Exact scope of the OpenAI sub-processor at CloudMailin.
+15. Blocking of external auto-forwarding at Microsoft 365 (source = blog, not learn.microsoft.com).
+16. Behaviour of a webcal:// subscription containing VTODOs on iOS 26/27.
+17. Explicit prohibition of @gmail.com accounts on the Keep API (not findable, but massively implied).
+18. Multi-line pasting into a Google Keep checklist — zero sources.
+19. Exact name of the Reminders action in iOS 26 (`Add New Reminder` vs `Create Reminder`).
+20. Deprecation of Apple app passwords — no announcement found.
 
-**Trous du champ, pas de cette recherche** :
-21. Aucune étude ne quantifie la chute du taux OCR selon l'âge d'un ticket thermique.
-22. Aucune publication sur le *receipt image stitching* ni sur le tuilage avec chevauchement pour VLM.
-23. Aucune comparaison publiée « VLM avec vs sans dewarping sur tickets froissés ».
-24. Aucun benchmark d'embedding n'évalue du libellé abrégé.
-25. Aucun dataset ni lexique public de tickets/abréviations français.
-26. Aucun benchmark fiable de `pg_trgm` sur 50 k – 2 M lignes.
-27. Spécificités métier FR des tickets (poids variable, lignes négatives, TVA multi-taux, consignes) — non couvertes.
+**Gaps in the field, not in this research**:
+21. No study quantifies the drop in OCR rate with the age of a thermal receipt.
+22. No publication on *receipt image stitching* or on overlapping tiling for VLMs.
+23. No published "VLM with vs without dewarping on crumpled receipts" comparison.
+24. No embedding benchmark evaluates abbreviated labels.
+25. No public dataset or lexicon of French receipts/abbreviations.
+26. No reliable benchmark of `pg_trgm` on 50k – 2M rows.
+27. FR domain specifics of receipts (variable weight, negative lines, multi-rate VAT, deposits) — not covered.
 
-**Réserves sur des chiffres cités** : page de tarifs Google Document AI jamais chargée intégralement ; page Azure avec placeholders `$-` ; tarification Mindee ambiguë (×12 d'écart) ; chiffres de dégradation par angle issus de snippets ; +34 points de LightOnOCR-2 sur Old Scans annoncés par les auteurs eux-mêmes ; `k=60` du RRF confirmé par l'implémentation pgvector et non par le papier source ; la sous-section « boucle d'apprentissage » (§3.6) n'est pas sourcée.
+**Caveats on figures cited**: the Google Document AI pricing page never loaded in full; the Azure page with `$-` placeholders; ambiguous Mindee pricing (a ×12 discrepancy); angle-degradation figures taken from snippets; +34 points for LightOnOCR-2 on Old Scans announced by the authors themselves; the RRF `k=60` confirmed by the pgvector implementation and not by the source paper; the "learning loop" subsection (§3.6) is not sourced.
 
 ---
 
-## 7. Décisions recommandées
+## 7. Recommended decisions
 
-1. **Ingestion par email entrant, pas par lecture de boîte.** C'est la voie principale. Elle supprime intégralement la vérification OAuth, l'audit CASA (675 $/an à perpétuité), le plafond des 100 utilisateurs et le stockage de secrets d'utilisateurs.
+1. **Ingestion by inbound email, not by mailbox reading.** This is the main route. It removes OAuth verification, the CASA audit ($675/year in perpetuity), the 100-user ceiling and the storage of user secrets entirely.
 
-2. **Auto-héberger la réception avec Stalwart + MTA Hook**, sous réserve de trois vérifications préalables : port 25 entrant ouvert, doc MTA Hooks lue dans un navigateur, AGPL arbitrée. **Repli MIT immédiat : Postal.** **Repli managé : CloudMailin** (seul à forcer la région UE par DNS) ou **ImprovMX Premium** à 9 $/mois (datacenters FR chez OVH).
+2. **Self-host reception with Stalwart + MTA Hook**, subject to three prior checks: inbound port 25 open, MTA Hooks documentation read in a browser, AGPL arbitrated. **Immediate MIT fallback: Postal.** **Managed fallback: CloudMailin** (the only one able to force the EU region by DNS) or **ImprovMX Premium** at $9/month (FR datacentres at OVH).
 
-3. **Écarter Cloudflare Email Routing** malgré sa gratuité : il rejette sur DMARC, donc il fera disparaître silencieusement une partie des mails transférés depuis Gmail. Écarter aussi SendGrid (tarifs invérifiables, aucune sécurité de webhook), Resend (webhook sans le corps du mail, données de compte aux États-Unis) et Postmark (16,50 $/mois, aucune résidence UE).
+3. **Rule out Cloudflare Email Routing** despite it being free: it rejects on DMARC, so it will silently make some of the mail forwarded from Gmail disappear. Also rule out SendGrid (unverifiable pricing, no webhook security), Resend (webhook without the mail body, account data in the United States) and Postmark ($16.50/month, no EU residency).
 
-4. **Traiter la capture du mail de confirmation Gmail comme une story à part entière.** Sans elle, l'onboarding est bloqué. Et recommander à l'utilisateur un **filtre de transfert sélectif** (expéditeur = enseigne) : c'est de la minimisation RGPD, pas du confort.
+4. **Treat capturing the Gmail confirmation mail as a story in its own right.** Without it, onboarding is blocked. And recommend a **selective forwarding filter** to the user (sender = retailer): that is GDPR minimisation, not convenience.
 
-5. **Ne pas implémenter la Gmail API.** Si l'automatisation par lecture de boîte redevient un sujet, commencer par **Microsoft** (OAuth délégué sur `IMAP.AccessAsUser.All`, sans CASA, sans audit payant, publisher verification gratuite) — c'est le seul grand fournisseur où un dev solo peut faire les choses proprement.
+5. **Do not implement the Gmail API.** If automation by mailbox reading becomes a topic again, start with **Microsoft** (delegated OAuth on `IMAP.AccessAsUser.All`, no CASA, no paid audit, free publisher verification) — it is the only large provider where a solo developer can do things properly.
 
-6. **Tickets : pipeline hybride VLM + OCR classique, avec revue humaine obligatoire au départ.** Le VLM seul est disqualifié par le maquillage arithmétique documenté par ReceiptBench — il fabrique des lignes pour faire tomber le total. L'OCR classique en seconde jambe coûte quasi rien en CPU et fournit **le seul signal de confiance disponible** : Anthropic n'expose pas de logprobs, et surtout le port `ModelProvider` de l'ADR-0005 ne peut dépendre d'aucune fonctionnalité propre à un adaptateur. **Le signal de confiance doit vivre au-dessus du port.** Proposer **Claude Sonnet 5** comme défaut d'interface (≈ 2,5 ¢/ticket, à la charge du foyer), sans jamais conditionner la revue humaine au fournisseur choisi.
+6. **Receipts: hybrid VLM + classic OCR pipeline, with human review mandatory at the start.** The VLM alone is disqualified by the arithmetic doctoring documented by ReceiptBench — it fabricates line items to make the total add up. Classic OCR as the second leg costs almost nothing in CPU and provides **the only confidence signal available**: Anthropic does not expose logprobs, and above all the `ModelProvider` port of ADR-0005 cannot depend on any adapter-specific feature. **The confidence signal must live above the port.** Propose **Claude Sonnet 5** as the interface default (≈ 2.5 ¢/receipt, at the household's expense), without ever conditioning human review on the chosen provider.
 
-7. **Valider par schéma JSON contraint + Pydantic, et valider contre l'image, pas contre la cohérence interne.** Les contraintes numériques (`minimum`, `maximum`) ne sont pas supportées par le schéma — seul `enum` l'est, utilisable pour les taux de TVA. Le contrôle `Σ lignes == total` reste un détecteur d'échec franc, jamais un certificat de justesse.
+7. **Validate with a constrained JSON schema + Pydantic, and validate against the image, not against internal consistency.** Numeric constraints (`minimum`, `maximum`) are not supported by the schema — only `enum` is, usable for VAT rates. The `Σ lines == total` check remains a detector of outright failure, never a certificate of correctness.
 
-8. **Amender l'ADR-0008 : le dump Open Food Facts local devient un prérequis de phase 1, pas de phase 2.** L'ADR raisonnait sur le scan EAN (~15 req/min, une requête par scan) ; le rapprochement de libellés consomme l'endpoint de **recherche** (**10 req/min**) à raison d'**une requête par ligne de ticket**. Un seul ticket sature la minute. Dump filtré France (~1,25 M lignes, format **Parquet**, pas CSV) **+ Ciqual pour le frais et le vrac** (les lignes au poids, à préfixe `02`/`20`–`29`, n'auront jamais de fiche OFF). Table d'alias dans une table séparée pour préserver la frontière ODbL.
+8. **Amend ADR-0008: the local Open Food Facts dump becomes a phase 1 prerequisite, not phase 2.** The ADR reasoned about EAN scanning (~15 req/min, one request per scan); label matching consumes the **search** endpoint (**10 req/min**) at the rate of **one request per receipt line**. A single receipt saturates the minute. France-filtered dump (~1.25 M rows, **Parquet** format, not CSV) **+ Ciqual for fresh and loose goods** (weight-priced lines, prefixed `02`/`20`–`29`, will never have an OFF record). Alias table in a separate table to preserve the ODbL boundary.
 
-9. **Le matching se joue sur l'expansion d'abréviations, pas sur le moteur de similarité.** « PDT NOUV 1KG » et « Pommes de terre nouvelles » ne partagent aucun trigramme. Construire le lexique par enseigne, l'auto-alimenter depuis les validations utilisateur, **et consigner aussi les rejets**. Utiliser `word_similarity` (pas `similarity`), et faire du lookup d'alias un court-circuit O(1) en tête de pipeline.
+9. **Matching is decided by abbreviation expansion, not by the similarity engine.** "PDT NOUV 1KG" and "Pommes de terre nouvelles" share no trigram. Build the lexicon per retailer, feed it automatically from user validations, **and record the rejections too**. Use `word_similarity` (not `similarity`), and make the alias lookup an O(1) short-circuit at the head of the pipeline.
 
-10. **Mesurer trois chiffres avant d'écrire du code** : la complétion des champs OFF France (10 min de SQL), la classification du scope `auth/tasks` (2 min en console), l'ouverture du port 25 entrant (5 min). Chacun peut invalider une branche entière de cette note.
+10. **Measure three figures before writing any code**: the completion of the OFF France fields (10 min of SQL), the classification of the `auth/tasks` scope (2 min in the console), whether inbound port 25 is open (5 min). Each one can invalidate an entire branch of this note.
 
-11. **Export de liste : `navigator.share({ text })` en v1, sans `url`** (deux bugs iOS documentés). ~1 jour de travail, ~90 % du bénéfice, couverture iOS + Android + desktop, aucune dépendance à un programme de vérification.
+11. **List export: `navigator.share({ text })` in v1, without `url`** (two documented iOS bugs). ~1 day of work, ~90% of the benefit, iOS + Android + desktop coverage, no dependency on any verification programme.
 
-12. **Servir un endpoint CalDAV/VTODO en v2.** C'est le seul chemin qui atterrit dans l'app **Rappels native iOS** — prouvé fonctionnel en avril 2026 sur iOS 26.4.1 — et qui couvre Android via DAVx⁵/Tasks.org, **sans rien installer sur le téléphone**. Le contrat est un RFC, pas une API propriétaire qui peut fermer.
+12. **Serve a CalDAV/VTODO endpoint in v2.** It is the only path that lands in the **native iOS Reminders** app — proven working in April 2026 on iOS 26.4.1 — and that covers Android via DAVx⁵/Tasks.org, **with nothing to install on the phone**. The contract is an RFC, not a proprietary API that can shut down.
 
-13. **Écarter formellement** : écrire dans les Rappels iCloud depuis un serveur (impossible : ni API, ni CloudKit, ni CalDAV depuis iOS 13), l'API Google Keep (délégation domaine + super-admin Workspace), les flux .ics de VTODO (aucun client mobile grand public prouvé), l'automatisation Android côté téléphone (rien ne permet d'écrire dans Keep ou Tasks), et Bring! (API non officielle — même motif que l'ADR sur les drives d'enseignes).
+13. **Formally rule out**: writing into iCloud Reminders from a server (impossible: no API, no CloudKit, no CalDAV since iOS 13), the Google Keep API (domain delegation + Workspace super-admin), .ics feeds of VTODOs (no proven mainstream mobile client), Android automation on the phone side (nothing allows writing into Keep or Tasks), and Bring! (unofficial API — the same reason as the ADR on retailer drives).
 
-14. **Raccourci iOS en v3, si la base installée est majoritairement iPhone.** Toute la chaîne est documentée et les *import questions* résolvent proprement la distribution du token. Deux tests sur appareil à faire d'abord (paramètre `Headers`, prompt de confidentialité réseau) : une demi-journée.
+14. **iOS Shortcut in v3, if the installed base is mostly iPhone.** The whole chain is documented and the *import questions* cleanly solve token distribution. Two device tests to run first (the `Headers` parameter, the network privacy prompt): half a day.
 
-15. **Acter ces choix dans trois ADR** une fois les cinq vérifications de la §6 faites : *réception d'e-mail entrant auto-hébergée* (Stalwart vs Postal vs managé, avec l'arbitrage AGPL), *export de la liste de courses* (Web Share puis CalDAV), et un **amendement à l'ADR-0008** sur l'avancement du dump local en phase 1. La décision n°5 (ne pas implémenter la Gmail API) mérite d'être consignée elle aussi : c'est une non-décision coûteuse à réexaminer tous les six mois si elle n'est pas écrite.
+15. **Record these choices in three ADRs** once the five checks in §6 are done: *self-hosted inbound email reception* (Stalwart vs Postal vs managed, with the AGPL trade-off), *shopping-list export* (Web Share then CalDAV), and an **amendment to ADR-0008** on bringing the local dump forward to phase 1. Decision no. 5 (do not implement the Gmail API) deserves to be recorded too: it is a costly non-decision to re-examine every six months if it is not written down.
 
-16. **Rediscuter tout choix de fournisseur américain si le pourvoi Latombe aboutit.** L'arrêt *Trump v. Slaughter* du 29 juin 2026 a fragilisé l'indépendance de la FTC, l'un des piliers de l'adéquation DPF. Les recommandations n°2 (auto-hébergement) et n°8 (dump local) mettent Chaudron à l'abri de ce risque par construction — c'est un argument de plus en leur faveur.
+16. **Revisit any choice of American provider if the Latombe appeal succeeds.** The *Trump v. Slaughter* judgment of 29 June 2026 weakened the independence of the FTC, one of the pillars of DPF adequacy. Recommendations no. 2 (self-hosting) and no. 8 (local dump) put Chaudron out of reach of this risk by construction — one more argument in their favour.

@@ -1,539 +1,526 @@
-# Stratégie de test
+# Testing strategy
 
-Document de cadrage. Décrit ce qu'on teste, à quel niveau, et surtout ce qu'on ne
-teste pas. Les décisions structurantes qui le contraignent sont dans les ADR :
-[0003](adr/0003-backend-stack.md) (PostgreSQL partout, jamais SQLite),
-[0005](adr/0005-llm-provider-abstraction.md) (la suite de conformité d'adaptateur
-est la condition de la décision) et [0006](adr/0006-multi-tenant-from-day-one.md)
-(tests d'isolation obligatoires par ressource).
+A scoping document. It describes what we test, at which level, and above all what we
+do not test. The structuring decisions that constrain it are in the ADRs:
+[0003](adr/0003-backend-stack.md) (PostgreSQL everywhere, never SQLite),
+[0005](adr/0005-llm-provider-abstraction.md) (the adapter conformance suite is the
+condition of the decision) and [0006](adr/0006-multi-tenant-from-day-one.md)
+(isolation tests mandatory per resource).
 
-Le mode d'emploi — commandes, prérequis Podman, ajout d'un adaptateur au harnais —
-est dans [`backend/tests/README.md`](../backend/tests/README.md), en anglais comme
-tout ce qui est destiné à un contributeur.
+The how-to — commands, Podman prerequisites, adding an adapter to the harness — is in
+[`backend/tests/README.md`](../backend/tests/README.md), as is everything intended
+for a contributor.
 
-Tous les identifiants techniques cités sont en anglais, conformément à la convention
-du projet.
-
----
-
-## 1. État actuel et objectif du document
-
-Le projet est en cadrage : documentation, ADR, schéma de données. **Il n'y a pas de
-code de fonctionnalité**, donc pas de fonctionnalité à tester. Ce document et le
-harnais qui l'accompagne existent pour que le premier code écrit arrive dans un
-environnement de test déjà prêt — c'est le seul moment où la stratégie de test coûte
-peu, parce qu'elle ne demande de rattraper aucun existant.
-
-Ce qui est déjà en place et exécutable :
-
-- les fixtures de base de données (PostgreSQL éphémère via Podman, session
-  transactionnelle annulée, fabriques de foyers et d'utilisateurs) ;
-- les gardes d'isolation multi-tenant au niveau du schéma, qui passent aujourd'hui
-  sur les 17 tables déclarées ;
-- le harnais de conformité d'adaptateur LLM, paramétré sur les cinq fournisseurs,
-  entièrement en `skip` tant qu'aucun adaptateur n'existe.
-
-Ce qui est en `skip` l'est avec une raison lisible, jamais avec un `xfail`
-silencieux. **Un test qui échoue est un signal ; un test qui passe sans rien
-vérifier est un mensonge ; un `skip` motivé est un élément de backlog.** Les trois se
-lisent dans la sortie de `pytest -ra`, et c'est la seule raison pour laquelle des
-`skip` sont acceptables ici.
+All technical identifiers quoted here are in English, in line with the project
+convention.
 
 ---
 
-## 2. La pyramide retenue
+## 1. Current state and purpose of this document
 
-Pas de proportions dogmatiques : la forme découle de la nature du système. Chaudron est
-une application dont l'essentiel du risque est concentré sur trois points — les
-règles de quantités, l'étanchéité entre foyers, et le comportement face à des
-fournisseurs de modèles hétérogènes. C'est là que porte l'effort.
+The project is at the scoping stage: documentation, ADRs, data schema. **There is no
+feature code**, hence no feature to test. This document and the harness that goes
+with it exist so that the first code written lands in a test environment that is
+already ready — the only moment when a testing strategy is cheap, because it has no
+existing code to catch up on.
 
-| Niveau | Ce qu'on y teste | Coût | Volume attendu |
+What is already in place and runnable:
+
+- the database fixtures (ephemeral PostgreSQL via Podman, transactional session
+  rolled back, household and user factories);
+- the multi-tenant isolation guards at schema level, which today pass on the 17
+  declared tables;
+- the LLM adapter conformance harness, parameterised over the five providers,
+  entirely in `skip` as long as no adapter exists.
+
+What is in `skip` is there with a legible reason, never with a silent `xfail`. **A
+failing test is a signal; a test that passes without checking anything is a lie; a
+motivated `skip` is a backlog item.** All three can be read in the output of
+`pytest -ra`, and that is the only reason `skip`s are acceptable here.
+
+---
+
+## 2. The pyramid adopted
+
+No dogmatic proportions: the shape follows from the nature of the system. Chaudron is
+an application whose risk is essentially concentrated on three points — the quantity
+rules, isolation between households, and behaviour in the face of heterogeneous model
+providers. That is where the effort goes.
+
+| Level | What is tested there | Cost | Expected volume |
 |---|---|---|---|
-| **Domaine** (pur) | Conversions d'unités, allocation FEFO, fusion de lots, calcul de péremption, règles de disponibilité d'ingrédients | µs, aucune I/O | Le plus gros contingent |
-| **Schéma** (métadonnées) | Présence du tenant, contraintes composites, unicité scopée | ms, aucune I/O | Une poignée, mais paramétrés sur **toutes** les tables |
-| **Services + dépôts** (PostgreSQL réel) | Cas d'usage complets, transactions, requêtes scopées, migrations | ~100 ms | Un par cas d'usage, plus les cas d'erreur |
-| **Contrat d'adaptateur** (doublures) | Les cinq adaptateurs LLM face au même contrat | ms | 1 suite × 5 fournisseurs |
-| **API** (ASGI in-process) | Codes de statut, validation d'entrée, autorisation, sérialisation | ~100 ms | Un chemin nominal et les refus par ressource |
-| **Bout en bout** (navigateur) | Le scan de code-barres et la revue de ticket, rien d'autre | secondes | Une poignée, jamais plus |
+| **Domain** (pure) | Unit conversions, FEFO allocation, lot merging, expiry computation, ingredient availability rules | µs, no I/O | The largest contingent |
+| **Schema** (metadata) | Presence of the tenant, composite constraints, scoped uniqueness | ms, no I/O | A handful, but parameterised over **every** table |
+| **Services + repositories** (real PostgreSQL) | Complete use cases, transactions, scoped queries, migrations | ~100 ms | One per use case, plus the error cases |
+| **Adapter contract** (test doubles) | The five LLM adapters against the same contract | ms | 1 suite × 5 providers |
+| **API** (in-process ASGI) | Status codes, input validation, authorisation, serialisation | ~100 ms | One nominal path and the refusals, per resource |
+| **End to end** (browser) | Barcode scanning and receipt review, nothing else | seconds | A handful, never more |
 
-### Ce qu'on ne teste pas
+### What we do not test
 
-Aussi important que le reste, et volontairement explicite pour que personne n'ait à
-le redécider en revue :
+Just as important as the rest, and deliberately explicit so that nobody has to
+re-decide it in review:
 
-- **FastAPI, SQLAlchemy, Pydantic.** On ne teste pas que la validation Pydantic
-  rejette un entier là où une chaîne est attendue, ni que SQLAlchemy sait faire un
-  `INSERT`. Tester une bibliothèque tierce produit des tests qui cassent à chaque
-  montée de version sans avoir jamais rien trouvé.
-- **Les getters, les DTO, les schémas sans logique.** Leur couverture est acquise
-  gratuitement par les tests des couches qui les utilisent.
-- **Le rendu HTML/CSS.** Les tests de bout en bout vérifient qu'un parcours
-  fonctionne, pas qu'un bouton est bleu.
-- **La qualité intrinsèque des sorties de modèle en CI de PR.** « La recette
-  proposée est-elle bonne » n'est ni déterministe ni gratuit : voir §8.
-- **Les SDK des fournisseurs.** On teste notre traduction de leurs erreurs, jamais
-  leur comportement. Ce qui *doit* être vérifié contre les vrais fournisseurs est
-  cadré en §5.4.
-- **Le pipeline de décodage EAN dans le navigateur.** C'est une bibliothèque tierce
-  alimentée par une caméra ; on teste ce qu'on fait de la chaîne de 13 caractères
-  qu'elle produit.
-- **Les combinaisons pour la combinaison.** Cinq adaptateurs × chaque fonctionnalité
-  × chaque capacité est une matrice explosive (ADR-0005 le dit : c'est le vrai prix
-  de la décision). On la couvre par un *contrat unique paramétré*, pas par
-  N suites copiées-collées.
+- **FastAPI, SQLAlchemy, Pydantic.** We do not test that Pydantic validation rejects
+  an integer where a string is expected, nor that SQLAlchemy knows how to do an
+  `INSERT`. Testing a third-party library produces tests that break on every version
+  bump without ever having found anything.
+- **Getters, DTOs, schemas with no logic.** Their coverage is obtained for free by
+  the tests of the layers that use them.
+- **HTML/CSS rendering.** End-to-end tests check that a journey works, not that a
+  button is blue.
+- **The intrinsic quality of model outputs in PR CI.** "Is the suggested recipe any
+  good" is neither deterministic nor free: see §8.
+- **The providers' SDKs.** We test our translation of their errors, never their
+  behaviour. What *must* be checked against the real providers is framed in §5.4.
+- **The EAN decoding pipeline in the browser.** It is a third-party library fed by a
+  camera; we test what we do with the 13-character string it produces.
+- **Combinations for the sake of combinations.** Five adapters × each feature × each
+  capability is an explosive matrix (ADR-0005 says so: that is the real price of the
+  decision). We cover it with a *single parameterised contract*, not with N
+  copy-pasted suites.
 
-### Ce qui n'existe pas ici
+### What does not exist here
 
-**Pas de tests unitaires sur doublure de base de données.** Il n'y a pas de mode
-SQLite, pas de dépôt en mémoire qui « fait comme si ». Une requête qui n'a pas été
-exécutée par PostgreSQL n'a pas été testée : les index partiels, les contraintes
-différées, `jsonb`, `numeric` et le comportement transactionnel sont précisément ce
-qui casse au déploiement (ADR-0003). Le test qui garantit cette règle est
-`tests/test_database_harness.py` : il vérifie le dialecte et la version du moteur, et
-échoue si un moteur de substitution réapparaît un vendredi soir.
+**No unit tests against a database double.** There is no SQLite mode, no in-memory
+repository that "pretends". A query that has not been executed by PostgreSQL has not
+been tested: partial indexes, deferred constraints, `jsonb`, `numeric` and
+transactional behaviour are precisely what breaks on deployment (ADR-0003). The test
+that enforces this rule is `tests/test_database_harness.py`: it checks the dialect
+and the engine version, and fails if a substitute engine reappears on a Friday
+evening.
 
 ---
 
-## 3. Tester chaque couche sans trahir la règle de dépendance
+## 3. Testing each layer without betraying the dependency rule
 
-La règle `api → services → domain ← infra` n'est pas une figure de style : c'est ce
-qui rend le domaine testable sans base ni réseau. Elle se vérifie, elle ne se
-suppose pas.
+The rule `api → services → domain ← infra` is not a figure of speech: it is what
+makes the domain testable without a database or a network. It is verified, not
+assumed.
 
-### 3.1 Le domaine se teste sans rien
+### 3.1 The domain is tested with nothing
 
-Un test de domaine n'a le droit de demander **aucune fixture**. Pas de `db_session`,
-pas de client HTTP, pas d'horloge système. Concrètement :
+A domain test is entitled to request **no fixture at all**. No `db_session`, no HTTP
+client, no system clock. Concretely:
 
-- Les entités et les règles sont des fonctions et des objets purs ; les dépendances
-  externes sont des *ports* (interfaces) déclarés par le domaine et passés en
-  paramètre.
-- Le temps est un port comme un autre. Une règle de péremption qui appelle
-  `datetime.now()` n'est pas testable : elle donne un résultat différent demain. On
-  passe l'instant de référence, et le lint interdit déjà les datetimes naïves
-  (`DTZ`).
-- Les doublures sont des implémentations en mémoire écrites à la main
-  (`FakeRecipeSuggester`, `FakeClock`), pas des mocks à assertions d'appel. Un mock
-  qui vérifie « la méthode a été appelée avec ces arguments » teste l'implémentation
-  courante, et casse au premier refactor qui ne change rien pour l'utilisateur.
+- Entities and rules are pure functions and objects; external dependencies are
+  *ports* (interfaces) declared by the domain and passed as parameters.
+- Time is a port like any other. An expiry rule that calls `datetime.now()` is not
+  testable: it gives a different result tomorrow. The reference instant is passed in,
+  and the linter already forbids naive datetimes (`DTZ`).
+- The test doubles are hand-written in-memory implementations (`FakeRecipeSuggester`,
+  `FakeClock`), not mocks with call assertions. A mock that checks "the method was
+  called with these arguments" tests the current implementation, and breaks on the
+  first refactor that changes nothing for the user.
 
-**Comment on s'en assure concrètement** — trois filets, du plus faible au plus fort :
+**How we make sure of it concretely** — three nets, from weakest to strongest:
 
-1. `ban-relative-imports` et `known-first-party` sont déjà configurés dans `ruff` ;
-2. un test d'architecture (à écrire dès que `domain/` contient de la logique) qui
-   parcourt les modules de `chaudron.domain` et échoue si l'un d'eux importe
-   `sqlalchemy`, `fastapi`, `httpx` ou un SDK de fournisseur. C'est dix lignes
-   d'`ast`, et c'est le seul moyen de rendre la règle exécutoire plutôt que
-   déclarative ;
-3. la lenteur elle-même : `pytest -m "not integration"` doit rester sous la seconde.
-   Le jour où ça dérive, c'est qu'une dépendance a traversé une frontière.
+1. `ban-relative-imports` and `known-first-party` are already configured in `ruff`;
+2. an architecture test (to be written as soon as `domain/` contains logic) that
+   walks the modules of `chaudron.domain` and fails if one of them imports
+   `sqlalchemy`, `fastapi`, `httpx` or a provider SDK. That is ten lines of `ast`,
+   and it is the only way to make the rule enforceable rather than declarative;
+3. slowness itself: `pytest -m "not integration"` must stay under one second. The day
+   it drifts, a dependency has crossed a boundary.
 
-### 3.2 Les services se testent contre une vraie base
+### 3.2 Services are tested against a real database
 
-Un service orchestre : il ouvre une transaction, appelle des dépôts, applique une
-règle de domaine, écrit. Le tester sur une base simulée ne prouve rien sur ce qui
-l'intéresse — l'atomicité, le scoping, les conflits d'unicité. Il se teste donc avec
-`db_session`, en injectant des doublures **uniquement** pour ce qui est hors de la
-machine : le fournisseur de modèle, Open Food Facts, l'horloge.
+A service orchestrates: it opens a transaction, calls repositories, applies a domain
+rule, writes. Testing it on a simulated database proves nothing about what matters —
+atomicity, scoping, uniqueness conflicts. It is therefore tested with `db_session`,
+injecting test doubles **only** for what is outside the machine: the model provider,
+Open Food Facts, the clock.
 
-### 3.3 L'infra se teste par son contrat
+### 3.3 Infrastructure is tested by its contract
 
-Un adaptateur n'a pas de tests « à lui ». Il a un contrat, commun à toutes les
-implémentations du même port, et il le passe ou non (§5). C'est ce qui garde le coût
-d'ajout d'un fournisseur borné.
+An adapter has no tests "of its own". It has a contract, common to every
+implementation of the same port, and it either passes it or it does not (§5). That is
+what keeps the cost of adding a provider bounded.
 
-Pour les dépôts SQLAlchemy, le contrat est la base réelle ; pour les clients HTTP
-sortants (Open Food Facts), c'est un transport `httpx.MockTransport` alimenté par des
-réponses **enregistrées**, jamais rédigées à la main.
+For the SQLAlchemy repositories, the contract is the real database; for outbound HTTP
+clients (Open Food Facts), it is an `httpx.MockTransport` fed with **recorded**
+responses, never hand-written ones.
 
-### 3.4 L'API se teste in-process
+### 3.4 The API is tested in-process
 
-Client ASGI, sans serveur ni port ouvert. Ce qu'on y vérifie est ce qui n'existe qu'à
-ce niveau : le code de statut, la validation d'entrée aux frontières, la résolution
-du tenant depuis le contexte d'authentification, et la forme de la réponse. Pas la
-règle métier, qui a déjà été testée là où elle vit.
+An ASGI client, with no server and no open port. What is checked there is what exists
+only at that level: the status code, input validation at the boundaries, tenant
+resolution from the authentication context, and the shape of the response. Not the
+business rule, which has already been tested where it lives.
 
-La fixture `api_client` existe déjà et **skippe** : il n'y a ni fabrique
-d'application, ni dépendance de session à surcharger, ni contexte d'authentification
-d'où tirer un `HouseholdScope`. Sa docstring liste les trois. Deviner l'un d'eux
-produirait une fixture qui teste autre chose que l'application.
+The `api_client` fixture already exists and **skips**: there is no application
+factory, no session dependency to override, and no authentication context from which
+to derive a `HouseholdScope`. Its docstring lists all three. Guessing at any one of
+them would produce a fixture that tests something other than the application.
 
 ---
 
-## 4. Isolation multi-tenant : un dispositif, pas des tests ponctuels
+## 4. Multi-tenant isolation: a mechanism, not one-off tests
 
-C'est la régression la plus grave (un foyer lit le stock d'un autre — l'inventaire
-complet d'un domicile est la donnée la plus sensible de la base) et la plus facile à
-introduire (un `select(Item)` sans clause `where` compile, passe le typage, et
-fonctionne parfaitement en développement mono-foyer).
+This is the most serious regression (one household reads another's stock — the
+complete inventory of a home is the most sensitive data in the database) and the
+easiest to introduce (a `select(Item)` with no `where` clause compiles, passes type
+checking, and works perfectly in single-household development).
 
-Des tests ponctuels ne suffisent pas : ils ne couvrent que les ressources auxquelles
-quelqu'un a pensé, et la fuite vient toujours de la table à laquelle personne n'a
-pensé. Quatre niveaux, dont trois sont systématiques par construction.
+One-off tests are not enough: they cover only the resources somebody thought of, and
+the leak always comes from the table nobody thought of. Four levels, three of which
+are systematic by construction.
 
-### 4.1 Garde de schéma — automatique, sans base, sur toutes les tables
+### 4.1 Schema guard — automatic, without a database, over every table
 
-`backend/tests/tenancy/test_schema_tenant_guard.py` lit `Base.metadata` et vérifie,
-table par table, index par index :
+`backend/tests/tenancy/test_schema_tenant_guard.py` reads `Base.metadata` and checks,
+table by table, index by index:
 
-| Garde | Ce qu'elle attrape |
+| Guard | What it catches |
 |---|---|
-| Toute table métier porte `household_id` | La table ajoutée le mois prochain sans colonne de tenant |
-| `household_id` est non nul | Une ligne qui n'appartient à personne, invisible plutôt que partagée |
-| Toute contrainte d'unicité est scopée | `UNIQUE (barcode)` : empêche le second foyer d'enregistrer sa ligne, **et** lui confirme qu'un autre foyer possède déjà cette valeur |
-| Toute référence vers une table du tenant est composite | Un identifiant deviné suffit sinon à écrire dans les données d'un autre foyer, sans qu'aucun bug applicatif ne soit nécessaire |
+| Every business table carries `household_id` | The table added next month with no tenant column |
+| `household_id` is not null | A row belonging to nobody, invisible rather than shared |
+| Every uniqueness constraint is scoped | `UNIQUE (barcode)`: prevents the second household from recording its row, **and** confirms to it that another household already holds that value |
+| Every reference to a tenant table is composite | Otherwise a guessed identifier is enough to write into another household's data, without any application bug being needed |
 
-Le mécanisme est paramétré sur `metadata.sorted_tables` : il n'y a rien à penser à
-ajouter. Les exceptions sont des listes nommées, chacune portant sa raison
+The mechanism is parameterised over `metadata.sorted_tables`: there is nothing to
+remember to add. The exceptions are named lists, each carrying its reason
 (`GLOBAL_TABLES`, `NULLABLE_TENANT_TABLES`, `UNIQUE_CONSTRAINT_EXEMPTIONS`,
-`SIMPLE_FOREIGN_KEY_EXEMPTIONS`). Y ajouter une entrée est un geste délibéré, visible
-en revue — c'est exactement l'effet recherché.
+`SIMPLE_FOREIGN_KEY_EXEMPTIONS`). Adding an entry to one is a deliberate act, visible
+in review — which is exactly the intended effect.
 
-`SIMPLE_FOREIGN_KEY_EXEMPTIONS` est un **cliquet**, pas une absolution : il gèle les
-neuf références non composites qui existent aujourd'hui (dont le trou connu sur
-`product`, documenté en `data-model.md` §5.2) et empêche la dixième d'arriver
-inaperçue. Il a vocation à rétrécir. Une entrée devenue inutile déclenche un
-avertissement, pas un échec : faire échouer le commit qui *corrige* quelque chose est
-le plus sûr moyen de faire supprimer la garde.
+`SIMPLE_FOREIGN_KEY_EXEMPTIONS` is a **ratchet**, not an absolution: it freezes the
+nine non-composite references that exist today (including the known hole on
+`product`, documented in `data-model.md` §5.2) and prevents the tenth from arriving
+unnoticed. It is meant to shrink. An entry that has become unnecessary triggers a
+warning, not a failure: making the commit that *fixes* something fail is the surest
+way to get the guard deleted.
 
-### 4.2 Fixture d'amorçage — la seconde tenant n'est jamais oubliée
+### 4.2 Seeding fixture — the second tenant is never forgotten
 
-`tenant_pair` fournit deux foyers complets et sans lien, chacun avec son
-propriétaire. Un test d'isolation qui construit lui-même son second foyer finit
-régulièrement par ne pas le construire du tout, et prouve alors qu'un foyer ne peut
-pas lire ses propres données depuis un foyer qui n'existe pas.
+`tenant_pair` provides two complete and unrelated households, each with its owner. An
+isolation test that builds its own second household regularly ends up not building it
+at all, and then proves that a household cannot read its own data from a household
+that does not exist.
 
-### 4.3 Test d'isolation par ressource — obligatoire, refus de revue sinon
+### 4.3 Per-resource isolation test — mandatory, review rejected otherwise
 
-Pour chaque ressource exposée : le foyer A opère sur les identifiants du foyer B et
-reçoit `404`. **Jamais `403`**, qui confirmerait l'existence de la ressource et
-transformerait l'API en oracle d'énumération. Vaut pour les lectures comme pour les
-écritures (ADR-0006).
+For each exposed resource: household A operates on household B's identifiers and
+receives `404`. **Never `403`**, which would confirm the existence of the resource
+and turn the API into an enumeration oracle. Applies to reads as well as writes
+(ADR-0006).
 
-Ces tests doivent être générés à partir d'une table de ressources plutôt qu'écrits un
-par un : dès que trois ressources existent, une paramétrisation
-`(méthode, gabarit d'URL, fabrique)` couvre automatiquement chaque nouvelle entrée,
-et l'oubli devient un ajout manquant dans une table unique — visible — plutôt qu'un
-fichier de test jamais écrit.
+These tests should be generated from a table of resources rather than written one by
+one: as soon as three resources exist, a parameterisation
+`(method, URL template, factory)` automatically covers each new entry, and an
+oversight becomes a missing addition to a single table — visible — rather than a test
+file that was never written.
 
-### 4.4 Les jobs de fond, angle mort à traiter à part
+### 4.4 Background jobs, a blind spot to be handled separately
 
-Le parsing de ticket et les notifications tournent **hors requête HTTP**, donc hors
-du scope applicatif résolu à la frontière. Ce sont eux qui fuiront en premier
-(`data-model.md` §5.4). Chaque tâche de fond a son propre test d'isolation :
-elle charge le foyer depuis la ligne traitée, jamais depuis un contexte ambiant, et
-le test le prouve en traitant une ligne du foyer B pendant qu'un contexte du foyer A
-est actif.
+Receipt parsing and notifications run **outside the HTTP request**, hence outside the
+application scope resolved at the boundary. They are the ones that will leak first
+(`data-model.md` §5.4). Every background task has its own isolation test: it loads
+the household from the row being processed, never from an ambient context, and the
+test proves it by processing a row of household B while a context of household A is
+active.
 
-### 4.5 Ce que ce dispositif ne prouve pas
+### 4.5 What this mechanism does not prove
 
-Que le filtrage est appliqué par la base. Il ne l'est pas encore : RLS est reporté et
-son déclencheur est explicite (ADR-0006 — le jour où un compte est créé par une
-personne extérieure au cercle familial). Tant qu'il l'est, l'étanchéité repose sur
-une convention applicative, et ces tests sont ce qui la tient. Le jour de
-l'activation de RLS, ils deviennent le filet qui prouve que les policies ne cassent
-rien — leur valeur augmente, elle ne disparaît pas.
+That the filtering is applied by the database. It is not, yet: RLS is deferred and
+its trigger is explicit (ADR-0006 — the day an account is created by someone outside
+the family circle). As long as it is deferred, isolation rests on an application
+convention, and these tests are what holds it. On the day RLS is switched on, they
+become the net that proves the policies break nothing — their value increases, it
+does not disappear.
 
 ---
 
-## 5. Conformité des adaptateurs LLM
+## 5. LLM adapter conformance
 
-ADR-0005 accepte cinq adaptateurs sur la foi d'une garantie : *« ajouter un
-fournisseur, c'est écrire un adaptateur et faire passer cette suite »*. Sans elle,
-l'ADR le dit lui-même, cinq adaptateurs seraient imprudents pour un projet solo.
-`backend/tests/contracts/test_llm_provider_contract.py` est cette suite.
+ADR-0005 accepts five adapters on the strength of one guarantee: *"adding a provider
+means writing an adapter and making this suite pass"*. Without it, the ADR says so
+itself, five adapters would be reckless for a solo project.
+`backend/tests/contracts/test_llm_provider_contract.py` is that suite.
 
-### 5.1 Le contrat
+### 5.1 The contract
 
-Un adaptateur conforme honore quatre choses, et la suite vérifie les quatre pour
-chacun des cinq fournisseurs :
+A conformant adapter honours four things, and the suite checks all four for each of
+the five providers:
 
-1. **Signature des ports.** L'implémentation est substituable à `RecipeSuggester` ou
-   `ReceiptExtractor` : le domaine ne connaît jamais l'implémentation concrète, et la
-   méthode est bien une coroutine (toute la pile est asynchrone).
-2. **Traduction des erreurs.** Chaque mode d'échec du fournisseur devient l'exception
-   de domaine correspondante — `ProviderUnavailable` (connexion refusée, délai
-   dépassé, 5xx), `ProviderQuotaExceeded` (limite de débit, quota épuisé),
-   `ProviderResponseInvalid` (charge utile malformée, schéma violé). L'assertion
-   décisive n'est pas le type levé mais **son module** : une exception dont le module
-   ne commence pas par `chaudron.` a franchi la frontière, et c'est le
-   `except AnthropicError` égaré dans une route que l'ADR cherche à éviter. On
-   vérifie aussi que le message n'est pas vide : le diagnostic de support a besoin du
-   fournisseur, du modèle et du mode d'échec.
-3. **Déclaration de capacités bien formée.** Un booléen par capacité
-   (`structured_output`, `vision`, `prompt_caching`, `long_context`), une provenance
-   `static` ou `probed`, et une date de sondage horodatée avec fuseau si — et
-   seulement si — la provenance est `probed`. La provenance est portée par la valeur
-   parce que seule une capacité sondée peut périmer : l'interface doit pouvoir
-   proposer un rafraîchissement, ce qui n'a aucun sens pour une capacité statique.
-4. **Conformité à la taxonomie de dégradation.** Pour chaque capacité déclarée
-   absente, l'adaptateur déclare **exactement un** des trois cas de l'ADR, et la
-   suite vérifie que le comportement correspond :
-   - `unavailable` → l'appel échoue avec une erreur **de domaine** portant une raison
-     lisible. Jamais une erreur brute de SDK, jamais un JSON inventé à partir d'une
-     image qu'aucun modèle n'a vue.
-   - `emulated` → l'appel réussit et rend un objet de domaine valide ; la perte est
-     dans le taux d'échec, pas dans le type.
-   - `degraded` → l'appel réussit **et dit ce qu'il a laissé de côté**, sans quoi
-     l'indicateur persistant de mode dégradé n'a rien à afficher.
+1. **Port signatures.** The implementation is substitutable for `RecipeSuggester` or
+   `ReceiptExtractor`: the domain never knows the concrete implementation, and the
+   method really is a coroutine (the whole stack is asynchronous).
+2. **Error translation.** Each provider failure mode becomes the corresponding domain
+   exception — `ProviderUnavailable` (connection refused, timeout, 5xx),
+   `ProviderQuotaExceeded` (rate limit, quota exhausted), `ProviderResponseInvalid`
+   (malformed payload, schema violated). The decisive assertion is not the type
+   raised but **its module**: an exception whose module does not begin with
+   `chaudron.` has crossed the boundary, and that is the stray
+   `except AnthropicError` in a route that the ADR seeks to avoid. We also check that
+   the message is not empty: support diagnosis needs the provider, the model and the
+   failure mode.
+3. **Well-formed capability declaration.** One boolean per capability
+   (`structured_output`, `vision`, `prompt_caching`, `long_context`), a provenance of
+   `static` or `probed`, and a probe date with a timezone if — and only if — the
+   provenance is `probed`. Provenance is carried by the value because only a probed
+   capability can go stale: the interface must be able to offer a refresh, which
+   makes no sense for a static capability.
+4. **Conformance to the degradation taxonomy.** For each capability declared absent,
+   the adapter declares **exactly one** of the ADR's three cases, and the suite checks
+   that the behaviour matches:
+   - `unavailable` → the call fails with a **domain** error carrying a legible
+     reason. Never a raw SDK error, never a JSON invented from an image no model has
+     seen.
+   - `emulated` → the call succeeds and returns a valid domain object; the loss is in
+     the failure rate, not in the type.
+   - `degraded` → the call succeeds **and says what it left out**, otherwise the
+     persistent degraded-mode indicator has nothing to display.
 
-   L'absence de déclaration est un échec en soi : le but n'est pas qu'une stratégie
-   existe, c'est qu'elle ait été *choisie*. Une capacité manquante sans cas déclaré
-   signifie que le comportement est ce que le code fait par accident — précisément ce
-   que la taxonomie existe pour empêcher.
+   The absence of a declaration is a failure in itself: the goal is not that a
+   strategy exists, it is that one was *chosen*. A missing capability with no declared
+   case means the behaviour is whatever the code does by accident — precisely what the
+   taxonomy exists to prevent.
 
-Une cinquième garde couvre la complétude : la suite échoue si le registre ne contient
-pas les cinq clés d'ADR-0005. Retirer un adaptateur est une révision d'ADR, pas une
-ligne discrètement supprimée d'un dictionnaire.
+A fifth guard covers completeness: the suite fails if the registry does not contain
+the five keys of ADR-0005. Removing an adapter is an ADR revision, not a line quietly
+deleted from a dictionary.
 
-### 5.2 Comment la suite est paramétrée
+### 5.2 How the suite is parameterised
 
-Deux axes de paramétrisation croisés, et une découverte dynamique :
+Two crossed parameterisation axes, and one dynamic discovery:
 
-- une fixture `provider_key` paramétrée sur les cinq clés
-  (`anthropic`, `openai`, `gemini`, `mistral`, `ollama`) ;
-- une fixture `adapter` qui résout la clé dans le registre
-  `chaudron.infra.llm.contract:CONTRACT_ADAPTERS` ;
-- des paramétrisations par port, par scénario d'échec et par capacité.
+- a `provider_key` fixture parameterised over the five keys
+  (`anthropic`, `openai`, `gemini`, `mistral`, `ollama`);
+- an `adapter` fixture that resolves the key in the registry
+  `chaudron.infra.llm.contract:CONTRACT_ADAPTERS`;
+- parameterisations per port, per failure scenario and per capability.
 
-Aujourd'hui le registre n'existe pas : les 145 cas sont collectés et **skippés** avec
-la raison. Chaque adaptateur ajouté au registre active sa colonne de la matrice, sans
-qu'une ligne du fichier de test soit modifiée. Un adaptateur enregistré mais qui ne
-respecte pas la forme attendue **échoue** au lieu d'être skippé : il a choisi
-d'entrer dans la suite, il en honore le contrat.
+Today the registry does not exist: the 145 cases are collected and **skipped** with
+the reason. Each adapter added to the registry activates its column of the matrix,
+without a single line of the test file being modified. An adapter that is registered
+but does not respect the expected shape **fails** instead of being skipped: it chose
+to enter the suite, it honours its contract.
 
-Le registre est découvert par import structurel : l'infrastructure n'importe jamais
-le paquet de tests. C'est la contrainte qui garde la règle de dépendance intacte
-jusque dans l'outillage.
+The registry is discovered by structural import: the infrastructure never imports the
+test package. That is the constraint that keeps the dependency rule intact right into
+the tooling.
 
-### 5.3 Sans appeler de vraie API, sans dépenser d'argent
+### 5.3 Without calling a real API, without spending money
 
-Toute la suite tourne sur **doublures**. Aucune requête réseau, aucun identifiant,
-aucun coût, et un résultat déterministe.
+The whole suite runs on **test doubles**. No network request, no credentials, no
+cost, and a deterministic result.
 
-Le point important est *où* vit la doublure : **avec l'adaptateur, pas dans le
-harnais**. Seul l'adaptateur Anthropic sait à quoi ressemble une limite de débit
-Anthropic ; seul l'adaptateur Ollama sait à quoi ressemble une instance injoignable.
-Un harnais qui fabriquerait lui-même les réponses testerait sa propre idée des cinq
-fournisseurs. Le harnais nomme des *scénarios* (`rate_limited`, `malformed_payload`,
-`missing_vision`…) et l'adaptateur fournit, pour chacun, un transport qui le rejoue.
+The important point is *where* the double lives: **with the adapter, not in the
+harness**. Only the Anthropic adapter knows what an Anthropic rate limit looks like;
+only the Ollama adapter knows what an unreachable instance looks like. A harness that
+manufactured the responses itself would be testing its own idea of the five
+providers. The harness names *scenarios* (`rate_limited`, `malformed_payload`,
+`missing_vision`…) and the adapter supplies, for each one, a transport that replays
+it.
 
-Ces doublures sont construites à partir de **réponses enregistrées** des vrais
-fournisseurs (`tests/contracts/recordings/<provider>/`), pas rédigées à la main : un
-double inventé à partir de la documentation teste votre lecture de la documentation.
-Les enregistrements sont expurgés de tout identifiant avant d'être versionnés — clé
-d'API, jeton, identifiant d'organisation, en-têtes de requête. Un enregistrement est
-un artefact versionné : il passe par la même revue et le même scan de secrets que le
-reste.
+These doubles are built from **recorded responses** of the real providers
+(`tests/contracts/recordings/<provider>/`), not hand-written: a double invented from
+the documentation tests your reading of the documentation. The recordings are
+scrubbed of every credential before being committed — API key, token, organisation
+identifier, request headers. A recording is a committed artefact: it goes through the
+same review and the same secret scan as everything else.
 
-### 5.4 Ce qui doit malgré tout être vérifié en réel
+### 5.4 What must nevertheless be checked for real
 
-Les doublures reposent sur une hypothèse qui se dégrade : que le comportement du
-fournisseur n'a pas changé. Or les SDK publient des versions cassantes, les modèles
-sont dépréciés, les charges utiles d'erreur sont remaniées. ADR-0005 le liste comme
-conséquence négative assumée : *cinq SDK à suivre, et il faut le détecter avant
-l'utilisateur*. Rien d'autre que des appels réels ne le détecte.
+The doubles rest on an assumption that decays: that the provider's behaviour has not
+changed. Yet SDKs publish breaking versions, models are deprecated, error payloads
+are reworked. ADR-0005 lists it as an accepted negative consequence: *five SDKs to
+follow, and it has to be detected before the user does*. Nothing but real calls
+detects it.
 
-| | Ce qui est vérifié | Quand | Où |
+| | What is checked | When | Where |
 |---|---|---|---|
-| **Fumée réelle** | La clé authentifie, le modèle répond, la sortie structurée valide le schéma, les jetons et le coût sont remontés | Nocturne, sur `main` | Job dédié, hors CI de PR |
-| **Fidélité des enregistrements** | Les formes d'erreur réelles correspondent encore aux enregistrements rejoués (rafraîchissement des captures) | Hebdomadaire | Job dédié, avec revue humaine du diff |
-| **Sondage Ollama** | Une instance réelle déclare ses capacités comme attendu | Nocturne, instance locale de CI | Job dédié |
-| **Qualité d'extraction** | Le jeu d'évaluation de tickets (§8) | Hebdomadaire, et avant tout changement de prompt | Job dédié |
+| **Real smoke test** | The key authenticates, the model answers, the structured output validates against the schema, tokens and cost are reported | Nightly, on `main` | Dedicated job, outside PR CI |
+| **Recording fidelity** | The real error shapes still match the replayed recordings (refreshing the captures) | Weekly | Dedicated job, with human review of the diff |
+| **Ollama probe** | A real instance declares its capabilities as expected | Nightly, local CI instance | Dedicated job |
+| **Extraction quality** | The receipt evaluation set (§8) | Weekly, and before any prompt change | Dedicated job |
 
-Règles de ce périmètre, non négociables :
+Rules for this perimeter, non-negotiable:
 
-- **Jamais sur une pull request.** Un contributeur externe n'a pas de clés, et une CI
-  qui dépense de l'argent à chaque push est une CI qu'on finit par contourner. Elle
-  serait aussi non déterministe : un test rouge parce qu'un fournisseur est en
-  incident apprend quelque chose sur le fournisseur, rien sur le code.
-- **Marqueur `live_provider`, désactivé par défaut**, avec un opt-in explicite par
-  variable d'environnement et une clé par fournisseur lue depuis l'environnement.
-- **Plafond de dépense** et modèles les moins chers de chaque fournisseur : ces tests
-  vérifient un protocole, pas une qualité.
-- **Un échec notifie, il ne bloque pas un déploiement.** La distinction est ce qui
-  garde le signal crédible.
-
----
-
-## 6. Données de test et fixtures
-
-**Fabriques, pas de jeux de données partagés.** Chaque test construit ce dont il a
-besoin via `make_household`, `make_user`, `make_member`, tous arguments facultatifs
-avec des valeurs uniques par défaut. Un fichier de données commun chargé pour toute
-la suite crée un couplage invisible : un test finit par dépendre d'une ligne qu'un
-autre test a introduite pour une raison sans rapport, et personne n'ose plus y
-toucher.
-
-**Isolation par transaction, pas par nettoyage.** `db_session` ouvre une transaction
-sur la connexion et y rattache la session avec
-`join_transaction_mode="create_savepoint"` : le code testé peut appeler `commit()`
-librement, l'annulation finale efface tout. Pas de `TRUNCATE` entre les tests, pas de
-schéma recréé, pas d'ordre d'exécution significatif — et
-`test_previous_test_left_nothing_behind` échoue le jour où ce mécanisme cesse de
-fonctionner.
-
-**Référentiels globaux.** `unit` et `llm_provider` sont hors tenant et alimentés par
-migration en production. Quand une migration de graine existera, les tests devront
-la rejouer plutôt que réinsérer ces lignes à la main : une graine de test qui diverge
-de la graine de production est un faux positif permanent.
-
-**Deux valeurs limites à cabler dès qu'elles ont un sens**, parce que ce sont les
-pièges connus du domaine (`data-model.md` §6) : une quantité qui doit rester exacte
-en décimal (jamais un flottant), et une date de péremption calendaire dans un foyer
-dont le fuseau n'est pas celui du serveur.
-
-**Le schéma de test est temporaire.** Il est aujourd'hui créé par
-`metadata.create_all`, faute de révision Alembic. Dès que `migrations/versions` aura
-du contenu, la fixture devra exécuter les migrations : sinon la suite valide un
-schéma qu'aucun environnement n'applique, et une migration cassée arrive en
-production avec une CI verte.
+- **Never on a pull request.** An external contributor has no keys, and a CI that
+  spends money on every push is a CI that ends up being bypassed. It would also be
+  non-deterministic: a red test because a provider is having an incident teaches you
+  something about the provider, nothing about the code.
+- **A `live_provider` marker, disabled by default**, with an explicit opt-in via an
+  environment variable and one key per provider read from the environment.
+- **A spending cap** and the cheapest models of each provider: these tests check a
+  protocol, not a quality.
+- **A failure notifies, it does not block a deployment.** That distinction is what
+  keeps the signal credible.
 
 ---
 
-## 7. Couverture
+## 6. Test data and fixtures
 
-**Seuil : 85 % de lignes et de branches sur `domain/` et `services/`, 70 % global.**
-À activer dans `[tool.coverage.report]` (`fail_under`) au premier cas d'usage
-implémenté — l'activer maintenant, sur un dépôt sans code applicatif, mesurerait le
-vide et donnerait un chiffre rassurant qui ne veut rien dire. La mesure elle-même est
-déjà en place (`--cov`, `--cov-branch`), pour que la courbe existe dès le premier
+**Factories, not shared datasets.** Each test builds what it needs via
+`make_household`, `make_user`, `make_member`, all arguments optional with unique
+default values. A common data file loaded for the whole suite creates invisible
+coupling: a test ends up depending on a row that another test introduced for an
+unrelated reason, and nobody dares touch it any more.
+
+**Isolation by transaction, not by clean-up.** `db_session` opens a transaction on
+the connection and attaches the session to it with
+`join_transaction_mode="create_savepoint"`: the code under test can call `commit()`
+freely, and the final rollback erases everything. No `TRUNCATE` between tests, no
+recreated schema, no significant execution order — and
+`test_previous_test_left_nothing_behind` fails the day this mechanism stops working.
+
+**Global reference tables.** `unit` and `llm_provider` are outside the tenant and
+populated by migration in production. Once a seed migration exists, the tests will
+have to replay it rather than re-insert those rows by hand: a test seed that diverges
+from the production seed is a permanent false positive.
+
+**Two boundary values to wire in as soon as they make sense**, because they are the
+domain's known traps (`data-model.md` §6): a quantity that must remain exact in
+decimal (never a float), and a calendar expiry date in a household whose timezone is
+not the server's.
+
+**The test schema is temporary.** It is currently created by `metadata.create_all`,
+for want of an Alembic revision. As soon as `migrations/versions` has content, the
+fixture will have to run the migrations: otherwise the suite validates a schema that
+no environment applies, and a broken migration reaches production with a green CI.
+
+---
+
+## 7. Coverage
+
+**Threshold: 85% of lines and branches on `domain/` and `services/`, 70% overall.**
+To be enabled in `[tool.coverage.report]` (`fail_under`) at the first implemented use
+case — enabling it now, on a repository with no application code, would measure the
+void and give a reassuring figure that means nothing. The measurement itself is
+already in place (`--cov`, `--cov-branch`), so that the curve exists from the first
 commit.
 
-Les seuils sont différenciés parce que les couches ne portent pas le même risque : le
-domaine concentre les règles et n'a aucune excuse de couverture ; l'API est
-majoritairement de la déclaration ; l'infrastructure est couverte par les contrats,
-pas par la ligne.
+The thresholds are differentiated because the layers do not carry the same risk: the
+domain concentrates the rules and has no coverage excuse; the API is mostly
+declaration; the infrastructure is covered by the contracts, not by the line.
 
-### Ce que la couverture ne dit pas
+### What coverage does not tell you
 
-- **Qu'une ligne exécutée a été vérifiée.** Un test qui appelle une fonction sans
-  rien affirmer sur son résultat produit exactement la même couverture qu'un bon
-  test. C'est la faiblesse principale de la métrique, et elle est structurelle.
-- **Que les bons cas ont été choisis.** 100 % de couverture d'une conversion d'unités
-  testée uniquement sur des kilogrammes ne dit rien sur les millilitres, les pièces,
-  ou la conversion inter-dimensions qui est le vrai piège du domaine.
-- **Que les chemins d'erreur sont corrects.** Une branche `except` couverte prouve
-  qu'elle a été empruntée, pas que l'erreur remontée est exploitable par l'appelant
-  ou lisible par l'utilisateur.
-- **Que l'étanchéité entre foyers est assurée.** Une requête sans filtre de tenant est
-  couverte à 100 % par le test qui l'utilise depuis un seul foyer. C'est exactement
-  la raison d'être du §4 : la couverture est aveugle à cette classe de défaut.
-- **Que le système fonctionne.** Chaque unité peut être couverte et le système
-  inutilisable, parce que le défaut est dans l'assemblage.
+- **That an executed line was verified.** A test that calls a function without
+  asserting anything about its result produces exactly the same coverage as a good
+  test. That is the metric's main weakness, and it is structural.
+- **That the right cases were chosen.** 100% coverage of a unit conversion tested
+  only on kilograms says nothing about millilitres, pieces, or the cross-dimension
+  conversion that is the domain's real trap.
+- **That the error paths are correct.** A covered `except` branch proves it was
+  taken, not that the error raised is usable by the caller or legible to the user.
+- **That isolation between households holds.** A query with no tenant filter is 100%
+  covered by the test that uses it from a single household. That is exactly the
+  reason §4 exists: coverage is blind to this class of defect.
+- **That the system works.** Every unit can be covered and the system unusable,
+  because the defect is in the assembly.
 
-En conséquence : le seuil est un plancher qui empêche la dérive, jamais un objectif.
-Un module sous le seuil déclenche une question, pas un test écrit pour la barre.
+Consequently: the threshold is a floor that prevents drift, never a target. A module
+below the threshold triggers a question, not a test written for the bar.
 
 ---
 
-## 8. Chemins non déterministes
+## 8. Non-deterministic paths
 
-Un modèle de langage rend une réponse différente à chaque appel, et cette réponse
-n'est pas la nôtre. La stratégie tient en une phrase : **isoler l'indéterminisme dans
-un segment aussi mince que possible, tester tout le reste normalement.**
+A language model returns a different answer on every call, and that answer is not
+ours. The strategy fits in one sentence: **isolate the non-determinism in a segment as
+thin as possible, and test everything else normally.**
 
-### 8.1 Découper le chemin en trois
+### 8.1 Cutting the path in three
 
-Le flux « inventaire → suggestions » se décompose en trois segments, dont deux sont
-parfaitement déterministes :
+The "inventory → suggestions" flow decomposes into three segments, two of which are
+perfectly deterministic:
 
-1. **Construction de la requête** — sérialisation du stock, assemblage du prompt,
-   placement du point de coupe pour le cache. Déterministe : test de référence
-   (*golden*) sur la sortie exacte. Ces tests attrapent le vrai risque de ce
-   segment — une modification de prompt qui déplace le préfixe stable et fait perdre
-   le cache, ce qui multiplie le coût sans changer un seul résultat visible.
-2. **L'appel** — non déterministe, et le seul segment concerné. Doublure partout
-   (§5.3), vrai fournisseur en job dédié (§5.4).
-3. **Validation et intégration** — la sortie du modèle est traitée **comme une entrée
-   hostile**, au même titre qu'un formulaire posté par un inconnu (architecture §5).
-   Déterministe : on teste la validation avec des sorties malformées — JSON tronqué,
-   champ manquant, quantité négative, unité inconnue, devise inventée, texte
-   d'excuse à la place du JSON, prose enveloppant le JSON, valeur numérique en
-   chaîne. Ce segment est celui qui protège l'utilisateur, et c'est le mieux testable
-   des trois.
+1. **Building the request** — serialising the stock, assembling the prompt, placing
+   the cut point for the cache. Deterministic: a reference (*golden*) test on the
+   exact output. These tests catch the real risk of this segment — a prompt change
+   that shifts the stable prefix and loses the cache, which multiplies the cost
+   without changing a single visible result.
+2. **The call** — non-deterministic, and the only segment concerned. Test doubles
+   everywhere (§5.3), the real provider in a dedicated job (§5.4).
+3. **Validation and integration** — the model's output is treated **as hostile
+   input**, on the same footing as a form posted by a stranger (architecture §5).
+   Deterministic: we test the validation with malformed outputs — truncated JSON,
+   missing field, negative quantity, unknown unit, invented currency, an apology text
+   instead of the JSON, prose wrapping the JSON, a numeric value as a string. This
+   segment is the one that protects the user, and it is the most testable of the
+   three.
 
-### 8.2 Ne jamais affirmer sur le texte, toujours sur les invariants
+### 8.2 Never assert on the text, always on the invariants
 
-Là où une vraie sortie de modèle est en jeu, les assertions portent sur des propriétés
-qui doivent tenir quelle que soit la réponse : le schéma valide, les quantités sont
-strictement positives, les unités appartiennent au référentiel, les ingrédients
-référencent du stock existant, la devise fait trois lettres majuscules, aucun champ
-n'est une chaîne vide. Jamais « la réponse contient le mot *poêle* ».
+Where a real model output is at stake, the assertions bear on properties that must
+hold whatever the answer: the schema validates, quantities are strictly positive,
+units belong to the reference table, ingredients reference existing stock, the
+currency is three uppercase letters, no field is an empty string. Never "the answer
+contains the word *poêle*".
 
-Température zéro et graine fixe sont utilisées quand le fournisseur les propose,
-mais **jamais comme fondement d'une assertion** : elles réduisent la variance, elles
-ne la suppriment pas, et deux des cinq fournisseurs ne garantissent rien à ce sujet.
+Zero temperature and a fixed seed are used when the provider offers them, but **never
+as the basis of an assertion**: they reduce variance, they do not remove it, and two
+of the five providers guarantee nothing on the subject.
 
-### 8.3 Jeu d'évaluation, séparé de la suite de tests
+### 8.3 Evaluation set, separate from the test suite
 
-La qualité d'extraction d'un ticket est une **mesure**, pas une assertion. Un jeu
-d'une trentaine de photos de tickets réels (anonymisés : ni nom, ni numéro de carte,
-ni adresse) avec les lignes attendues, scoré en rappel et précision sur les libellés
-et les quantités. On suit la courbe entre deux versions de prompt ou deux modèles, on
-compare ; on ne fait pas échouer une PR parce qu'un modèle a lu « PDT NOUV 1KG »
-autrement que la semaine dernière.
+Receipt extraction quality is a **measurement**, not an assertion. A set of about
+thirty photos of real receipts (anonymised: no name, no card number, no address) with
+the expected line items, scored on recall and precision over the labels and the
+quantities. We track the curve between two prompt versions or two models, and
+compare; we do not fail a PR because a model read "PDT NOUV 1KG" differently from
+last week.
 
-Ce jeu sert aussi de garde-fou produit : c'est lui qui dit si l'écran de revue reste
-nécessaire — et la réponse est oui, ce que le taux de correction humaine mesuré en
-production (architecture §7) confirmera ou non.
+This set also serves as a product safeguard: it is what says whether the review
+screen is still necessary — and the answer is yes, which the human correction rate
+measured in production (architecture §7) will confirm or not.
 
-### 8.4 Ce que la revue humaine change pour les tests
+### 8.4 What human review changes for the tests
 
-Rien n'entre en stock sans revue humaine (architecture §3.2). C'est ce qui déplace le
-risque : un modèle qui se trompe produit une ligne à corriger, pas un stock faux. Les
-tests doivent donc porter en priorité sur **le chemin de revue** — qu'une ligne non
-revue ne puisse jamais atteindre le stock, qu'une correction soit conservée, qu'un
-refus n'écrive rien. C'est déterministe, c'est critique, et ça ne dépend d'aucun
-modèle.
+Nothing enters stock without human review (architecture §3.2). That is what shifts
+the risk: a model that gets it wrong produces a line to correct, not a false stock.
+The tests must therefore bear first and foremost on **the review path** — that an
+unreviewed line can never reach stock, that a correction is retained, that a refusal
+writes nothing. That is deterministic, it is critical, and it depends on no model.
 
-Cas particulier : **les allergènes**. Une information allergène issue d'un modèle
-n'est jamais présentée comme faisant autorité (architecture §6). Un test dédié doit
-vérifier que toute donnée d'allergène d'origine modèle porte sa provenance et son
-avertissement jusqu'à la sortie de l'API — une erreur ici a des conséquences
-physiques.
+A special case: **allergens**. Allergen information coming from a model is never
+presented as authoritative (architecture §6). A dedicated test must check that any
+allergen data of model origin carries its provenance and its warning all the way to
+the API output — an error here has physical consequences.
 
 ---
 
-## 9. Exécution et intégration continue
+## 9. Execution and continuous integration
 
-La CI existante (`.github/workflows/ci.yml`) enchaîne lint → format → mypy → pytest
-sur un service `postgres:16` → image Podman → audit de dépendances et scan de
-secrets. La stratégie s'y insère sans la modifier : `CHAUDRON_DATABASE_URL` est déjà
-posée par le job de test, et les fixtures la préfèrent à tout démarrage de conteneur.
+The existing CI (`.github/workflows/ci.yml`) chains lint → format → mypy → pytest on
+a `postgres:16` service → Podman image → dependency audit and secret scan. The
+strategy slots into it without modifying it: `CHAUDRON_DATABASE_URL` is already set
+by the test job, and the fixtures prefer it to starting any container.
 
-En local, aucune variable n'est nécessaire : un PostgreSQL 16 éphémère est démarré
-via testcontainers sur le socket Podman rootless. Deux pièges de cette combinaison
-sont traités dans `conftest.py` et documentés dans `tests/README.md` — Ryuk, le
-conteneur de nettoyage qui ne démarre pas en rootless et fait échouer la session avec
-un message qui accuse PostgreSQL ; et le module `testcontainers.postgres`, un
-adaptateur déprécié dont la stratégie d'attente sonde la base depuis l'hôte avec un
-pilote synchrone absent, et rapporte le manque comme un refus de connexion de Podman.
+Locally, no variable is needed: an ephemeral PostgreSQL 16 is started via
+testcontainers on the rootless Podman socket. Two traps of this combination are
+handled in `conftest.py` and documented in `tests/README.md` — Ryuk, the clean-up
+container that does not start under rootless and fails the session with a message
+that blames PostgreSQL; and the `testcontainers.postgres` module, a deprecated
+adapter whose wait strategy probes the database from the host with a synchronous
+driver that is absent, and reports the lack as a connection refusal from Podman.
 
-Séparation attendue des jobs à mesure que le projet grossit :
+Expected separation of jobs as the project grows:
 
-| Job | Contenu | Déclencheur |
+| Job | Content | Trigger |
 |---|---|---|
-| PR | Lint, types, tests déterministes (base incluse), contrats sur doublures | Chaque push |
-| Nocturne | Fumée réelle des fournisseurs, sondage Ollama | `main`, planifié |
-| Hebdomadaire | Fidélité des enregistrements, jeu d'évaluation | Planifié |
+| PR | Lint, types, deterministic tests (database included), contracts on doubles | Every push |
+| Nightly | Real provider smoke tests, Ollama probe | `main`, scheduled |
+| Weekly | Recording fidelity, evaluation set | Scheduled |
 
-Un test à durée non bornée ou dépendant du réseau public n'entre jamais dans le job
-de PR. Une boucle de retour lente ou instable finit contournée, et une CI contournée
-ne protège plus rien.
+A test with an unbounded duration or one depending on the public network never enters
+the PR job. A slow or flaky feedback loop ends up bypassed, and a bypassed CI no
+longer protects anything.
 
 ---
 
-## 10. Ce qui reste ouvert
+## 10. What remains open
 
-- Le test d'architecture qui interdit les imports d'infrastructure dans `domain/`
-  (§3.1) : à écrire dès que `domain/` contient de la logique.
-- Le passage de `metadata.create_all` aux migrations Alembic dans les fixtures (§6).
-- L'activation de `fail_under` (§7), au premier cas d'usage implémenté.
-- La paramétrisation des tests d'isolation par table de ressources (§4.3), dès la
-  troisième ressource exposée.
-- L'outillage de bout en bout côté PWA — hors périmètre de ce document, qui ne
-  couvre que le backend.
-- La stratégie d'authentification n'est pas tranchée (architecture §8) ; les tests
-  d'autorisation attendent cette décision, et la fixture `api_client` avec eux.
+- The architecture test that forbids infrastructure imports in `domain/` (§3.1): to
+  be written as soon as `domain/` contains logic.
+- Moving from `metadata.create_all` to Alembic migrations in the fixtures (§6).
+- Enabling `fail_under` (§7), at the first implemented use case.
+- Parameterising the isolation tests from a resource table (§4.3), from the third
+  exposed resource onwards.
+- The end-to-end tooling on the PWA side — outside the scope of this document, which
+  covers only the backend.
+- The authentication strategy is not settled (architecture §8); the authorisation
+  tests are waiting on that decision, and the `api_client` fixture with them.

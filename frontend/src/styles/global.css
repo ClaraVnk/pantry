@@ -38,6 +38,30 @@
   /* Minimum comfortable one-handed target. Never shrink this. */
   --tap-target: 44px;
 
+  /*
+   * Layout geometry, kept here rather than in the shell module because three
+   * places have to agree on where the navigation is: the shell's own padding,
+   * the main column's bottom clearance, and the inventory repurchase panel that
+   * docks just above it. The media queries at the end of this file are the only
+   * thing that moves them.
+   */
+  --nav-bar-height: 3.5rem; /* bottom tab bar; drops to 0 once it becomes a rail */
+  --nav-rail-width: 0rem; /* side rail; 0 while the bar is at the bottom */
+  /*
+   * Height of the sticky app header. Group headings inside a list stick just
+   * below it; without this they stick at y=0 and sit behind it, out of sight.
+   */
+  --header-height: 3.5rem;
+
+  /*
+   * The shell's reading column. Unbounded on a phone, then capped: past roughly
+   * seventy characters the eye loses the start of the next line, and an
+   * inventory list stretched across a 2560 px monitor is unreadable for exactly
+   * that reason. Screens that lay their content out as cards widen inside this
+   * bound by adding columns, not by growing the line.
+   */
+  --content-max: 100%;
+
   --font-sans:
     'URW Gothic', 'Century Gothic', Questrial, ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
     Roboto, sans-serif;
@@ -109,6 +133,86 @@
   }
 }
 
+/* ------------------------------------------------------------------------- *
+ * Breakpoints
+ *
+ * Written in `em`, never `px`. Inside a media query `em` resolves against the
+ * browser's *default* font size rather than the page's, so a reader who has
+ * raised that default to 20 px gets the layout change at the width where their
+ * text actually needs it, instead of sixty pixels too late. A `px` query
+ * silently ignores that setting, and that setting is an accessibility setting.
+ *
+ * There is deliberately no "tablet" band. A phone held sideways is 844 px wide
+ * and an iPad held upright is 768; any rule keyed on "768–1023 = tablet" hands
+ * the phone a tablet layout and gets it exactly backwards. The thresholds below
+ * are placed where this layout measurably breaks, and each says why:
+ *
+ *   22em  (352px)  the six navigation labels stop sharing one line. Measured:
+ *                  their intrinsic widths total 339 px, so below ~352 px a tab
+ *                  is squeezed to 42 px and misses the 44 px target.
+ *   35em  (560px)  the header line has room for the brand tagline.
+ *   48em  (768px)  the reading column has reached its measure; card lists have
+ *                  room for a second column.
+ *   64em (1024px)  there is width to spend on a permanent rail and still keep
+ *                  the reading column intact.
+ *
+ * Height and pointer are queried separately, further down and in the modules —
+ * a wide window is not a mouse, and a tall window is not a phone.
+ * ------------------------------------------------------------------------- */
+
+@media (min-width: 48em) {
+  :root {
+    --content-max: 48rem;
+  }
+}
+
+@media (min-width: 64em) {
+  :root {
+    --content-max: 60rem;
+  }
+}
+
+/*
+ * A viewport under 26em tall and too narrow for a rail: a 1280 px screen at
+ * 400 % zoom is a 320 × 256 CSS-pixel window, and a small phone in landscape
+ * with the keyboard up is not far off. Pinning a header and a tab bar there
+ * would leave about a hundred pixels of content, so both scroll with the page
+ * instead — reflow allows vertical scrolling, and navigation stays reachable at
+ * the end of the document rather than sitting on top of the content.
+ */
+@media (max-height: 26em) and (max-width: 40em) {
+  :root {
+    --nav-bar-height: 0rem;
+    --header-height: 0rem;
+  }
+}
+
+/*
+ * The bottom tab bar becomes a left rail in two unrelated situations, which is
+ * why this query is a comma list and not a width band:
+ *
+ *   min-width: 64em                       a large screen, where a bottom bar
+ *                                         puts navigation as far from the
+ *                                         pointer as the geometry allows;
+ *   min-width: 40em and max-height: 32em  a phone in landscape (844 × 390) or a
+ *                                         short split-screen window, where a
+ *                                         56 px bar plus a header eats a third
+ *                                         of the height before a keyboard
+ *                                         opens. Below 40 em the rail would
+ *                                         cost more width than the bar costs
+ *                                         height, so the bar stays.
+ *
+ * Declared after the short-viewport rule above so that it wins where the two
+ * overlap. The move is CSS-only: the DOM order is untouched, so the tab order
+ * still runs header → content → navigation whichever side the buttons are on.
+ */
+@media (min-width: 64em), (min-width: 40em) and (max-height: 32em) {
+  :root {
+    --nav-rail-width: 5.5rem;
+    --nav-bar-height: 0rem;
+  }
+}
+
 *,
 *::before,
 *::after {
@@ -117,6 +221,15 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+  /*
+   * Reserve the scrollbar's width from the first frame. Without it, a screen
+   * that fits and a screen that does not are laid out against different widths:
+   * switching tabs, or an inventory search that drops the list below one
+   * viewport, makes a classic scrollbar appear and the whole centred column
+   * jumps sideways by half its width. Overlay scrollbars — every touch platform
+   * — ignore this property, so the gutter costs phones nothing.
+   */
+  scrollbar-gutter: stable;
 }
 
 body {

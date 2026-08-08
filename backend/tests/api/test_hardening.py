@@ -27,16 +27,23 @@ from tests.conftest import MakeHousehold, household_headers
 BODY_LIMIT_BYTES = 256 * 1024
 
 
+#: A valid configuration, as a mapping, so a test can also build an *invalid* one
+#: by removing a key -- which is how the "env has no default" rule is checked.
+_BASE_SETTINGS: dict[str, Any] = {
+    "env": "ci",
+    "database_url": SecretStr("postgresql+asyncpg://user:pass@localhost:5432/chaudron"),
+    "secret_key": SecretStr("a-secret-key-long-enough-to-pass-validation"),
+    "credential_encryption_key": SecretStr(base64.b64encode(b"0" * 32).decode()),
+    "cors_origins": ["http://localhost:5173"],
+    # A listed origin without credentials is refused at startup now that the
+    # session is a cookie (`config.py`).
+    "cors_allow_credentials": True,
+}
+
+
 def build_settings(**overrides: Any) -> Settings:
     """A valid configuration built from literals, so no environment leaks in."""
-    values: dict[str, Any] = {
-        "env": "ci",
-        "database_url": SecretStr("postgresql+asyncpg://user:pass@localhost:5432/chaudron"),
-        "secret_key": SecretStr("a-secret-key-long-enough-to-pass-validation"),
-        "credential_encryption_key": SecretStr(base64.b64encode(b"0" * 32).decode()),
-        "cors_origins": ["http://localhost:5173"],
-    }
-    return Settings(**{**values, **overrides})
+    return Settings(**{**_BASE_SETTINGS, **overrides})
 
 
 # --------------------------------------------------------------------------- #
@@ -147,8 +154,13 @@ async def test_hsts_is_absent_outside_production(api_client: httpx.AsyncClient) 
 
 
 async def test_hsts_is_sent_in_production() -> None:
-    """Checked on ``/healthz``, the one route that needs neither database nor tenant."""
-    app = create_app(build_settings(env="production"))
+    """Checked on ``/healthz``, the one route that needs neither database nor tenant.
+
+    ``base_url`` has to be ``https://`` for a production configuration to build at
+    all: the session cookie is ``Secure``, so an http production instance could
+    never sign anybody in and refuses to start (``config.py``).
+    """
+    app = create_app(build_settings(env="production", base_url="https://chaudron.example.org"))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.get("/healthz")
@@ -176,10 +188,10 @@ async def test_the_request_id_is_generated_and_never_the_client_s(
 
 
 async def test_a_forged_request_id_is_not_reflected_into_an_error_body(
-    api_client: httpx.AsyncClient,
+    anonymous_client: httpx.AsyncClient,
 ) -> None:
     forged = "<script>alert(1)</script>"
-    response = await api_client.get("/v1/locations", headers={"X-Request-Id": forged})
+    response = await anonymous_client.get("/v1/locations", headers={"X-Request-Id": forged})
 
     assert response.status_code == 401
     assert response.json()["request_id"] != forged
@@ -192,17 +204,29 @@ async def test_a_forged_request_id_is_not_reflected_into_an_error_body(
 
 
 async def test_absent_malformed_and_unknown_are_one_indistinguishable_answer(
-    api_client: httpx.AsyncClient,
+    api_client: httpx.AsyncClient, make_household: MakeHousehold
 ) -> None:
-    """Three different bodies let a caller confirm a household identifier for free."""
+    """Three different bodies let a caller confirm a household identifier for free.
+
+    Still true under authentication, and now checked for an authenticated caller
+    -- which is the only one who gets this far. The three headers are: none, a
+    malformed value, and a well-formed value naming a household this account is
+    not a member of. All three answer ``403 household-forbidden``, because all
+    three are the same branch: a lookup in the caller's own membership list
+    (``api/deps.py``).
+
+    A membership is created first so that "no header" is not the separate
+    *no household at all* case, which legitimately says something else.
+    """
+    await make_household()
     answers = []
     for headers in (
-        {},
+        {"X-Household-Id": str(uuid.uuid7())},
         {"X-Household-Id": "not-a-uuid"},
         {"X-Household-Id": str(uuid.uuid7())},
     ):
         response = await api_client.get("/v1/locations", headers=headers)
-        assert response.status_code == 401
+        assert response.status_code == 403
         body = response.json()
         # The identifier is per-request by construction and is the one field that
         # is *meant* to differ.
@@ -210,6 +234,25 @@ async def test_absent_malformed_and_unknown_are_one_indistinguishable_answer(
         answers.append(body)
 
     assert answers[0] == answers[1] == answers[2]
+
+
+async def test_an_anonymous_caller_learns_nothing_about_a_household_either(
+    anonymous_client: httpx.AsyncClient, make_household: MakeHousehold
+) -> None:
+    """Before the session check, a real identifier and a made-up one look alike."""
+    household = await make_household()
+    real = await anonymous_client.get("/v1/locations", headers=household_headers(household))
+    fake = await anonymous_client.get(
+        "/v1/locations", headers={"X-Household-Id": str(uuid.uuid7())}
+    )
+
+    assert real.status_code == fake.status_code == 401
+    for response in (real, fake):
+        body = response.json()
+        body.pop("request_id", None)
+    assert {k: v for k, v in real.json().items() if k != "request_id"} == {
+        k: v for k, v in fake.json().items() if k != "request_id"
+    }
 
 
 @pytest.mark.parametrize(
@@ -230,7 +273,7 @@ async def test_only_the_canonical_uuid_spelling_resolves_a_household(
     header = spelling.format(value=value, value_hex=household.id.hex, value_upper=value.upper())
 
     response = await api_client.get("/v1/locations", headers={"X-Household-Id": header})
-    assert response.status_code == 401
+    assert response.status_code == 403
 
     canonical = await api_client.get("/v1/locations", headers=household_headers(household))
     assert canonical.status_code == 200
@@ -263,7 +306,10 @@ async def test_the_documentation_is_closed_outside_local(
 def test_docs_default_closed_and_open_only_on_a_decision(
     env: str, override: bool | None, expected: bool
 ) -> None:
-    assert build_settings(env=env, enable_docs=override).docs_enabled is expected
+    settings = build_settings(
+        env=env, enable_docs=override, base_url="https://chaudron.example.org"
+    )
+    assert settings.docs_enabled is expected
 
 
 # --------------------------------------------------------------------------- #
@@ -272,9 +318,38 @@ def test_docs_default_closed_and_open_only_on_a_decision(
 
 
 def test_a_wildcard_origin_is_refused_at_startup() -> None:
-    """Authorisation here is a custom header, so ``*`` publishes it to every site."""
+    """The session is a cookie, so ``*`` is both refused by browsers and unsafe."""
     with pytest.raises(ValidationError, match=r"cannot contain"):
         build_settings(cors_origins=["*"])
+
+
+def test_a_listed_origin_without_credentials_is_refused_at_startup() -> None:
+    """A cross-origin client that may not send a cookie can never sign in.
+
+    Left unchecked it produces a frontend where every call answers ``401`` and
+    nothing in the logs says why.
+    """
+    with pytest.raises(ValidationError, match=r"CORS_ALLOW_CREDENTIALS"):
+        build_settings(cors_origins=["https://pwa.example.org"], cors_allow_credentials=False)
+
+
+def test_a_production_instance_must_be_served_over_https() -> None:
+    """The session cookie is ``Secure``; over plain HTTP a browser never stores it."""
+    with pytest.raises(ValidationError, match=r"must be an https"):
+        build_settings(env="production", base_url="http://chaudron.example.org")
+
+
+def test_debug_logging_is_refused_in_production() -> None:
+    """At DEBUG the root logger publishes every bound parameter: allergens included."""
+    with pytest.raises(ValidationError, match=r"cannot be DEBUG"):
+        build_settings(env="production", base_url="https://chaudron.example.org", log_level="DEBUG")
+
+
+def test_the_environment_has_no_default() -> None:
+    """A blank ``CHAUDRON_ENV`` used to mean ``local``, which opens /docs and drops HSTS."""
+    values = {key: value for key, value in _BASE_SETTINGS.items() if key != "env"}
+    with pytest.raises(ValidationError, match=r"env"):
+        Settings(**values)
 
 
 def test_inconsistent_concurrency_caps_are_refused_at_startup() -> None:

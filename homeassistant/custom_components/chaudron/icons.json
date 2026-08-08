@@ -1,0 +1,29 @@
+{
+  "entity": {
+    "sensor": {
+      "items_in_stock": {
+        "default": "mdi:fridge-outline"
+      },
+      "expiring_soon": {
+        "default": "mdi:clock-alert-outline"
+      },
+      "expired": {
+        "default": "mdi:delete-clock-outline"
+      },
+      "next_expiry": {
+        "default": "mdi:calendar-alert"
+      },
+      "shopping_list_items": {
+        "default": "mdi:cart-outline"
+      },
+      "food_spend": {
+        "default": "mdi:cash-multiple"
+      }
+    },
+    "todo": {
+      "shopping_list": {
+        "default": "mdi:cart-outline"
+      }
+    }
+  }
+}

@@ -28,8 +28,8 @@ from chaudron.infra.crypto import CredentialCipher, SealedCredential
 from chaudron.infra.llm import doubles
 from chaudron.infra.llm.contract import CONTRACT_ADAPTERS
 from chaudron.infra.llm.factory import HouseholdProviderConfig, LlmProviderFactory
-from chaudron.infra.llm.redaction import redact, snippet
 from chaudron.infra.llm.settings import LlmSettings
+from chaudron.infra.redaction import redact, snippet
 
 _FAILURE_SCENARIOS = [name for name in doubles.SCENARIOS if name != "nominal"]
 
@@ -168,7 +168,7 @@ def test_the_stored_credential_object_carries_no_plaintext() -> None:
     assert stored.last4 == _STORED_KEY[-4:], "the four characters are the whole exception"
 
 
-def test_the_factory_refuses_an_undecryptable_key_without_quoting_it() -> None:
+async def test_the_factory_refuses_an_undecryptable_key_without_quoting_it() -> None:
     """The production BYOK path, end to end, with the master key rotated underneath."""
     config = HouseholdProviderConfig(
         household_id=_HOUSEHOLD,
@@ -180,7 +180,7 @@ def test_the_factory_refuses_an_undecryptable_key_without_quoting_it() -> None:
     factory = LlmProviderFactory(LlmSettings(), cipher=CredentialCipher(b"B" * 32))
 
     with pytest.raises(ProviderNotConfigured) as raised:
-        factory.build_transport(config)
+        await factory.build_transport(config)
 
     assert _STORED_KEY not in str(raised.value)
     assert "CHAUDRON_CREDENTIAL_ENCRYPTION_KEY" in str(raised.value)

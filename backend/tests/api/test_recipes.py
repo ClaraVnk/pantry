@@ -135,9 +135,29 @@ async def test_suggestions_are_returned_persisted_and_re_checked_against_the_sto
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"provider_mode", "model", "suggestions"}
+    # `usage`, `applied_constraints` and `balance` are additions to the frozen v1
+    # shape, and additive is the whole point: a client written against v1 ignores
+    # them. Everything v1 promised is still here, unchanged in name and in form.
+    assert set(body) == {
+        "provider_mode",
+        "model",
+        "suggestions",
+        "usage",
+        "applied_constraints",
+        "balance",
+    }
     assert body["provider_mode"] == "instance_owner"
     assert body["model"] == "gpt-4o"
+    # The measurement reaches the client, not just the database. The split is the
+    # assertion that matters: the double's OpenAI-shaped `prompt_tokens` is all-in
+    # (2000), and `input_tokens` here is 1200 because the adapter subtracted the
+    # cached part back out. A response echoing 2000 would mean the normalisation
+    # in `llm_ports.TokenUsage` had been bypassed somewhere on the way up.
+    assert body["usage"] == {
+        "input_tokens": doubles.USAGE_INPUT,
+        "output_tokens": doubles.USAGE_OUTPUT,
+        "cached_input_tokens": doubles.USAGE_CACHED,
+    }
 
     recipe = body["suggestions"][0]
     assert set(recipe) == {
@@ -149,6 +169,9 @@ async def test_suggestions_are_returned_persisted_and_re_checked_against_the_sto
         "ingredients",
         "steps",
         "uses_expiring_soon",
+        "allergen_assessment",
+        "expiry_pressure",
+        "preparation",
     }
     assert recipe["title"] == "Gratin de courgettes"
     assert isinstance(recipe["summary"], str), "the contract has no null summary"
@@ -175,8 +198,16 @@ async def test_suggestions_are_returned_persisted_and_re_checked_against_the_sto
     assert row.llm_provider_config_id == config.id
     assert row.status is RecipeStatus.GENERATED
     assert row.latency_ms is not None
-    # No adapter surfaces provider usage yet: written as zero rather than guessed.
-    assert (row.input_tokens, row.output_tokens, row.cost_micro) == (0, 0, 0)
+    # Read off the wire, not defaulted. The double answers in OpenAI's vocabulary,
+    # where `prompt_tokens` is all-in, so the adapter has to subtract the cached
+    # part back out to fill `input_tokens` -- asserting the raw total here would
+    # pass just as well for an adapter that never did.
+    assert row.input_tokens == doubles.USAGE_INPUT
+    assert row.output_tokens == doubles.USAGE_OUTPUT
+    assert row.cached_input_tokens == doubles.USAGE_CACHED
+    # Tokens are measured; a price is not. See `services/recipes.py` for why this
+    # stays zero rather than being derived from a rate card that would go stale.
+    assert row.cost_micro == 0
     # What was sent, so a bad suggestion can be explained three months later.
     assert [item["name"] for item in row.stock_snapshot["items"]] == ["Crème fraîche épaisse"]
     assert row.stock_snapshot["notes"] == "rapide, sans four"
@@ -307,3 +338,54 @@ async def test_provider_failures_map_onto_status_codes_without_leaking_the_key(
         )
     ).all()
     assert not written, "a failed call must not leave a suggestion behind"
+
+
+async def test_a_withdrawn_consent_sends_nothing_to_the_provider(
+    api_app: FastAPI,
+    api_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    make_household: MakeHousehold,
+    make_location: MakeLocation,
+    make_product: MakeProduct,
+) -> None:
+    """The refusal is measured by what left the process, not by the status code.
+
+    A 409 proves the request failed; it does not prove the household's inventory
+    stayed home. So the transport here is one that cannot answer: if the consent gate
+    is bypassed -- or moved below the point where the credential is decrypted and the
+    prompt assembled -- this test fails with the socket's own error rather than with
+    a polite assertion, which is the outcome that says the gate is real.
+
+    This mirrors how the Todoist chain was verified under penetration test, where the
+    equivalent check was "outbound calls: 0" after a withdrawal.
+    """
+    household = await make_household()
+    await stock_cream(api_client, household, make_location, make_product)
+    await add_config(db_session, household, consent_revoked=True)
+
+    def refuse_to_be_called() -> ProviderPortsBuilder:
+        def explode(request: httpx.Request) -> httpx.Response:
+            raise AssertionError(
+                f"the provider was contacted after consent was withdrawn: {request.url}"
+            )
+
+        settings = LlmSettings(
+            instance_owner_household_id=household.id,
+            instance_owner_api_key=_INSTANCE_KEY,
+            timeout_seconds=5.0,
+        )
+        transport = httpx.MockTransport(explode)
+
+        def build(provider_code: str) -> ProviderPorts:
+            return LlmProviderFactory(settings, transport=transport)
+
+        return build
+
+    api_app.dependency_overrides[get_provider_ports_builder] = refuse_to_be_called
+
+    response = await api_client.post(
+        SUGGEST_URL, headers=household_headers(household), json={"max_suggestions": 3}
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["type"] == "https://chaudron.dev/problems/provider-not-configured"

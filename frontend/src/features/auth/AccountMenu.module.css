@@ -1,0 +1,140 @@
+/*
+ * The account control in the header.
+ *
+ * Pushed to the right with `margin-inline-start: auto` so it does not need to
+ * know what precedes it — the wordmark alone at 320 px, the wordmark plus the
+ * tagline above 35em.
+ *
+ * Colours are tokens only. Secondary text is var(--text-muted): #5D6470 on
+ * --surface in light (7.3:1) and #A2A7B0 in dark (7.0:1), both comfortably AA.
+ */
+
+.menu {
+  margin-inline-start: auto;
+  position: relative;
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap-target);
+  height: var(--tap-target);
+  border-radius: 50%;
+  cursor: pointer;
+  /* Removes the disclosure triangle in every engine that still draws one. */
+  list-style: none;
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.summary:hover {
+  background: var(--bg-subtle);
+}
+
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.panel {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + var(--space-2));
+  z-index: 20;
+  min-width: 15rem;
+  max-width: calc(100vw - 2 * var(--space-4));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.name {
+  font-weight: 600;
+}
+
+.email {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.current {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.label {
+  margin: var(--space-2) 0 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+
+.item,
+.signOut {
+  display: block;
+  width: 100%;
+  min-height: var(--tap-target);
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.item:hover {
+  background: var(--bg-subtle);
+}
+
+.signOut {
+  margin-top: var(--space-2);
+  border-color: var(--border-strong);
+  text-align: center;
+}
+
+.signOut:hover:not(:disabled) {
+  background: var(--bg-subtle);
+}
+
+.signOut:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

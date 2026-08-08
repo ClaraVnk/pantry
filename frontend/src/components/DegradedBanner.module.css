@@ -27,12 +27,37 @@
   line-height: 1;
 }
 
+/* The bar spans the window; the sentence inside it does not. */
 .reasons {
   margin: 0;
   padding-left: 1.15rem;
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  max-width: 68ch;
+}
+
+/*
+ * Wide screens get the reasons side by side rather than one long stack. Two
+ * things improve at once: each reason keeps a readable measure instead of
+ * stretching, and the bar is a third of the height it would otherwise be.
+ *
+ * The height is not cosmetic. This bar mounts when the capability probe answers,
+ * after the first paint, and everything below it moves down by exactly its
+ * height — the dominant cumulative layout shift on every screen. Shortening the
+ * bar shortens the shift: measured on the three-reason payload, 258 px tall in
+ * one column against 212 px at 1024 and 145 px at 1440 with this rule.
+ *
+ * `auto-fill`, not `auto-fit`: with a single reason to show, `auto-fit` would
+ * collapse the empty tracks and stretch that one line across the whole window.
+ */
+@media (min-width: 48em) {
+  .reasons {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
+    gap: var(--space-1) var(--space-5);
+    max-width: none;
+  }
 }
 
 .reasons li::marker {
@@ -42,4 +67,5 @@
 .note {
   font-size: 0.8rem;
   opacity: 0.9;
+  max-width: 68ch;
 }

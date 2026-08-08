@@ -1,0 +1,56 @@
+# Chaudron — weekly restore verification.
+#
+# Install on:   the BACKUP host, not the application host — ops/README.md §8.6.
+# Install to:   ~/.config/systemd/user/chaudron-restore-check.service
+# Paired with:  chaudron-restore-check.timer
+# Script:       ops/chaudron-restore-check.sh
+#
+# An untested backup is a belief. This unit restores the most recent archive
+# into a disposable PostgreSQL container and checks that the schema and the
+# reference data came back, so that "we have backups" is a statement somebody
+# verified last week rather than one nobody has checked since it was written.
+
+[Unit]
+Description=Chaudron — restore the latest backup into a disposable database and verify it
+Documentation=https://github.com/ClaraVnk/chaudron
+
+# NO dependency on chaudron-db.service, and that is the change that lets this
+# unit live on another machine. The drill used to `podman exec` into the
+# production cluster and restore there as the owner role — the role RLS exempts
+# from every policy — feeding it SQL from an archive whose sender `age` cannot
+# authenticate. It now starts its own throwaway container instead, so it needs
+# no production database at all.
+#
+# A `Requires=chaudron-db.service` here would also make this unit fail outright
+# on the backup host, where that unit does not exist.
+
+[Service]
+Type=oneshot
+
+# Supplies CHAUDRON_BACKUP_AGE_IDENTITY — the PRIVATE half. This host is the one
+# that holds it, and that is the whole reason this unit does not belong on the
+# application host: the backups are encrypted to a public recipient precisely so
+# that the machine running the application cannot read them back. The script
+# enforces this, refusing to run where it finds the application's quadlet, secret
+# or container. See ops/README.md §8.6.
+EnvironmentFile=%h/chaudron/backup.env
+
+ExecStart=%h/chaudron/bin/chaudron-restore-check.sh
+
+NoNewPrivileges=true
+
+# These bound the unit cgroup, which now contains a whole PostgreSQL container
+# plus its 2 GiB tmpfs data directory rather than a `podman exec` into somebody
+# else's. A tmpfs is charged as memory to whoever touches its pages, so the
+# ceiling has to leave room for the restore to write the database it is checking.
+MemoryHigh=1200M
+MemoryMax=2560M
+# Still capped and still scheduled at an hour nobody cooks. On the backup host
+# this competes with nothing; on a single-machine deployment (§8.6) it competes
+# with production, and that is the case the cap is set for.
+CPUQuota=50%
+IOSchedulingClass=idle
+
+TimeoutStartSec=3600
+
+# Deliberately no [Install]: the timer pulls this in.

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+
+    <!--
+      EVERY screen below this document is one household's private data: what is
+      in their fridge, who is allergic to what, what they spent. None of it may
+      ever be indexed, and none of it may ever leave in a referrer.
+
+      These two tags are the client-side half. The server-side half
+      (`X-Robots-Tag`, `Referrer-Policy`) is in ops/Caddyfile.example, because a
+      crawler that ignores meta tags still obeys a header, and a header still
+      applies to responses that are not HTML. See docs/public-page-and-indexing.md.
+    -->
+    <meta name="robots" content="noindex, nofollow, noarchive, noimageindex" />
+    <meta name="referrer" content="no-referrer" />
+
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#F7F6F3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#17181C" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="Inventaire de cuisine et suggestions de recettes." />
+    <!--
+      `apple-mobile-web-app-capable` is deliberately absent.
+      docs/technical-notes-scanning.md §2.2: iOS standalone mode still carries
+      open WebKit bugs on camera permission persistence (#215884) and black
+      video streams (#252465). Running inside Safari keeps the icon on the home
+      screen and keeps the scanner working. Add the tag back only after the
+      on-device check described in the note passes.
+    -->
+    <title>Chaudron</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>Chaudron a besoin de JavaScript pour fonctionner.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

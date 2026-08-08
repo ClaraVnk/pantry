@@ -54,6 +54,7 @@ __all__ = [
     "RecipeRequest",
     "RecipeSuggestion",
     "RecipeSuggestions",
+    "TokenUsage",
 ]
 
 
@@ -191,6 +192,89 @@ class ProviderCapabilities:
 
 
 # --------------------------------------------------------------------------- #
+# What a call consumed
+# --------------------------------------------------------------------------- #
+
+
+def _sum(left: int | None, right: int | None) -> int | None:
+    """Add two counts, propagating "unknown" rather than reading it as zero."""
+    if left is None or right is None:
+        return None
+    return left + right
+
+
+@dataclass(frozen=True, slots=True)
+class TokenUsage:
+    """What one call to a provider consumed, **as that provider reported it**.
+
+    Every field is optional, and ``None`` means *the provider did not say* -- never
+    *nothing was spent*. The distinction is the entire reason this is a type rather
+    than three integers: ADR-0007 sells a product where the household pays for its
+    own inference, so a token count shown next to a suggestion is a claim about
+    somebody's bill. An invented zero is a false claim that looks authoritative,
+    which is strictly worse than an admitted blank.
+
+    The five adapters report in five different vocabularies (Anthropic and OpenAI
+    count tokens, Ollama counts ``prompt_eval_count`` / ``eval_count``), so the
+    meaning of each field is fixed **here** and every adapter translates onto it:
+
+    * :attr:`input_tokens` -- prompt tokens the provider processed and billed at
+      full rate or better, i.e. cache *misses* plus cache *writes*;
+    * :attr:`cached_input_tokens` -- prompt tokens served from the provider's
+      prompt cache at a reduced rate;
+    * :attr:`output_tokens` -- tokens generated.
+
+    The whole prompt is therefore ``input_tokens + cached_input_tokens``. Providers
+    disagree on whether their own "prompt tokens" figure already includes the
+    cached part; each adapter normalises onto the split above, because a column
+    that means two things depending on who wrote it is not a measurement.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_input_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("input_tokens", "output_tokens", "cached_input_tokens"):
+            value: int | None = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} cannot be negative")
+
+    @property
+    def is_known(self) -> bool:
+        """Whether the provider reported anything at all worth showing."""
+        return any(
+            value is not None
+            for value in (self.input_tokens, self.output_tokens, self.cached_input_tokens)
+        )
+
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=_sum(self.input_tokens, other.input_tokens),
+            output_tokens=_sum(self.output_tokens, other.output_tokens),
+            cached_input_tokens=_sum(self.cached_input_tokens, other.cached_input_tokens),
+        )
+
+    @classmethod
+    def total(cls, calls: Iterable[TokenUsage | None]) -> TokenUsage | None:
+        """Total several calls, or ``None`` if *any* of them went unreported.
+
+        Strict on purpose. One suggestion can cost more than one call: the emulated
+        structured-output path retries when the model will not produce the shape
+        (``DEGRADATION_POLICY``), and that second call is exactly the cost the
+        degraded-mode notice exists to make visible. A total that quietly counted an
+        unreported attempt as zero would under-report precisely the case worth
+        seeing, so an unknown part makes the whole unknown.
+        """
+        accumulated: TokenUsage | None = None
+        for call in calls:
+            if call is None:
+                return None
+            accumulated = call if accumulated is None else accumulated + call
+        return accumulated
+
+
+# --------------------------------------------------------------------------- #
 # Recipe generation
 # --------------------------------------------------------------------------- #
 
@@ -208,7 +292,16 @@ class InventoryItem:
 
 @dataclass(frozen=True, slots=True)
 class RecipeRequest:
-    """Everything the domain knows when it asks for suggestions."""
+    """Everything the domain knows when it asks for suggestions.
+
+    Nothing on this object is a *hard* dietary constraint, and that absence is
+    the design. Allergens, diet and the infant food table are applied by removing
+    products from :attr:`inventory` before the call and by re-checking the answer
+    after it (ADR-0009); asking the model to respect them would be a polite
+    request to a component allowed to be wrong. What travels here is the third
+    class of contract 4bis -- preferences nothing can verify -- plus the two
+    figures the *application* computed and wants the model to act on.
+    """
 
     inventory: tuple[InventoryItem, ...]
     max_suggestions: int = 3
@@ -217,6 +310,28 @@ class RecipeRequest:
     servings: int | None = None
     #: BCP-47 language the suggestions should be written in.
     language: str = "fr"
+    #: Per-eater free text, unattributed. Untrusted: it is typed by a person and
+    #: goes through the same neutralisation as a catalogue label.
+    preferences: tuple[str, ...] = ()
+    #: The weekly shortfall in plain words -- "il manque un poisson, deux
+    #: légumineuses". Computed by the application, never by the model.
+    balance_hint: str | None = None
+    #: ``any`` | ``hot`` | ``cold``. A preference; contract 4ter forbids treating
+    #: it as a filter, because no program can tell whether a recipe is cold.
+    meal_temperature: str = "any"
+    #: How the food has to be served when a young child is at the table. Carried
+    #: as a preparation requirement rather than as a filter: no catalogue column
+    #: says whether a product can be pureed.
+    infant_texture: str | None = None
+    #: Labels the model may use even though they are not in the inventory. Empty
+    #: means "inventory only". The list is closed and reviewed
+    #: (``domain/constraints.PANTRY_STAPLES``); the post-call check accepts
+    #: exactly these and nothing else.
+    allowed_staples: tuple[str, ...] = ()
+    #: Whether a hard constraint is in force. When it is, every ingredient the
+    #: model returns has to resolve, so the prompt stops inviting it to add
+    #: pantry items of its own choosing.
+    strict_inventory: bool = False
 
     def __post_init__(self) -> None:
         if self.max_suggestions < 1:
@@ -241,30 +356,47 @@ class RecipeSuggestion:
     ingredients: tuple[RecipeIngredient, ...] = ()
     steps: tuple[str, ...] = ()
     uses_expiring_soon: bool = False
+    #: Self-declared by the model, and labelled as such all the way to the screen
+    #: (contract 4ter). They let the interface point out that a suggestion is
+    #: served hot when cold was asked for; they never invalidate it, because
+    #: nothing here can be checked. ``None`` means the model did not say.
+    serving_temperature: str | None = None
+    requires_cooking: bool | None = None
+    requires_oven: bool | None = None
 
 
 class RecipeSuggestions(list[RecipeSuggestion]):
-    """The suggestions, plus the reason the answer is partial when it is.
+    """The suggestions, plus what the answer left out and what it consumed.
 
     A ``list`` subclass rather than a wrapper object, because the port returns
     ``list[RecipeSuggestion]`` and that signature is what the services layer codes
-    against. The extra attribute is what the persistent degraded-mode indicator
+    against -- keeping the conformance suite and the five adapters untouched by the
+    two side-channels below.
+
+    :attr:`degradation_notice` is what the persistent degraded-mode indicator
     renders: a degraded answer must say what it left out, or the user discovers the
     limit at the moment of the disappointment rather than before.
+
+    :attr:`usage` is what the call cost, ``None`` when the provider did not report
+    it. Both travel here rather than in the element type because both are facts
+    about the *call*, not about any one recipe in it.
     """
 
-    __slots__ = ("degradation_notice",)
+    __slots__ = ("degradation_notice", "usage")
 
     degradation_notice: str | None
+    usage: TokenUsage | None
 
     def __init__(
         self,
         items: Iterable[RecipeSuggestion] = (),
         *,
         degradation_notice: str | None = None,
+        usage: TokenUsage | None = None,
     ) -> None:
         super().__init__(items)
         self.degradation_notice = degradation_notice
+        self.usage = usage
 
 
 # --------------------------------------------------------------------------- #

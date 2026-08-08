@@ -6,7 +6,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 
-from chaudron.api.deps import HouseholdDep, ProductServiceDep, enforce_product_lookup_limit
+from chaudron.api.deps import (
+    HouseholdDep,
+    MemberDep,
+    ProductServiceDep,
+    enforce_product_lookup_limit,
+)
 from chaudron.api.schemas import ProductCreateIn, ProductDetailOut
 from chaudron.domain.ports import GTIN_STORAGE_LENGTH, ProductDraft, ProductView, display_gtin
 
@@ -55,7 +60,7 @@ async def lookup_product(
     summary="Create a product manually",
 )
 async def create_product(
-    household_id: HouseholdDep, service: ProductServiceDep, payload: ProductCreateIn
+    household_id: MemberDep, service: ProductServiceDep, payload: ProductCreateIn
 ) -> ProductDetailOut:
     product = await service.create_manual(
         household_id,

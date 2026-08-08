@@ -63,6 +63,27 @@ WORKDIR /app
 # it — this closes it in the image itself.
 COPY --from=builder --chown=root:root /app/.venv /app/.venv
 
+# Drop the base image's `pip` and its vendored copies of `setuptools`, `msgpack`
+# and friends. The application never touches them: every dependency it runs on is
+# in `/app/.venv`, installed there by `uv` in the builder stage, and `PATH` puts
+# that venv first.
+#
+# **This is the whole fixable half of the image's vulnerability report.** The
+# `CRITICAL` and `HIGH` findings against this image come from two places: the
+# bookworm layer, where they have no published fix and nothing here can close
+# them, and `pip/_vendor`, where they are fixable and belong to code that is
+# never imported. Removing the directory takes the fixable count to zero, which
+# is what lets the CI gate in `.github/workflows/ci.yml` be tightened from
+# `CRITICAL` to `CRITICAL,HIGH` without going red on the day it lands.
+#
+# Second-order, and the reason to prefer this over an ignore rule: a package
+# installer inside a production image is a way to fetch and execute code from the
+# network, sitting next to an application that talks to model providers over HTTP.
+# It is not needed, so it should not be reachable.
+RUN rm -rf /usr/local/lib/python3.14/site-packages/pip \
+           /usr/local/lib/python3.14/site-packages/pip-*.dist-info \
+           /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.14
+
 # Alembic configuration and revision scripts. `chaudron-migrate.container` runs
 # `alembic upgrade head` from this image with WORKDIR=/app; without these two
 # lines that unit fails with "No config file 'alembic.ini' found", which is to
@@ -71,9 +92,67 @@ COPY --from=builder --chown=root:root /app/.venv /app/.venv
 COPY --chown=root:root alembic.ini /app/
 COPY --chown=root:root migrations /app/migrations
 
+# ONE script, named explicitly. Not `COPY scripts /app/scripts`.
+#
+# Why it ships at all. Row-level security is only in force when the API connects
+# as a role that does NOT own the tables — PostgreSQL exempts an owner from every
+# policy, and migration 0004 deliberately does not set `FORCE ROW LEVEL
+# SECURITY`. Creating that role is therefore not optional. With no script in the
+# image, ops/README.md had to spell the provisioning out as a block of SQL to
+# paste by hand, duplicating what this script already does — a duplication the
+# README itself flagged as a divergence waiting to happen. One of the two copies
+# was going to drift, and the silent failure mode of the wrong one is "every
+# household can read every other household's rows, with no symptom".
+#
+# Shipping it makes the image the single source of that procedure:
+#   podman run --rm --network chaudron-net --env-file … \
+#     --secret chaudron-database-url-owner,type=env,target=CHAUDRON_DATABASE_URL \
+#     ghcr.io/claravnk/chaudron:latest python /app/scripts/provision_app_role.py
+#
+# `--check` from the same image is what a deployment pipeline runs after every
+# migration.
+#
+# WHY THE REST OF `scripts/` STAYS OUT, AND WHY THIS IS A COPY LIST RATHER THAN
+# A COMMENT SAYING "DO NOT RUN THOSE"
+# -----------------------------------------------------------------------------
+# `seed.py` must never be one `podman exec` away from a production database. It
+# carries a hard-coded household UUID — committed to a public repository,
+# printed to stdout on every run, and reproduced in `docs/` alongside the `curl`
+# invocations that use it — it has no environment guard (`main()` reads
+# `CHAUDRON_DATABASE_URL` and writes to it without consulting `CHAUDRON_ENV`,
+# without a `--yes`, and without refusing a non-local DSN), and it deliberately
+# leaves a second real household named "Foyer Attaquant" behind, inherited from
+# an audit exercise.
+#
+# The only thing that made any of that harmless was that `scripts/` was not in
+# the image. That was the mitigation, and a directory-wide COPY would have
+# removed it. The attack path is not hypothetical: the owner DSN `seed.py` needs
+# exists in the deployment, held by chaudron-migrate.container.
+#
+# `quality_report.py` is an operator tool that reads across households. If it is
+# ever needed in production it comes back with its own justification.
+#
+# A per-file COPY does go stale when a script is added — and that is the point:
+# a new operational script does not reach production until somebody decides it
+# should. Erring towards "missing" is the safe direction here; erring towards
+# "present" put a public UUID and an unguarded writer next to the live database.
+#
+# `scripts/__init__.py` is not copied either: it is a package marker that exists
+# so `tests/tenancy` can import the module instead of re-typing its GRANT
+# statements. Running the script by path needs no package, so the marker has no
+# job here.
+#
+# Root-owned: the application account may execute this, never edit it.
+COPY --chown=root:root scripts/provision_app_role.py /app/scripts/
+
+# The entrypoint, and root-owned for the same reason as the script above but more
+# sharply: it is what decides whether `X-Forwarded-For` is believed, so the
+# account that serves the requests must not be able to rewrite it.
+COPY --chown=root:root scripts/entrypoint.sh /app/scripts/
+
 # Any __pycache__ the build context happened to carry is stale by definition and
 # has no business in a release artefact.
-RUN find /app/migrations -name '__pycache__' -type d -prune -exec rm -rf {} +
+RUN find /app/migrations /app/scripts -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 USER chaudron
 
@@ -85,4 +164,67 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["python", "-c", "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('CHAUDRON_PORT','8000')}/healthz\", timeout=4).status == 200 else 1)"]
 
-CMD ["sh", "-c", "exec uvicorn chaudron.api.main:app --host 0.0.0.0 --port \"${CHAUDRON_PORT:-8000}\""]
+# `--host 0.0.0.0` binds inside the container's network namespace, not on the
+# host: the quadlet publishes 127.0.0.1:8000 and the proxy reaches this
+# container by name over chaudron-net. Nothing here is exposed by that address.
+#
+# --no-access-log
+#   Uvicorn's access log is not safe to keep in this application, and the reason
+#   is what it logs rather than that it logs at all. A request line carries the
+#   full path and query string, which here means the GTIN of a scanned product
+#   (`/v1/products?gtin=…`) and the calendar feed identifier that IS the
+#   credential for that feed (`/caldav/p/<feed_id>/…`). `infra/logging.py`
+#   reparents `uvicorn.access` onto the application formatter, so every line
+#   also carries the `household_id`.
+#
+#   None of that is transient. Podman's default log driver is journald, so those
+#   lines were already on disk, with no retention configured — which means a
+#   `household_id` stayed correlatable in the journal AFTER an erasure exercised
+#   under article 17 GDPR, because the erasure acts on the database and nothing
+#   points it at the journal.
+#
+#   What is lost: per-request visibility (status codes, latencies, paths). It is
+#   not lost from the deployment — the reverse proxy keeps a FILTERED access log
+#   with the query string stripped and `/caldav/*` skipped entirely
+#   (ops/Caddyfile.example) — and the application's own structured logs are
+#   untouched. What is lost is per-request visibility *for a bare container run
+#   without the proxy*, which is a development shape, not a deployed one.
+#
+# --proxy-headers / --forwarded-allow-ips
+#   `--forwarded-allow-ips` names the peer addresses uvicorn will honour
+#   `X-Forwarded-For` and `X-Forwarded-Proto` from. In rootless Podman the peer
+#   address is never loopback — it is the network gateway or the proxy's
+#   container address — so with uvicorn's own default the forwarded headers were
+#   silently ignored. That was the right outcome for the wrong reason, and
+#   undocumented, which made it one "fix" away from disappearing.
+#
+#   The deployed value is the proxy's pinned address on chaudron-net, set in
+#   ops/chaudron.container, and Caddy overwrites `X-Forwarded-For` with the peer
+#   it actually accepted (ops/Caddyfile.example sets no `trusted_proxies`), so
+#   the value the limiters key on is verified by something.
+#
+#   Outside that deployment there is nobody to verify it, and the previous
+#   entrypoint fell back to `--proxy-headers --forwarded-allow-ips 127.0.0.1`
+#   whether or not a proxy existed. Measured on the fallback: six sign-in
+#   attempts from one address are refused with 429 after three, and eight
+#   attempts rotating `X-Forwarded-For` are all answered 401 — the per-IP
+#   limiter simply stops existing, because the client is dictating the key it is
+#   limited on. So the fallback is gone in both directions:
+#
+#     * `FORWARDED_ALLOW_IPS` unset  → `--no-proxy-headers`. Forwarded headers
+#       are not read at all and every IP-based decision uses the real peer.
+#       Explicit, because uvicorn's own default for `--proxy-headers` is *on*:
+#       omitting the flag would have left the hole open.
+#     * `FORWARDED_ALLOW_IPS=*`      → refuse to start. It is the most common
+#       answer to this problem online and it means any client that can reach
+#       this port dictates its own client IP through a header. A container that
+#       does not come up is a deployment that gets fixed; one that comes up with
+#       forgeable rate limits is not.
+#     * anything else               → trust exactly that, and nothing else.
+#
+#   The logic lives in scripts/entrypoint.sh rather than inline here, because a
+#   branch that decides whether a rate limiter can be forged is a branch that has
+#   to be testable: tests/infra/test_entrypoint.py runs that file with `sh` and
+#   asserts the three outcomes. An inline `sh -c` with four levels of quoting is
+#   reviewable and not executable.
+CMD ["/app/scripts/entrypoint.sh"]

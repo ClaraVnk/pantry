@@ -16,11 +16,12 @@ table somebody adds next month is covered before anybody remembers it exists.
 from __future__ import annotations
 
 import uuid
+from typing import Final
 
 import pytest
 import sqlalchemy as sa
 from sqlalchemy import Table
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from chaudron.domain.models import Base, ProductSource
@@ -256,6 +257,227 @@ async def test_public_catalogue_cannot_be_deleted_by_a_household(
     finally:
         async with owner_engine.begin() as connection:
             await connection.execute(sa.delete(products).where(products.c.id == public_id))
+
+
+async def test_a_household_cannot_claim_a_row_out_of_the_shared_catalogue(
+    app_engine: AsyncEngine, owner_engine: AsyncEngine, tenant_rows: TenantRows
+) -> None:
+    """One statement used to take a catalogue entry away from everybody else.
+
+    ``UPDATE product SET household_id = <me> WHERE household_id IS NULL`` passed
+    both halves of the ``UPDATE`` policy: the old row is public, so ``USING``
+    allowed it, and the new row is the household's own, so ``WITH CHECK`` allowed
+    it too. The entry then stopped existing for every other household -- and for
+    ``upsert_public``, which would refetch and re-insert it, so the symptom was a
+    duplicate rather than an error.
+
+    Narrowing ``WITH CHECK`` to ``household_id = chaudron_current_household()`` is
+    the obvious repair and it is not one: that predicate *describes the claim*.
+    Revision ``0015`` states the rule where a rule about a transition can be
+    stated, in a ``BEFORE UPDATE`` trigger, so this raises rather than reporting
+    zero rows.
+    """
+    public_id = uuid.uuid7()
+    products = _PRODUCT
+    async with owner_engine.begin() as connection:
+        await connection.execute(_public_product(public_id))
+    try:
+        with pytest.raises(DBAPIError, match="immutable"):
+            async with app_engine.begin() as connection:
+                await connection.execute(_post_tenant(tenant_rows.household_a))
+                await connection.execute(
+                    sa.update(products)
+                    .where(products.c.id == public_id)
+                    .values(household_id=tenant_rows.household_a)
+                )
+
+        async with owner_engine.connect() as connection:
+            owner = await connection.scalar(
+                sa.select(products.c.household_id).where(products.c.id == public_id)
+            )
+        assert owner is None, "the catalogue entry is still shared"
+    finally:
+        async with owner_engine.begin() as connection:
+            await connection.execute(sa.delete(products).where(products.c.id == public_id))
+
+
+async def test_a_household_cannot_push_a_row_of_its_own_into_the_shared_catalogue(
+    app_engine: AsyncEngine, owner_engine: AsyncEngine, tenant_rows: TenantRows
+) -> None:
+    """The same hole read backwards, and closed by the same rule.
+
+    A household publishing one of its private entries writes a row into a table
+    every other household reads, without any of them asking for it.
+    """
+    private_id = uuid.uuid7()
+    products = _PRODUCT
+    async with owner_engine.begin() as connection:
+        await connection.execute(
+            sa.insert(products).values(
+                id=private_id,
+                household_id=tenant_rows.household_a,
+                name="Private entry",
+                source=ProductSource.MANUAL,
+            )
+        )
+    try:
+        with pytest.raises(DBAPIError, match="immutable"):
+            async with app_engine.begin() as connection:
+                await connection.execute(_post_tenant(tenant_rows.household_a))
+                await connection.execute(
+                    sa.update(products).where(products.c.id == private_id).values(household_id=None)
+                )
+    finally:
+        async with owner_engine.begin() as connection:
+            await connection.execute(sa.delete(products).where(products.c.id == private_id))
+
+
+async def test_the_shared_cache_can_still_be_refreshed_by_any_household(
+    app_engine: AsyncEngine, owner_engine: AsyncEngine, tenant_rows: TenantRows
+) -> None:
+    """The control, and the reason the repair is a trigger rather than a policy.
+
+    ``ProductRepository.upsert_public`` writes back a row whose ``household_id``
+    is still ``NULL``; that is the shared cache of ADR-0008 and it runs on every
+    barcode scan of an already-known product. Under the narrowed ``WITH CHECK``
+    this statement fails with ``new row violates row-level security policy``,
+    which is a 500 on a scan -- measured, not assumed, which is why it is asserted
+    here from the application role rather than the owner.
+    """
+    public_id = uuid.uuid7()
+    products = _PRODUCT
+    async with owner_engine.begin() as connection:
+        await connection.execute(_public_product(public_id))
+    try:
+        async with app_engine.begin() as connection:
+            await connection.execute(_post_tenant(tenant_rows.household_b))
+            result = await connection.execute(
+                sa.update(products)
+                .where(products.c.id == public_id)
+                .values(name="Refreshed from Open Food Facts")
+            )
+        assert result.rowcount == 1
+
+        async with owner_engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    sa.select(products.c.name, products.c.household_id).where(
+                        products.c.id == public_id
+                    )
+                )
+            ).one()
+        assert row.name == "Refreshed from Open Food Facts"
+        assert row.household_id is None
+    finally:
+        async with owner_engine.begin() as connection:
+            await connection.execute(sa.delete(products).where(products.c.id == public_id))
+
+
+# --------------------------------------------------------------------------- #
+# Origin references across a household boundary
+# --------------------------------------------------------------------------- #
+#
+# Referential integrity is evaluated in triggers that run as the table owner and
+# are NOT subject to row-level security, so a policy that hides household B's rows
+# from household A does nothing to stop household A's row from *pointing at* one.
+# The only thing that refuses it is a composite foreign key, which revision `0015`
+# gave the last three references that lacked one.
+
+#: ``(child table, column, parent table)`` for each reference made composite.
+_ORIGIN_REFERENCES: Final = (
+    ("inventory_lot", "source_receipt_line_id", "receipt_line"),
+    ("shopping_list_item", "origin_recipe_suggestion_id", "recipe_suggestion"),
+    ("stock_movement", "recipe_suggestion_id", "recipe_suggestion"),
+)
+
+
+@pytest.mark.parametrize(
+    ("child", "column", "parent"),
+    _ORIGIN_REFERENCES,
+    ids=[f"{child}.{column}" for child, column, _ in _ORIGIN_REFERENCES],
+)
+async def test_an_origin_reference_cannot_name_another_households_row(
+    owner_engine: AsyncEngine, tenant_rows: TenantRows, child: str, column: str, parent: str
+) -> None:
+    """Issued as the **owner**, which bypasses every policy -- on purpose.
+
+    The claim is about the schema, not about the policies. If this passes as the
+    identity that is exempt from row-level security, it holds for every identity.
+    """
+    child_table = Base.metadata.tables[child]
+    foreign_row = tenant_rows.row_id(parent, tenant_rows.household_b)
+
+    async with owner_engine.begin() as connection:
+        with pytest.raises(IntegrityError):
+            await connection.execute(
+                sa.update(child_table)
+                .where(child_table.c.household_id == tenant_rows.household_a)
+                .values(**{column: foreign_row})
+            )
+
+
+@pytest.mark.parametrize(
+    ("child", "column", "parent"),
+    _ORIGIN_REFERENCES,
+    ids=[f"{child}.{column}" for child, column, _ in _ORIGIN_REFERENCES],
+)
+async def test_an_origin_reference_still_accepts_its_own_households_row(
+    owner_engine: AsyncEngine, tenant_rows: TenantRows, child: str, column: str, parent: str
+) -> None:
+    """The control: a constraint that refused everything would pass the test above."""
+    child_table = Base.metadata.tables[child]
+    own_row = tenant_rows.row_id(parent, tenant_rows.household_a)
+
+    async with owner_engine.begin() as connection:
+        result = await connection.execute(
+            sa.update(child_table)
+            .where(child_table.c.household_id == tenant_rows.household_a)
+            .values(**{column: own_row})
+        )
+        assert result.rowcount >= 1
+        await connection.rollback()
+
+
+@pytest.mark.parametrize(
+    ("child", "column", "parent"),
+    _ORIGIN_REFERENCES,
+    ids=[f"{child}.{column}" for child, column, _ in _ORIGIN_REFERENCES],
+)
+async def test_deleting_the_parent_forgets_the_origin_without_nulling_the_tenant(
+    owner_engine: AsyncEngine, tenant_rows: TenantRows, child: str, column: str, parent: str
+) -> None:
+    """``ON DELETE SET NULL (column)``, and why the column list is not decoration.
+
+    A bare ``SET NULL`` on a composite key nulls every column of it, including
+    ``household_id`` -- which is ``NOT NULL`` here, so deleting a receipt would
+    have failed outright instead of forgetting where a lot came from.
+    """
+    child_table = Base.metadata.tables[child]
+    parent_table = Base.metadata.tables[parent]
+    own_row = tenant_rows.row_id(parent, tenant_rows.household_a)
+
+    async with owner_engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            await connection.execute(
+                sa.update(child_table)
+                .where(child_table.c.household_id == tenant_rows.household_a)
+                .values(**{column: own_row})
+            )
+            await connection.execute(sa.delete(parent_table).where(parent_table.c.id == own_row))
+            rows = (
+                await connection.execute(
+                    sa.select(child_table.c.household_id, child_table.c[column]).where(
+                        child_table.c.household_id == tenant_rows.household_a
+                    )
+                )
+            ).all()
+            assert rows, "the child row survived the parent's deletion"
+            for row in rows:
+                assert row[0] == tenant_rows.household_a, "the tenant column was nulled"
+                assert row[1] is None, "the origin was not forgotten"
+        finally:
+            await transaction.rollback()
 
 
 # --------------------------------------------------------------------------- #

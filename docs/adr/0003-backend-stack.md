@@ -1,63 +1,63 @@
-# 0003. Stack backend : FastAPI, SQLAlchemy 2.x, PostgreSQL, uv
+# 0003. Backend stack: FastAPI, SQLAlchemy 2.x, PostgreSQL, uv
 
-## Statut
+## Status
 
-Accepté — 2026-08-03
+Accepted — 2026-08-03
 
-## Contexte
+## Context
 
-Chaudron expose une API consommée par une PWA React séparée (cf. ADR-0004), et doit traiter des charges hétérogènes : requêtes CRUD courtes sur le stock, appels sortants lents et imprévisibles vers des modèles de langage (cf. ADR-0005), et appels à Open Food Facts pour la résolution EAN. Ces appels sortants dominent le temps de réponse et sont majoritairement de l'attente réseau.
+Chaudron exposes an API consumed by a separate React PWA (see ADR-0004), and has to handle heterogeneous workloads: short CRUD requests on the stock, slow and unpredictable outbound calls to language models (see ADR-0005), and calls to Open Food Facts for EAN resolution. Those outbound calls dominate response time and are mostly network wait.
 
-Le développeur est seul et connaît Python. Le déploiement visé est un VPS Rocky Linux 10 en SELinux Enforcing, via quadlets systemd et conteneurs Podman.
+The developer works alone and knows Python. The target deployment is a Rocky Linux 10 VPS in SELinux Enforcing, via systemd quadlets and Podman containers.
 
-Le modèle de données est multi-tenant dès le départ (cf. ADR-0006), avec un `household_id` porté par toutes les tables métier — ce qui exige un ORM capable d'exprimer proprement des contraintes composites et des index partiels.
+The data model is multi-tenant from the start (see ADR-0006), with a `household_id` carried by every business table — which demands an ORM that can express composite constraints and partial indexes cleanly.
 
-## Décision
+## Decision
 
-**Runtime** : Python 3.14, la dernière version stable, pinnée dans `pyproject.toml` (`requires-python = ">=3.14"`) et `.python-version`.
+**Runtime**: Python 3.14, the latest stable version, pinned in `pyproject.toml` (`requires-python = ">=3.14"`) and `.python-version`.
 
-**Framework HTTP** : FastAPI. ASGI natif, donc I/O concurrente sans thread pool sur les appels sortants ; validation d'entrée par Pydantic aux frontières ; OpenAPI généré à partir des types, ce qui donne un contrat exploitable côté frontend sans documentation à maintenir à la main.
+**HTTP framework**: FastAPI. Native ASGI, hence concurrent I/O without a thread pool on outbound calls; input validation by Pydantic at the boundaries; OpenAPI generated from the types, which gives the frontend a usable contract with no hand-maintained documentation.
 
-**Persistance** : SQLAlchemy 2.x en style déclaratif typé (`Mapped[...]`, `mapped_column`), avec `asyncpg` comme driver. Migrations par Alembic, chaque migration fournissant `upgrade` et `downgrade`.
+**Persistence**: SQLAlchemy 2.x in typed declarative style (`Mapped[...]`, `mapped_column`), with `asyncpg` as the driver. Migrations by Alembic, each migration providing both `upgrade` and `downgrade`.
 
-**Base de données** : PostgreSQL 16, en conteneur dédié, volume nommé, mot de passe en secret Podman, volume monté avec le suffixe `:Z` sous SELinux.
+**Database**: PostgreSQL 16, in a dedicated container, named volume, password as a Podman secret, volume mounted with the `:Z` suffix under SELinux.
 
-**Outillage** : `uv` pour la toolchain et les dépendances (`uv.lock` versionné) ; `ruff` pour le lint et le format ; `mypy` en mode strict ; `pytest` avec `pytest-cov`.
+**Tooling**: `uv` for the toolchain and dependencies (`uv.lock` versioned); `ruff` for lint and format; `mypy` in strict mode; `pytest` with `pytest-cov`.
 
-**Tests** : PostgreSQL est le seul moteur exercé, en local comme en CI. La CI démarre un service `postgres:16` dédié. Il n'y a pas de mode SQLite, même pour les tests unitaires.
+**Tests**: PostgreSQL is the only engine exercised, locally and in CI alike. CI starts a dedicated `postgres:16` service. There is no SQLite mode, not even for unit tests.
 
-## Conséquences
+## Consequences
 
-### Positives
+### Positive
 
-- Une seule chaîne de types, du corps de requête HTTP jusqu'aux colonnes : Pydantic aux frontières, `Mapped[...]` en base, `mypy --strict` entre les deux.
-- L'ASGI absorbe la latence des appels LLM sans multiplier les workers : un handler bloqué sur une réponse de modèle ne bloque pas les requêtes de stock.
-- PostgreSQL apporte les types dont le domaine a besoin : `timestamptz` (dates de péremption avec fuseau), `numeric` (quantités), `jsonb` indexable (payload brut d'un ticket parsé), contraintes d'unicité composites sur `(household_id, ...)`.
-- `uv.lock` versionné rend les builds reproductibles ; `uv sync --frozen` en CI garantit que le conteneur de production installe exactement ce qui a été testé.
-- Tester contre le moteur de production supprime toute une classe de bugs qui n'apparaissent qu'au déploiement.
+- A single type chain, from the HTTP request body down to the columns: Pydantic at the boundaries, `Mapped[...]` in the database, `mypy --strict` in between.
+- ASGI absorbs LLM call latency without multiplying workers: a handler blocked on a model response does not block stock requests.
+- PostgreSQL brings the types the domain needs: `timestamptz` (expiry dates with time zone), `numeric` (quantities), indexable `jsonb` (raw payload of a parsed receipt), composite unique constraints on `(household_id, ...)`.
+- A versioned `uv.lock` makes builds reproducible; `uv sync --frozen` in CI guarantees that the production container installs exactly what was tested.
+- Testing against the production engine removes a whole class of bugs that only surface at deployment.
 
-### Négatives
+### Negative
 
-- **Le code asynchrone se propage.** Une fonction `async` ne s'appelle proprement que depuis un contexte `async` : une bibliothèque synchrone bien choisie devra être encapsulée dans un thread, ou remplacée. C'est un coût structurel, pas une gêne ponctuelle.
-- Les sessions SQLAlchemy asynchrones sont un piège à N+1 silencieux : le lazy loading lève une exception en contexte async, ce qui force à écrire tous les `selectinload` explicitement. C'est meilleur pour la performance, plus verbeux à écrire.
-- La boucle de test est plus lourde : chaque exécution suppose un PostgreSQL joignable. Pas de `pytest` sur une machine nue sans conteneur en marche.
-- `mypy --strict` sur du code SQLAlchemy async coûte des annotations et des `cast()` ponctuels ; la friction est réelle sur les requêtes complexes.
-- Python 3.14 est récent : certaines dépendances peuvent ne pas fournir de roue précompilée, ce qui allonge les builds ou impose une compilation.
-- Deux codebases (backend, frontend) signifient deux pipelines, deux jeux de dépendances, et un contrat OpenAPI à garder synchronisé.
+- **Async code spreads.** An `async` function can only be called cleanly from an `async` context: a well-chosen synchronous library will have to be wrapped in a thread, or replaced. That is a structural cost, not an occasional annoyance.
+- Async SQLAlchemy sessions are a silent N+1 trap: lazy loading raises in an async context, which forces every `selectinload` to be written explicitly. Better for performance, more verbose to write.
+- The test loop is heavier: every run assumes a reachable PostgreSQL. No `pytest` on a bare machine with no container running.
+- `mypy --strict` over async SQLAlchemy code costs annotations and the occasional `cast()`; the friction is real on complex queries.
+- Python 3.14 is recent: some dependencies may not ship a prebuilt wheel, which lengthens builds or forces a compilation.
+- Two codebases (backend, frontend) mean two pipelines, two dependency sets, and an OpenAPI contract to keep in sync.
 
-## Alternatives écartées
+## Rejected alternatives
 
-- **Django + Django REST Framework** — admin fourni, ORM mature, écosystème complet, et l'auth multi-tenant de la phase 2 y serait plus vite câblée. Écarté pour deux raisons : le support async de Django reste partiel là où il compte (l'ORM, précisément le chemin qu'emprunteraient les handlers qui attendent un LLM), et le monolithe encourage à mettre la logique métier dans les vues, ce qui est exactement la frontière que l'on veut tenir. On sacrifie un vrai confort — l'admin Django aurait couvert gratuitement une partie du back-office.
-- **Litestar** — plus rapide que FastAPI sur les benchmarks, DI plus propre. Écarté : écosystème et corpus de réponses nettement plus petits, pour un gain qui ne se manifeste pas sur une charge dominée par l'attente réseau.
-- **Flask + SQLAlchemy** — familier et minimal. Écarté : WSGI synchrone, validation à câbler à la main, OpenAPI à maintenir séparément.
-- **Go ou Node** — Go pour la robustesse du déploiement, Node pour partager le langage avec le frontend. Écartés : l'écosystème Python des modèles multimodaux et du traitement d'image est nettement plus riche, et c'est le langage que le développeur maîtrise le mieux.
-- **SQLite** — zéro opération, fichier unique, séduisant pour un usage familial. Écarté explicitement, c'est la décision la plus importante de cet ADR :
-  - Les écritures sont sérialisées à l'échelle de la base. Un job de fond (parsing de ticket, appel LLM, import d'e-mail) bloque une requête utilisateur.
-  - Il n'y a pas de vrai typage : booléens en `0`/`1`, horodatages naïfs sans fuseau, JSON stocké en texte. Une date de péremption sans fuseau est un bug qui se découvre au changement d'heure.
-  - La sauvegarde est une copie de fichier, pas une archive restaurable table par table.
-  - Migrer PostgreSQL → SQLite tardivement se ferait à travers les modèles ORM, pas par un dump réécrit, les deux moteurs ne s'accordant sur presque aucun type.
-- **SQLite pour les tests uniquement, PostgreSQL en production** — le compromis courant. Écarté : le moteur de production n'est alors jamais testé. Les divergences (types, contraintes différées, `jsonb`, index partiels, comportement transactionnel) apparaissent en production, là où elles coûtent le plus cher.
+- **Django + Django REST Framework** — admin included, mature ORM, complete ecosystem, and phase 2's multi-tenant auth would be wired up faster there. Rejected for two reasons: Django's async support remains partial exactly where it counts (the ORM, precisely the path taken by handlers waiting on an LLM), and the monolith encourages putting business logic in the views, which is exactly the boundary we want to hold. We are giving up real comfort here — the Django admin would have covered part of the back office for free.
+- **Litestar** — faster than FastAPI on benchmarks, cleaner DI. Rejected: a markedly smaller ecosystem and body of answers, for a gain that never shows on a workload dominated by network wait.
+- **Flask + SQLAlchemy** — familiar and minimal. Rejected: synchronous WSGI, validation to wire by hand, OpenAPI to maintain separately.
+- **Go or Node** — Go for deployment robustness, Node to share the language with the frontend. Both rejected: the Python ecosystem for multimodal models and image processing is markedly richer, and it is the language the developer knows best.
+- **SQLite** — zero operations, a single file, tempting for family use. Explicitly rejected, and this is the most important decision in this ADR:
+  - Writes are serialised database-wide. A background job (receipt parsing, LLM call, e-mail import) blocks a user request.
+  - There is no real typing: booleans as `0`/`1`, naive timestamps with no time zone, JSON stored as text. An expiry date with no time zone is a bug you discover at the daylight-saving switch.
+  - The backup is a file copy, not an archive restorable table by table.
+  - Migrating PostgreSQL → SQLite late would have to go through the ORM models, not through a rewritten dump, since the two engines agree on almost no type.
+- **SQLite for tests only, PostgreSQL in production** — the common compromise. Rejected: the production engine then never gets tested. The divergences (types, deferred constraints, `jsonb`, partial indexes, transactional behaviour) show up in production, where they cost the most.
 
-## Révision
+## Revisiting
 
-Réévaluer PostgreSQL 16 vers une version majeure supérieure une fois celle-ci en support long terme et disponible en image officielle stable. Réévaluer le choix de FastAPI si le projet adopte un frontend rendu côté serveur, auquel cas la séparation des codebases perd sa justification.
+Reassess PostgreSQL 16 against a higher major version once that version is under long-term support and available as a stable official image. Reassess the choice of FastAPI if the project adopts a server-rendered frontend, in which case the split codebases lose their justification.

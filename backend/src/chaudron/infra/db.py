@@ -249,6 +249,15 @@ _CONNECTING_ROLE = text(
 )
 
 
+#: The rate limiters' own pool. Deliberately fixed rather than configurable: it
+#: is not a capacity dial but a decoupling, and the number that matters is that
+#: it is *separate*, not that it is five. A limiter transaction holds its
+#: connection for three statements against a local socket, so this serves a
+#: request rate the size does not suggest.
+_LIMITER_POOL_SIZE: Final = 5
+_LIMITER_MAX_OVERFLOW: Final = 5
+
+
 class Database:
     """Owns the engine and hands out request-scoped sessions."""
 
@@ -261,6 +270,17 @@ class Database:
             # a failed user request instead of a transparent reconnect.
             pool_pre_ping=True,
             echo=False,
+            # SQLAlchemy renders the bound parameters into `str(StatementError)`,
+            # and `api/errors.py` logs any unhandled exception with `exc_info`. So
+            # a single `IntegrityError` on a household member would otherwise write
+            # that member's name, allergens and infant age band to the log -- health
+            # data about a minor, on disk, under journald's retention rather than
+            # ours. `infra/logging.py` redacts every line it writes, but redaction
+            # knows credential *shapes*: a child's first name has none, and no
+            # pattern will ever catch it. This is the half of that fix that no
+            # pattern can do. The statement itself and the violated constraint stay
+            # in the message, which is what an operator actually diagnoses from.
+            hide_parameters=True,
         )
         self._sessionmaker = async_sessionmaker(
             bind=self._engine,
@@ -268,10 +288,47 @@ class Database:
             autoflush=True,
             sync_session_class=_TenantAwareSession,
         )
+        # A second pool, for the rate limiters alone, and it is not a tuning
+        # preference -- sharing the first one turns the limiters into the outage
+        # they exist to prevent.
+        #
+        # `SharedRateLimiter` opens a connection of its own, on purpose: its
+        # deduction has to survive the request transaction rolling back
+        # (`infra/rate_limits.py`). But a limiter runs *inside* a request, whose
+        # session connection is already checked out. On one pool, a rate-limited
+        # request therefore holds one connection and asks for a second. Fill the
+        # pool with such requests -- `pool_size + max_overflow` of them, fifteen
+        # by default -- and every one of them is holding what the others are
+        # waiting for. Nothing is deadlocked in the database's sense, so nothing
+        # detects it: they all sit on `pool_timeout`, thirty seconds, and then
+        # return `500`. The limiter's whole job at that moment was to answer
+        # `429` in a millisecond.
+        #
+        # Separate pools break the cycle by construction: a limiter connection is
+        # never held while waiting for a session connection, so the two can never
+        # queue behind each other.
+        #
+        # Small on purpose. A limiter transaction is three statements against a
+        # local socket and is released immediately, so this pool serves a request
+        # rate far above what its size suggests -- unlike the session pool, which
+        # holds a connection for a whole request including any model call.
+        self._limiter_engine: AsyncEngine = create_async_engine(
+            settings.database_url.get_secret_value(),
+            pool_size=_LIMITER_POOL_SIZE,
+            max_overflow=_LIMITER_MAX_OVERFLOW,
+            pool_pre_ping=True,
+            echo=False,
+            hide_parameters=True,
+        )
 
     @property
     def engine(self) -> AsyncEngine:
         return self._engine
+
+    @property
+    def limiter_engine(self) -> AsyncEngine:
+        """The pool the rate limiters use, and nothing else. See :meth:`__init__`."""
+        return self._limiter_engine
 
     @asynccontextmanager
     async def session(self, household_id: uuid.UUID | None = None) -> AsyncIterator[AsyncSession]:
@@ -291,7 +348,10 @@ class Database:
     async def check_row_level_security(self) -> RowLevelSecurityReport:
         """Report whether this connection is actually subject to the policies.
 
-        Meant for a readiness probe and for ``scripts/provision_app_role.py``. An
+        Called by ``/readyz`` and, in production, at startup (``api/main.py``); also
+        by ``scripts/provision_app_role.py``. Being called is the whole point: for
+        a while it was called by nothing, which made it documentation rather than a
+        control -- and documentation does not fail a deployment. An
         instance whose DSN still names the table owner passes every functional
         test and enforces nothing: the owner bypasses policies unless ``FORCE ROW
         LEVEL SECURITY`` is set, which migration ``0004`` deliberately does not
@@ -311,3 +371,4 @@ class Database:
 
     async def dispose(self) -> None:
         await self._engine.dispose()
+        await self._limiter_engine.dispose()

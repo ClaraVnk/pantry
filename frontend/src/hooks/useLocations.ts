@@ -15,8 +15,26 @@ const NO_LOCATIONS: StorageLocation[] = [];
 export interface LocationsState {
   locations: StorageLocation[];
   loading: boolean;
+  /**
+   * Whether an answer has *ever* arrived, success or failure. Distinct from
+   * `!loading`, which goes back to false on every refresh.
+   *
+   * The inventory screen waits on this before its first paint: locations decide
+   * the order of the groups and populate the filter row, so a list rendered
+   * before they land is rebuilt when they do — and that rebuild was the second
+   * source of cumulative layout shift on the busiest screen.
+   */
+  settled: boolean;
   error: string | null;
   reload: () => void;
+  /**
+   * Insert a location this browser has just created, without a round trip.
+   *
+   * The server has already answered with the row; asking for the list again
+   * would move the content under a user who is about to add their first item.
+   * Sorted on insert to match the server's own order (`sort_order`, then name).
+   */
+  add: (location: StorageLocation) => void;
 }
 
 /**
@@ -35,6 +53,26 @@ export function useLocations(): LocationsState {
 
   const reload = useCallback(() => {
     setNonce((value) => value + 1);
+  }, []);
+
+  const add = useCallback((location: StorageLocation) => {
+    setResult((previous) => {
+      // Nothing held yet means the first GET is still in flight, and it was
+      // issued before this creation — so it may or may not contain the new row.
+      // Its answer decides; merging into a list that does not exist would only
+      // let the two disagree. Unreachable in practice: the only caller is the
+      // empty state, which is not shown until a list has arrived.
+      if (previous === null) return previous;
+      if (previous.locations.some((entry) => entry.id === location.id)) return previous;
+      return {
+        ...previous,
+        // The creation succeeded, so whatever error the list carried is stale.
+        error: null,
+        locations: [...previous.locations, location].sort((a, b) =>
+          a.name.localeCompare(b.name, 'fr'),
+        ),
+      };
+    });
   }, []);
 
   useEffect(() => {
@@ -61,7 +99,9 @@ export function useLocations(): LocationsState {
   return {
     locations: result?.locations ?? NO_LOCATIONS,
     loading: result?.nonce !== nonce,
+    settled: result !== null,
     error: result?.error ?? null,
     reload,
+    add,
   };
 }

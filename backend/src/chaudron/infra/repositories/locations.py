@@ -6,10 +6,11 @@ import uuid
 from collections.abc import Sequence
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from chaudron.domain.models import InventoryLot, StorageLocation
-from chaudron.domain.ports import LocationSummary
+from chaudron.domain.ports import LocationDraft, LocationNameTakenError, LocationSummary
 
 
 class SqlLocationRepository:
@@ -52,6 +53,38 @@ class SqlLocationRepository:
             LocationSummary(id=row.id, name=row.name, kind=row.kind, item_count=row.item_count)
             for row in rows
         ]
+
+    async def create(self, household_id: uuid.UUID, draft: LocationDraft) -> LocationSummary:
+        """Insert one active location and return it, already counted at zero.
+
+        ``sort_order`` keeps its ``0`` default, so the list stays ordered by name
+        (:meth:`list_with_counts` sorts on ``sort_order, name``). Reordering by
+        hand is a feature nobody has asked for; alphabetical is what a household
+        that has just created "Cave" and "Frigo" expects, and it costs no extra
+        query to compute a rank nothing would use.
+
+        The savepoint is not decoration. ``uq_storage_location_name`` is enforced
+        by PostgreSQL, and an ``IntegrityError`` aborts the transaction it is
+        raised in -- which is the request's own, the one the ``409`` still has to
+        be written from. Rolling back to a savepoint leaves the outer transaction
+        usable, and it also expunges the rejected instance, so no later flush
+        replays the same ``INSERT``.
+
+        **The ``add`` belongs inside the ``async with``, and moving it out is the
+        bug this shape exists to avoid.** ``Session.begin_nested`` flushes the
+        session while taking its snapshot -- *before* the ``SAVEPOINT`` reaches
+        the server. An instance added beforehand is therefore inserted by that
+        flush, outside the savepoint, and the savepoint protects nothing.
+        """
+        location = StorageLocation(household_id=household_id, name=draft.name, kind=draft.kind)
+        try:
+            async with self._session.begin_nested():
+                self._session.add(location)
+                await self._session.flush()
+        except IntegrityError as exc:
+            raise LocationNameTakenError(draft.name) from exc
+
+        return LocationSummary(id=location.id, name=location.name, kind=location.kind, item_count=0)
 
     async def exists(self, household_id: uuid.UUID, location_id: uuid.UUID) -> bool:
         found = await self._session.scalar(

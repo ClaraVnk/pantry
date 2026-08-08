@@ -1,0 +1,114 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Ce jeton d'accès est déjà configuré.",
+      "reauth_successful": "La ré-authentification a réussi",
+      "reconfigure_successful": "La reconfiguration a réussi"
+    },
+    "error": {
+      "cannot_connect": "Échec de connexion",
+      "insufficient_scope": "Ce jeton fonctionne, mais il n'a pas été créé avec la portée `inventory:read`. Créez-en un nouveau avec au moins `inventory:read`, plus `shopping:read` et `shopping:write` pour la liste de courses et `budget:read` pour le capteur de dépenses.",
+      "invalid_auth": "L'instance a refusé ce jeton d'accès. Il a peut-être été révoqué ou a expiré, ou la personne qui l'a créé a quitté le foyer.",
+      "invalid_token_format": "Un jeton d'accès Chaudron commence par `chdr_`. Celui-ci ressemble à autre chose.",
+      "invalid_url": "Saisissez l'adresse complète de votre instance Chaudron, `https://` compris.",
+      "unknown": "Erreur inattendue"
+    },
+    "step": {
+      "reauth_confirm": {
+        "data": {
+          "access_token": "Jeton d'accès"
+        },
+        "data_description": {
+          "access_token": "Un nouveau jeton d'accès machine pour le même foyer."
+        },
+        "description": "Le jeton de {url} n'est plus accepté. Créez-en un nouveau dans Chaudron, dans Réglages, Jetons d'accès, puis collez-le ici.",
+        "title": "Ré-authentifier Chaudron"
+      },
+      "reconfigure": {
+        "data": {
+          "access_token": "Jeton d'accès",
+          "url": "URL de l'instance"
+        },
+        "data_description": {
+          "access_token": "Le jeton d'accès machine que cette intégration utilisera.",
+          "url": "L'adresse de votre instance Chaudron, par exemple https://chaudron.example.org."
+        },
+        "description": "Faire pointer cette entrée vers une autre instance ou un autre foyer.",
+        "title": "Reconfigurer Chaudron"
+      },
+      "user": {
+        "data": {
+          "access_token": "Jeton d'accès",
+          "url": "URL de l'instance"
+        },
+        "data_description": {
+          "access_token": "Créez-en un dans Chaudron, dans Réglages, Jetons d'accès. Cochez `inventory:read`, et aussi `shopping:read`, `shopping:write` et `budget:read` si vous voulez la liste de courses et le capteur de dépenses. Le jeton n'est affiché qu'une fois.",
+          "url": "L'adresse de votre instance Chaudron, par exemple https://chaudron.example.org."
+        },
+        "description": "Connectez un foyer Chaudron pour retrouver son stock, ses dates de péremption et sa liste de courses dans Home Assistant.",
+        "title": "Connecter Chaudron"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "expiring_within_days": "Bientôt périmé, en jours",
+          "scan_interval_minutes": "Intervalle de mise à jour, en minutes"
+        },
+        "data_description": {
+          "expiring_within_days": "Jusqu'où regarde le capteur « bientôt périmé ». Trois jours suffisent pour prévoir un repas autour de ce qu'il faut manger.",
+          "scan_interval_minutes": "À quelle fréquence Home Assistant interroge votre instance. Un garde-manger change quelques fois par jour : interroger plus vite ne fait guère que consommer le temps de votre serveur."
+        },
+        "description": "Ces réglages ne concernent que Home Assistant. Rien ici ne modifie quoi que ce soit dans Chaudron.",
+        "title": "Options Chaudron"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "items_in_stock": {
+        "name": "Articles en stock",
+        "unit_of_measurement": "articles"
+      },
+      "expiring_soon": {
+        "name": "Bientôt périmés",
+        "unit_of_measurement": "articles"
+      },
+      "expired": {
+        "name": "Périmés",
+        "unit_of_measurement": "articles"
+      },
+      "next_expiry": {
+        "name": "Prochaine péremption"
+      },
+      "shopping_list_items": {
+        "name": "Articles sur la liste de courses",
+        "unit_of_measurement": "articles"
+      },
+      "food_spend": {
+        "name": "Dépenses alimentaires ({currency})"
+      }
+    },
+    "todo": {
+      "shopping_list": {
+        "name": "Liste de courses"
+      }
+    }
+  },
+  "exceptions": {
+    "item_not_found": {
+      "message": "Cet article n'est plus sur la liste de courses Chaudron."
+    },
+    "item_without_identifier": {
+      "message": "Cet article ne peut pas être modifié car il ne porte aucun identifiant."
+    },
+    "rename_not_supported": {
+      "message": "Chaudron ne peut pas renommer « {summary} ». Supprimez l'article et ajoutez-le à nouveau, ou renommez-le dans Chaudron."
+    },
+    "shopping_write_failed": {
+      "message": "Chaudron a refusé la modification : {error}"
+    }
+  }
+}

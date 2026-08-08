@@ -1,0 +1,202 @@
+# Dependabot — keep the pins moving.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FILE IS PART OF THE SUPPLY-CHAIN STORY, NOT A CONVENIENCE
+# ---------------------------------------------------------------------------
+# Every GitHub Action used by this repository is pinned to a full commit SHA,
+# which is the correct thing to do: a tag can be moved, and `@v4` is a promise
+# the action's author can break retroactively.
+#
+# Pinning without a watcher is how a repository ends up frozen on a vulnerable
+# version forever. When this file was added, the pins had drifted by whole major
+# versions — actions/checkout v5.1.0 against v7.0.1, setup-uv v7.6.0 against
+# v9.0.0, cosign-installer v3.9.1 against v4.1.2, and the gitleaks action from
+# 8.24.3 to 8.30.1. Nothing had told anybody, because a SHA pin never expires
+# and never warns.
+#
+# So the pin is the control and this file is what keeps the control current.
+# Dependabot rewrites the SHA *and* the trailing `# vX.Y.Z` comment, so a bump
+# stays reviewable in the diff.
+#
+# ---------------------------------------------------------------------------
+# READ BEFORE MERGING A GITLEAKS BUMP
+# ---------------------------------------------------------------------------
+# `.gitleaks.toml` documents a behavioural change that lands in gitleaks 8.30.1,
+# and it is a change to how a SECURITY CONTROL behaves, not a bug fix:
+#
+#   Today (8.24.3, the pinned version) a top-level `[[allowlists]]` array and
+#   the `condition = "AND"` key are honoured ONLY inside `[[rules.allowlists]]`.
+#   At the top level they parse without complaint and are then IGNORED. The
+#   current configuration is written around that: it scopes the fake test
+#   credentials by PATH only, having deliberately removed the regexes that a
+#   top-level allowlist would have applied to every file in every commit of the
+#   history — where they would have swallowed a genuine all-lowercase Anthropic
+#   key.
+#
+#   8.30.1 changes that handling. A bump therefore does not merely update a
+#   binary: it can change which findings the history scan reports, in either
+#   direction, with no test failure to show for it.
+#
+# The reviewer's job on a gitleaks bump is to re-read `.gitleaks.toml` against
+# the new version's allowlist semantics and re-run BOTH scans — the working-tree
+# pass and the history pass — before merging. `open-pull-requests-limit: 1` on
+# this ecosystem and the dedicated label exist to make that PR arrive alone
+# rather than buried in a batch of five.
+version: 2
+
+updates:
+  # -------------------------------------------------------------------------
+  # GitHub Actions — the SHA pins in .github/workflows/
+  # -------------------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      # Conventional Commits, matching the repository's own history.
+      prefix: ci
+    groups:
+      # Patch and minor bumps of first-party actions arrive as one PR: five
+      # separate PRs for five `actions/*` patch bumps is how a review queue
+      # stops being read.
+      actions-minor:
+        patterns:
+          - "actions/*"
+          - "astral-sh/*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Majors are NOT grouped and NOT ignored — they simply arrive on their
+      # own, because a major bump of an action can change its inputs and its
+      # permissions requirements. Nothing is listed here on purpose: an
+      # `ignore` entry is a pin nobody revisits, which is the failure this file
+      # exists to prevent.
+
+  # -------------------------------------------------------------------------
+  # gitleaks — separated on purpose. See the note at the top of this file.
+  # -------------------------------------------------------------------------
+  # A bump here can silently change which secrets the history scan reports,
+  # because `.gitleaks.toml` is written against 8.24.3's allowlist semantics and
+  # 8.30.1 changes them. One PR at a time, labelled so it cannot be waved
+  # through with the rest.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
+      - security
+      - needs-manual-verification
+    commit-message:
+      prefix: ci
+    allow:
+      - dependency-name: "gitleaks/gitleaks-action"
+
+  # -------------------------------------------------------------------------
+  # Python — the backend lockfile
+  # -------------------------------------------------------------------------
+  # `pip-audit` in CI reports a vulnerability in a pinned dependency; it does not
+  # raise the pin. This is what raises it.
+  #
+  # `uv` is the ecosystem that understands `uv.lock`, which is the file this
+  # project actually resolves from. If the Dependabot job log rejects it, the
+  # fallback is `pip` against `backend/pyproject.toml` — it updates the
+  # declared ranges but not the lock, so the lock has to be regenerated in the
+  # same PR for CI's `uv sync --locked` to pass.
+  - package-ecosystem: uv
+    directory: "/backend"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - backend
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+    groups:
+      backend-dev:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+      backend-runtime:
+        dependency-type: production
+        update-types:
+          - patch
+
+  # -------------------------------------------------------------------------
+  # JavaScript — the PWA
+  # -------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:30"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - frontend
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+    groups:
+      frontend-dev:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+      frontend-runtime:
+        dependency-type: production
+        update-types:
+          - patch
+
+  # -------------------------------------------------------------------------
+  # Base images in backend/Containerfile
+  # -------------------------------------------------------------------------
+  # `python:3.14-slim-bookworm` and the uv builder image receive security fixes
+  # under the same tag, but a rebuild only happens when something triggers one.
+  # This turns "the base image moved" into a pull request.
+  #
+  # TO VERIFY ON THE FIRST RUN: the `docker` ecosystem discovers files named
+  # `Dockerfile`; support for the OCI-standard `Containerfile` name has not been
+  # confirmed against this repository. If the Dependabot job log reports no
+  # manifests found in /backend, the fix is a `Dockerfile` symlink rather than
+  # renaming the file — `podman build -f backend/Containerfile` and ops/README.md
+  # both reference the current name.
+  #
+  # NOT COVERED BY ANYTHING HERE: the image pins in `ops/*.container`
+  # (postgres:16, caddy:2-alpine). Dependabot does not read quadlets. Both are
+  # major-version tags that receive upstream fixes in place, and both are pulled
+  # deliberately rather than automatically — chaudron-db.container spells out
+  # why. Their review is a calendar item, not a pull request.
+  - package-ecosystem: docker
+    directory: "/backend"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - container
+    commit-message:
+      prefix: build

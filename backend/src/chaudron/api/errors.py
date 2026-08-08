@@ -19,16 +19,23 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from chaudron.domain.ports import (
     BarcodeNotFoundError,
+    ConstraintViolationDetectedError,
     DomainError,
     ExpiryDateInconsistentError,
     HouseholdNotFoundError,
+    InfantTextureInconsistentError,
     InvalidBarcodeError,
     InvalidQuantityError,
     InventoryConflictError,
     InventoryItemNotFoundError,
+    LocationNameTakenError,
     LocationNotFoundError,
+    MemberNotFoundError,
+    MemberNotInHouseholdError,
+    NoSuggestionWithinConstraintsError,
     ProductCatalogUnavailableError,
     ProductNotFoundError,
+    RecipeSuggestionNotFoundError,
     RetailerInternalBarcodeError,
     UnknownUnitError,
     UnsupportedRemovalReasonError,
@@ -116,6 +123,218 @@ def unauthorized(detail: str = HOUSEHOLD_NOT_RESOLVED_DETAIL) -> ProblemError:
     )
 
 
+#: One sentence for "no cookie", "unknown session", "expired", "idle-expired",
+#: "revoked" and "the account was disabled". Six distinguishable answers would
+#: tell a caller holding a stale cookie which of the six happened, and telling a
+#: stranger that a session *existed* is already more than they had.
+NOT_AUTHENTICATED_DETAIL: Final = "Authentication is required. Sign in and try again."
+
+
+def authentication_required() -> ProblemError:
+    """``401``: there is no live session behind this request."""
+    return ProblemError(
+        slug="authentication-required",
+        title="Authentication required",
+        status=401,
+        detail=NOT_AUTHENTICATED_DETAIL,
+    )
+
+
+#: One sentence for "no such token", "revoked", "expired", "issued by an account
+#: since disabled", "issued by somebody no longer a member of that household" and
+#: "the household was archived". The six are one branch in
+#: ``chaudron_resolve_machine_token`` (migration ``0011``), so they are
+#: indistinguishable by *timing* as well as by wording -- a Python post-filter
+#: would have found the row first, and the difference between "found then
+#: rejected" and "not found" is measurable.
+TOKEN_NOT_ACCEPTED_DETAIL: Final = (
+    # The suppression below is on a message, not on a credential: this constant
+    # holds one sentence shown to a client, and S105 looks only at the name.
+    "This access token is not valid for this request. It may have been revoked or "  # noqa: S105
+    "have expired; issue a new one from the household settings."
+)
+
+
+def token_not_accepted() -> ProblemError:
+    """``401``: a bearer token was presented and is not usable here.
+
+    Also the answer when a token is presented to a route that declares no scopes
+    at all -- creating or revoking a token, reading the household's members,
+    asking for a recipe suggestion. Those routes are not "forbidden to this
+    token", they are **closed to every token**, and saying so with the same 401
+    as an unknown value keeps a holder from learning which of the two it hit.
+
+    ``WWW-Authenticate`` is set because RFC 9110 requires it on a 401 and because
+    a well-behaved client uses it to know it should stop retrying with the same
+    credential.
+    """
+    return ProblemError(
+        slug="token-not-accepted",
+        title="Access token not accepted",
+        status=401,
+        detail=TOKEN_NOT_ACCEPTED_DETAIL,
+        headers={"WWW-Authenticate": 'Bearer realm="chaudron"'},
+    )
+
+
+def insufficient_scope(required: list[str], granted: list[str]) -> ProblemError:
+    """``403``: the token is valid, and was not issued for this.
+
+    The one place a token holder is told something specific, and deliberately so:
+    the caller already holds the token, so ``granted`` tells them nothing they
+    could not read from ``GET /v1/tokens``, and ``required`` is what turns "403"
+    into "re-issue it with ``inventory:write``". Withholding it here would buy no
+    secrecy and cost every integrator an hour.
+
+    Distinct from :func:`token_not_accepted` on purpose. ``401`` means "this
+    credential is not usable"; ``403`` means "it is, and it does not cover this".
+    Collapsing the two would tell somebody holding a revoked token that their
+    scopes were wrong, and send them to re-issue rather than to look at the
+    revocation.
+    """
+    return ProblemError(
+        slug="insufficient-scope",
+        title="Insufficient token scope",
+        status=403,
+        detail=(
+            "This access token was not issued with the scope this request needs. "
+            "Create a new token with the missing scope."
+        ),
+        headers={
+            "WWW-Authenticate": (
+                f'Bearer realm="chaudron", error="insufficient_scope", scope="{" ".join(required)}"'
+            )
+        },
+        required_scopes=required,
+        granted_scopes=granted,
+    )
+
+
+def invalid_credentials() -> ProblemError:
+    """``401`` on sign-in, identical for an unknown address and a wrong password.
+
+    The bodies match byte for byte and the *timings* match too -- the service
+    burns one Argon2 verification whether or not an account was found
+    (``services/auth.py``). Either half alone leaves the endpoint an enumerator.
+    """
+    return ProblemError(
+        slug="invalid-credentials",
+        title="Invalid credentials",
+        status=401,
+        detail="That email address and password do not match an account.",
+    )
+
+
+def household_forbidden() -> ProblemError:
+    """``403``: authenticated, but not a member of the household named.
+
+    Deliberately the same answer whether the household does not exist or simply
+    is not this account's. The check runs against the caller's own membership
+    list, so the two cases are not merely reported alike -- they are literally
+    the same branch, and no future edit can pull them apart by accident.
+    """
+    return ProblemError(
+        slug="household-forbidden",
+        title="Household not accessible",
+        status=403,
+        detail="This account is not a member of the household requested.",
+    )
+
+
+def insufficient_role(required: str, held: str) -> ProblemError:
+    """``403``: a member of the household, and not one who may do this.
+
+    Distinct from :func:`household_forbidden`, and the difference is deliberate.
+    "Not a member" must stay indistinguishable from "no such household", because
+    telling the two apart is an existence oracle on somebody else's home. "A
+    member, with the wrong role" discloses nothing the caller does not already
+    know: they can read their own role from ``GET /v1/auth/session``, which lists
+    it for every household they belong to. Saying so turns a dead end into "ask an
+    owner", which is the only action available.
+
+    ``held`` is echoed for the same reason ``granted`` is echoed on
+    :func:`insufficient_scope`: withholding a value the caller can already read
+    buys no secrecy and costs an afternoon.
+    """
+    return ProblemError(
+        slug="insufficient-role",
+        title="Insufficient role",
+        status=403,
+        detail=(
+            f"This account is a {held} of the household and this operation needs "
+            f"at least {required}. Ask an owner of the household to perform it."
+        ),
+        required_role=required,
+        held_role=held,
+    )
+
+
+def household_selection_required(households: list[dict[str, str]]) -> ProblemError:
+    """``409``: several households, and the request named none of them.
+
+    Listing them is not a disclosure: they are the caller's own memberships, and
+    the same list is served by ``GET /v1/auth/session``. It saves the client a
+    second round trip at the exact moment it discovers it needs one.
+    """
+    return ProblemError(
+        slug="household-selection-required",
+        title="Household selection required",
+        status=409,
+        detail=(
+            "This account belongs to several households. Name the one to use in the "
+            "X-Household-Id header."
+        ),
+        households=households,
+    )
+
+
+def no_household() -> ProblemError:
+    """``403``: authenticated, and a member of nothing.
+
+    Reachable after an owner removes the last membership of an account that is
+    still signed in. Not a ``404``: the account is fine, it simply has nothing to
+    open.
+    """
+    return ProblemError(
+        slug="no-household",
+        title="No household",
+        status=403,
+        detail="This account does not belong to any household.",
+    )
+
+
+def csrf_token_invalid() -> ProblemError:
+    """``403``: a state-changing request arrived without a valid CSRF token.
+
+    The regression this closes is one introduced by authentication itself. While
+    the API was authorised by ``X-Household-Id``, a custom header, cross-site
+    forgery was impossible by construction -- a third-party form cannot set a
+    header. A cookie is ambient authority: the browser attaches it to a request
+    the user never made. ``SameSite=Lax`` covers most of it and not all of it
+    (browsers that ignore the attribute, a same-site subdomain the operator does
+    not control), so the token is checked explicitly on every unsafe method.
+    """
+    return ProblemError(
+        slug="csrf-token-invalid",
+        title="CSRF token missing or invalid",
+        status=403,
+        detail=(
+            "This request changes state and carried no valid X-CSRF-Token header. "
+            "Read the token from the session endpoint and send it back."
+        ),
+    )
+
+
+def email_already_registered() -> ProblemError:
+    """``409`` on registration. Knowingly an oracle; see ``services/auth.py``."""
+    return ProblemError(
+        slug="email-already-registered",
+        title="Email already registered",
+        status=409,
+        detail="An account already exists for this email address.",
+    )
+
+
 def problem_for_body_too_large(limit_bytes: int) -> ProblemError:
     """``413``, quoting the bound so a client can act rather than guess."""
     return ProblemError(
@@ -171,6 +390,16 @@ def problem_for(error: DomainError) -> ProblemError:
                 title="Storage location not found",
                 status=404,
                 detail="No storage location with this identifier belongs to this household.",
+            )
+        case LocationNameTakenError():
+            return ProblemError(
+                slug="location-name-taken",
+                title="Storage location already exists",
+                status=409,
+                detail=(
+                    "This household already has an active storage location with that "
+                    "name. Names are compared without regard to case."
+                ),
             )
         case InventoryItemNotFoundError():
             return ProblemError(
@@ -242,6 +471,78 @@ def problem_for(error: DomainError) -> ProblemError:
                 title="Concurrent inventory change",
                 status=409,
                 detail="Another change to the same lot won the race. Retry the request.",
+            )
+        # -- Dietary constraints (contract v1.1) ---------------------------- #
+        #
+        # Not one of the four quotes an allergen, a diet or an age band. A
+        # problem body is read by a client that may log it, and the reason this
+        # feature exists is that these facts have a physical cost when they are
+        # wrong -- they have a social one when they are published.
+        case MemberNotFoundError():
+            return ProblemError(
+                slug="member-not-found",
+                title="Household member not found",
+                status=404,
+                detail="No member with this identifier belongs to this household.",
+            )
+        case MemberNotInHouseholdError():
+            return ProblemError(
+                slug="member-not-in-household",
+                title="Member not in this household",
+                status=422,
+                detail=(
+                    "One of the member identifiers does not belong to this household. "
+                    "Suggestions are not generated for a partial selection."
+                ),
+            )
+        case InfantTextureInconsistentError():
+            return ProblemError(
+                slug="infant-texture-inconsistent",
+                title="Inconsistent infant texture",
+                status=422,
+                detail=(
+                    "infant_texture is required for an infant age band and must be null "
+                    "for any other."
+                ),
+            )
+        case NoSuggestionWithinConstraintsError():
+            # 409, and deliberately not an error page. The stock is fine, the
+            # provider is fine; the two simply do not intersect today, and the
+            # interface has to say which class of constraint emptied the
+            # inventory instead of showing a failure.
+            return ProblemError(
+                slug="no-suggestion-within-constraints",
+                title="No suggestion within these constraints",
+                status=409,
+                detail=(
+                    "Every product in the selected stock was set aside by the dietary "
+                    "constraints of the people you are cooking for. Nothing was "
+                    "suggested rather than something unsafe."
+                ),
+                reasons=list(error.reasons),
+                products_withheld=error.withheld,
+            )
+        case ConstraintViolationDetectedError():
+            return ProblemError(
+                slug="constraint-violation-detected",
+                title="Suggestion failed the post-generation check",
+                status=502,
+                detail=(
+                    "The model returned ingredients this application could not match "
+                    "back to the stock it was given. The suggestions were discarded "
+                    "whole rather than served with a caveat. Retry, or choose another "
+                    "model."
+                ),
+            )
+        case RecipeSuggestionNotFoundError():
+            # Same body whether the suggestion never existed or belongs to another
+            # household: two distinguishable answers would let a caller probe the
+            # existence of somebody else's rows one identifier at a time.
+            return ProblemError(
+                slug="recipe-suggestion-not-found",
+                title="Recipe suggestion not found",
+                status=404,
+                detail="No recipe suggestion with this identifier belongs to this household.",
             )
         case HouseholdNotFoundError():
             return unauthorized()

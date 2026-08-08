@@ -1,0 +1,45 @@
+# Home Assistant's own conventions, not the backend's.
+#
+# The integration is read alongside core components far more often than
+# alongside `backend/src`, so it follows the line length and the target version
+# core uses rather than the ones `backend/pyproject.toml` sets. It is also a
+# separate tree with a separate lifecycle: a custom component has to run on the
+# oldest Python a supported Home Assistant release ships, which is 3.13.
+
+target-version = "py313"
+line-length = 88
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "C4",  # comprehensions
+    "SIM", # simplify
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific
+    "D",   # pydocstyle -- core requires a docstring on every module and callable
+]
+ignore = [
+    "D203", # incompatible with D211
+    "D213", # incompatible with D212
+    # "Return the ..." on a property reads as a method call that is not one.
+    # Half the callables here are properties, and a noun phrase is the correct
+    # English for them, so the rule would be satisfied by making the prose worse.
+    "D401",
+]
+
+[lint.pydocstyle]
+convention = "pep257"
+
+[lint.isort]
+known-first-party = ["custom_components", "tests"]
+force-sort-within-sections = true
+combine-as-imports = true

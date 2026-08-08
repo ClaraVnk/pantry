@@ -1,0 +1,539 @@
+# Chaudron — TLS termination, reverse proxy and PWA hosting.
+#
+#   install -m 0644 ops/Caddyfile.example ~chaudron/chaudron/caddy/Caddyfile
+#
+# Read by `ops/chaudron-proxy.container`. The admin API is off (below), so a
+# configuration change needs `systemctl --user restart chaudron-proxy.service`,
+# not `caddy reload`.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS FILE EXISTS AT ALL
+# ---------------------------------------------------------------------------
+# Until it did, the deployment had no TLS anywhere and `frontend/dist/` had no
+# host. Both halves of that matter, and the PWA is where it bites first:
+#
+#   * A service worker only registers in a *secure context*. Over plain HTTP,
+#     outside `localhost`, the Workbox setup in `frontend/vite.config.ts` is
+#     inert: no offline mode, no install prompt, no precache.
+#   * `getUserMedia` is secure-context only too, so the barcode scanner — the
+#     feature the whole "add a product" flow rests on — never gets a camera.
+#   * `Strict-Transport-Security`, emitted by
+#     `backend/src/chaudron/api/middleware.py`, is ignored by every browser when
+#     it arrives over HTTP. By specification. The backend was emitting a header
+#     that could not take effect.
+#
+# ---------------------------------------------------------------------------
+# TWO DOCUMENTS, OPPOSITE RULES
+# ---------------------------------------------------------------------------
+#   /        the public landing page — indexable, shareable, no user data
+#   /app/    the application — one household's private data behind every screen
+#   /v1/     the API — proxied to the backend container, never published direct
+#
+# Everything below exists to keep that distinction true at the HTTP layer, where
+# it is enforced, rather than only in the HTML, where it is merely requested.
+# See docs/public-page-and-indexing.md and docs/adr/0011-*.md.
+#
+# ---------------------------------------------------------------------------
+# WHY THE PROXY, AND NOT THE API, CARRIES THE FRONTEND'S HEADERS
+# ---------------------------------------------------------------------------
+# The API sets its own headers on its own responses and they pass through
+# untouched. It cannot set anything on the frontend's, because nothing was
+# serving the frontend. That origin is the one that matters most: it is where
+# the service worker lives, where a cross-site script would become *persistent*
+# by poisoning the Workbox precache, and where `localStorage` keeps a
+# household's preferences. It had no CSP, no `nosniff` and no HSTS for the
+# simple reason that nothing was serving it.
+#
+# `defer` on every `header` block is what keeps this proxy from fighting the
+# upstream over the two headers both of them set: the ops here run after the
+# handler has written its own, so exactly one copy reaches the wire.
+#
+# ---------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------
+# Read at config-load time from the quadlet's EnvironmentFile
+# (`~chaudron/chaudron/caddy.env`, see ops/README.md §7):
+#
+#   CHAUDRON_SITE_HOST     public hostname, e.g. chaudron.example.tld. Must
+#                          already resolve to this host: ACME HTTP-01 answers
+#                          on :80 at that name during the first start.
+#   CHAUDRON_ACME_EMAIL    address Let's Encrypt uses for expiry warnings
+#   CHAUDRON_API_UPSTREAM  container:port of the API on chaudron-net
+#                          (default: chaudron:8000)
+
+# NOTE ON ORDER: the two (…) snippets below are defined BEFORE the site block
+# that imports them. The Caddyfile adapter resolves `import` as it parses, so a
+# snippet declared after its first use fails the whole config with
+# `File to import not found: app_csp`. Verified with `caddy validate`.
+# ---------------------------------------------------------------------------
+# Content-Security-Policy — the application origin
+# ---------------------------------------------------------------------------
+# Derived from what the built bundle in `frontend/dist/` actually does. Every
+# relaxation is there because something breaks without it; re-check the browser
+# console after any frontend change that adds a dependency.
+#
+#   script-src 'self' 'wasm-unsafe-eval'
+#       The barcode reader is a ~1 MB WebAssembly module
+#       (assets/zxing_reader-*.wasm), served from this origin rather than a CDN.
+#       Compiling WebAssembly requires `'wasm-unsafe-eval'`; without it the
+#       scanner fails with a CSP violation and no other symptom. Safari before
+#       16.4 does not know that keyword and would need `'unsafe-eval'` — a
+#       strictly worse trade, deliberately not taken: those clients lose the
+#       scanner, not the application. There are no inline scripts in
+#       dist/app/index.html — verified against the built output — so no
+#       'unsafe-inline' and no nonce plumbing.
+#
+#   style-src 'self' 'unsafe-inline'
+#       Inline styles are permitted because the landing page's CSS is inline by
+#       design and component styles reach the same directive. `'unsafe-inline'`
+#       on styles is a far smaller hole than on scripts: it permits defacement,
+#       not execution. Replace with a hash once the markup settles.
+#
+#   img-src 'self' data: blob:  /  media-src 'self' blob:
+#       The camera stream is attached to <video> as a MediaStream and captured
+#       frames go through createObjectURL. ADD `https://images.openfoodfacts.org`
+#       to img-src if and when product thumbnails are rendered from Open Food
+#       Facts directly — today the built bundle references no external image
+#       host, so listing one would be a permission granted for nothing.
+#
+#   connect-src 'self'
+#       Correct for the same-origin deployment this file describes, where
+#       VITE_API_BASE_URL is this very origin. If the API is published on a
+#       different hostname, list that origin here explicitly — and never widen
+#       to `*`, which re-opens every exfiltration path this directive closes.
+#
+#   worker-src 'self' blob:
+#       /sw.js is same-origin; the decoder spawns a worker from a blob URL.
+#
+#   frame-ancestors / base-uri / object-src / form-action
+#       Clickjacking, base-tag hijacking, plugin content, and exfiltration by
+#       injected <form>. The application posts through fetch, so form-action has
+#       nothing legitimate to allow.
+#
+#   report-to csp-endpoint / report-uri /csp-report
+#       Both, deliberately. `report-to` is what Chromium reads and needs the
+#       `Reporting-Endpoints` header in (baseline_headers); `report-uri` is
+#       deprecated and is still the only one Firefox and Safari implement. A
+#       policy carrying neither fails exactly the way this file fears elsewhere:
+#       silently. The endpoint is served by this proxy — see the @cspReport
+#       route below for what it does and does not capture.
+(app_csp) {
+	Content-Security-Policy "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; report-to csp-endpoint; report-uri /csp-report"
+}
+
+# ---------------------------------------------------------------------------
+# Content-Security-Policy — the public landing page
+# ---------------------------------------------------------------------------
+# `frontend/index.html` is JavaScript-free by design and carries its CSS in an
+# inline <style> block, so this policy is the stricter of the two on scripts and
+# the looser on styles.
+#
+# `script-src 'none'` is the interesting line: it turns "we did not add a
+# bundle" into something a browser enforces. The JSON-LD block in the page is a
+# data block, not a script, and is unaffected by script-src.
+#
+# The inline <style> is why `'unsafe-inline'` appears. Hashing it instead
+# (`'sha256-…'`) is strictly better and was not done on purpose: the landing
+# page is under active edit, and a hash that goes stale renders an unstyled page
+# with no error anyone would notice. Pin the hash once the page settles.
+(landing_csp) {
+	Content-Security-Policy "default-src 'none'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; report-to csp-endpoint; report-uri /csp-report"
+}
+
+{
+	email {$CHAUDRON_ACME_EMAIL}
+
+	# Chaudron never needs the admin API in a deployment. Leaving it on means a
+	# second control plane — one that rewrites the whole running configuration —
+	# listening on the container's loopback, reachable by anything that ends up
+	# executing inside this container.
+	admin off
+
+	servers {
+		# Caddy is the first hop from the internet, so it must trust NOBODY's
+		# forwarded headers — and trusting nobody is already the default, so the
+		# correct configuration here is silence.
+		#
+		# An earlier draft wrote `trusted_proxies static private_ranges` under a
+		# comment claiming that was the default and that it prevented a client
+		# from dictating `X-Forwarded-For`. Both halves were wrong, and in the
+		# dangerous direction: `trusted_proxies` GRANTS trust, and
+		# `private_ranges` grants it to 10/8, 172.16/12, 192.168/16 and 127/8.
+		#
+		# That is not theoretical here. Under rootless Podman the source address
+		# this container observes can be the network gateway rather than the real
+		# peer — a private address. Every internet client would then arrive from
+		# a trusted range, Caddy would believe whatever `X-Forwarded-For` they
+		# sent, and it would pass that value to the API, which trusts Caddy by
+		# `FORWARDED_ALLOW_IPS`. The CalDAV authentication-failure limiter keys on
+		# that address (api/routers/calendar.py), so its bucket would become a
+		# field the attacker fills in. A rate limiter keyed on a client-controlled
+		# value is not a rate limiter.
+		#
+		# IF a proxy is ever placed in front — a tunnel, a load balancer — name
+		# ITS address and nothing else:
+		#
+		#   trusted_proxies static 10.89.7.1
+		#
+		# Never a range, and never `private_ranges`: the point is to trust one
+		# known hop, not everything that happens to be addressed privately.
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Access logging — filtered, because the unfiltered version is the finding.
+# ---------------------------------------------------------------------------
+# The API now runs with `--no-access-log` (backend/Containerfile): its access
+# lines carried a GTIN in the query string, a calendar feed identifier in the
+# path and a `household_id` on every line, into journald, with no retention,
+# where an article 17 erasure against the database does not reach.
+#
+# Turning the API's log off and leaving the proxy's at its default would have
+# moved the same data one container to the left. So:
+#
+#   * the query parameters that carry identifiers are dropped by name;
+#   * client IPs are masked to /24 and /48 — enough to tell one network from
+#     another during an incident, not enough to follow a person;
+#   * `Authorization`, `Cookie` and `X-Household-Id` never appear;
+#   * `/caldav/*` is skipped entirely (`log_skip` below): the feed identifier is
+#     IN THE PATH, and no field filter can redact a path.
+#
+# Retention is journald's job, not this file's:
+# ops/journald.conf.d/chaudron-retention.conf.
+(filtered_log) {
+	log {
+		output stderr
+		format filter {
+			wrap console
+			fields {
+				request>uri query {
+					delete gtin
+					delete barcode
+					delete code
+					delete token
+				}
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+				request>headers>X-Household-Id delete
+			}
+		}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Headers that apply to the whole origin.
+# ---------------------------------------------------------------------------
+(baseline_headers) {
+	header {
+		defer
+
+		# One year, subdomains included. `preload` is deliberately absent: it is
+		# a one-way commitment on the whole domain, submitted out of band, and
+		# undoing it takes months. Add it once the domain is certain.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+		# Stops a browser re-typing a response. The attack it closes is
+		# uploading something that sniffs as HTML and getting it executed on
+		# this origin.
+		X-Content-Type-Options "nosniff"
+
+		# API paths carry inventory, GTIN and calendar-feed identifiers; the
+		# landing page links out to GitHub. Neither should hand the next host a
+		# URL from this instance. The HTML carries `<meta name="referrer">` too —
+		# this is the half that also covers images, stylesheets and fetches.
+		Referrer-Policy "no-referrer"
+
+		# Legacy twin of `frame-ancestors 'none'`, for browsers that never
+		# learned CSP level 2.
+		X-Frame-Options "DENY"
+
+		# The scanner needs the camera. Nothing else needs anything.
+		#
+		# Every feature named here is one Chrome actually recognises. `battery=()`
+		# was in an earlier draft and is deliberately gone: Chrome logs
+		# `Unrecognized feature: 'battery'` on EVERY page load, so it hardened
+		# nothing and filled the console of every user with noise — which is how a
+		# console stops being read, and how the next real warning gets missed.
+		# Check a new directive against the browser console before adding it.
+		Permissions-Policy "accelerometer=(), autoplay=(), camera=(self), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=()"
+
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+
+		# Names the group that `report-to csp-endpoint` in both CSP snippets
+		# refers to. Without this header the `report-to` directive names a group
+		# that does not exist and Chromium discards the report — which looks
+		# exactly like "no violations".
+		#
+		# Absolute URL on purpose: the Reporting API takes a URL, and a relative
+		# one is not portable across browsers the way `report-uri`'s is.
+		Reporting-Endpoints `csp-endpoint="https://{$CHAUDRON_SITE_HOST}/csp-report"`
+
+		# Caddy's own advertisement. Nothing downstream needs it.
+		-Server
+	}
+}
+
+# ---------------------------------------------------------------------------
+# The site.
+# ---------------------------------------------------------------------------
+# A bare hostname means automatic HTTPS: Caddy obtains and renews a Let's
+# Encrypt certificate over HTTP-01 on :80, redirects :80 to :443 for everything
+# else, and staples OCSP. Certificates and account keys live in /data, a
+# persistent volume — losing it forces re-issuance, which Let's Encrypt rate
+# limits.
+{$CHAUDRON_SITE_HOST} {
+	import baseline_headers
+	import filtered_log
+
+	# -----------------------------------------------------------------------
+	# Client-supplied provenance headers, deleted before anything reads them.
+	# -----------------------------------------------------------------------
+	# Not having `trusted_proxies` set is what makes Caddy REWRITE
+	# `X-Forwarded-For` and `X-Forwarded-Proto` with the values it observed,
+	# discarding whatever the client sent. That is verified, and it covers those
+	# two headers only.
+	#
+	# `X-Real-IP` and `Forwarded` are not in that set. Caddy neither sets nor
+	# strips them, so a client's value arrives at the API byte for byte —
+	# measured: `X-Real-IP: 6.6.6.6` sent from curl reaches the upstream intact
+	# while `X-Forwarded-For` is correctly replaced by the real peer.
+	#
+	# Nothing in the backend reads either header today, which is precisely why
+	# this is worth two lines now. `request.headers["X-Real-IP"]` is the most
+	# common way anyone has ever written "get the client's address behind a
+	# proxy"; the day someone adds it, every rate limiter keyed on that address
+	# becomes forgeable, and the diff that does it will not mention the proxy.
+	#
+	# Delete, do not rewrite: the API learns the peer address from uvicorn's
+	# `--proxy-headers` handling of `X-Forwarded-For`, gated on
+	# `FORWARDED_ALLOW_IPS`. A second, differently-gated source of the same fact
+	# is how the two end up disagreeing.
+	request_header -X-Real-IP
+	request_header -Forwarded
+
+	encode zstd gzip
+
+	root * /srv
+
+	# Proxy-side ceiling on a request body, independent of the application's own
+	# bounds and applied before a single byte reaches Python.
+	#
+	# Sized against the largest legitimate v1 request: the shopping-list import
+	# accepts a 1 MiB document (CHAUDRON_SHOPPING_IMPORT_MAX_BYTES), arriving as
+	# multipart and therefore slightly larger. 2 MiB leaves room for the
+	# envelope and nothing else.
+	#
+	# RAISE THIS — and only then — when the inbound-email webhook ships: that
+	# route accepts CHAUDRON_INBOUND_EMAIL_MAX_BYTES (10 MiB) of attachment.
+	# Raise it with a matcher on that one route, never globally, or every
+	# endpoint inherits a ten-megabyte budget.
+	request_body {
+		max_size 2MiB
+	}
+
+	# -----------------------------------------------------------------------
+	# API. Same origin as the frontend, which is what keeps CORS out of the
+	# picture entirely: CHAUDRON_CORS_ORIGINS stays empty, no preflight, no
+	# credentialed cross-origin request to get wrong.
+	#
+	# The application's own responses already carry their CSP and cache
+	# directives; nothing here overrides them beyond the deferred baseline.
+	# -----------------------------------------------------------------------
+	@api path /v1/* /healthz /readyz /docs /docs/* /openapi.json
+	handle @api {
+		header {
+			defer
+			X-Robots-Tag "noindex, nofollow, noarchive"
+		}
+		reverse_proxy {$CHAUDRON_API_UPSTREAM:chaudron:8000}
+	}
+
+	# -----------------------------------------------------------------------
+	# CalDAV. Split out from @api for two reasons: the feed identifier is in the
+	# path and must never be logged, and CalDAV clients use methods (PROPFIND,
+	# REPORT, MKCALENDAR) worth keeping visible in one place.
+	# -----------------------------------------------------------------------
+	@caldav path /caldav/* /.well-known/caldav
+	handle @caldav {
+		log_skip
+		header {
+			defer
+			X-Robots-Tag "noindex, nofollow, noarchive"
+		}
+		reverse_proxy {$CHAUDRON_API_UPSTREAM:chaudron:8000}
+	}
+
+	# -----------------------------------------------------------------------
+	# The application: never indexed, never cached.
+	# -----------------------------------------------------------------------
+	# `X-Robots-Tag` is the half that matters. The `<meta name="robots">` tag in
+	# app/index.html only reaches a crawler that fetched and parsed the
+	# document; the header reaches one that only issued a HEAD, and it applies
+	# to responses that are not HTML at all.
+	#
+	# Note what neither can do: `robots.txt` asks crawlers not to fetch /app/,
+	# which means a crawler that obeys it never sees the noindex. That is a
+	# known and accepted trade-off here — /app/ is a single constant path with
+	# no identifiers in it, so a URL-only listing would disclose nothing.
+	# Re-read this the day the application gains client-side routing that puts
+	# an identifier in a URL.
+	#
+	# `try_files` is scoped inside this block on purpose: a site-wide SPA
+	# fallback would serve the application shell for `/` and quietly replace the
+	# public page with it.
+	@app path /app /app/*
+	handle @app {
+		header {
+			defer
+			X-Robots-Tag "noindex, nofollow, noarchive, noimageindex"
+			Cache-Control "no-store"
+			import app_csp
+		}
+		try_files {path} {path}/index.html /app/index.html
+		file_server
+	}
+
+	# The service worker must never be served stale, or an instance pins itself
+	# to an old build: a cached `sw.js` is a deployment that can never be
+	# replaced, and Workbox's `cleanupOutdatedCaches` cannot run from a worker
+	# the browser refuses to re-fetch.
+	@sw path /sw.js /registerSW.js /manifest.webmanifest
+	handle @sw {
+		header {
+			defer
+			Cache-Control "no-cache"
+			import app_csp
+		}
+		file_server
+	}
+
+	# Hashed bundle chunks. Immutable by construction: the hash changes when the
+	# content does.
+	@assets path /assets/*
+	handle @assets {
+		header {
+			defer
+			Cache-Control "public, max-age=31536000, immutable"
+			import app_csp
+		}
+		file_server
+	}
+
+	# -----------------------------------------------------------------------
+	# CSP violation sink.
+	# -----------------------------------------------------------------------
+	# WHAT THIS IS: the endpoint both CSP snippets name. It answers 204 and
+	# reads nothing, so each violation becomes one access-log line — which is
+	# the whole point. A CSP regression is otherwise the quietest failure on
+	# this origin: the browser blocks a resource, the page renders slightly
+	# wrong or not at all, and no server-side signal exists anywhere.
+	#
+	# WHAT THIS IS NOT: a collector. Caddy cannot log a request body without a
+	# plugin, so the line records THAT a policy was violated and by which user
+	# agent, never WHICH directive. That is enough to notice a regression, and
+	# not enough to diagnose one — for that, open the browser console (§7.4).
+	# Pointing `report-uri` at a real collector is the follow-up; the directive
+	# is here now so the day that lands is a one-line change and not a
+	# rediscovery that reporting was never wired at all.
+	#
+	# It is unauthenticated by construction: the browser sends the report before
+	# any application code runs, so there is nothing to authenticate it with.
+	# Anyone can therefore POST here and produce log lines. Bounded by the 2 MiB
+	# body cap above and by journald's retention cap
+	# (ops/journald.conf.d/chaudron-retention.conf); if it is ever abused, the
+	# answer is `log_skip` here, not removing the directive from the policy.
+	@cspReport {
+		path /csp-report
+		method POST
+	}
+	handle @cspReport {
+		header {
+			defer
+			X-Robots-Tag "noindex, nofollow, noarchive"
+		}
+		respond 204
+	}
+
+	# Everything else: the landing page and its static companions. The only
+	# handler that does not set X-Robots-Tag, on purpose.
+	handle {
+		header {
+			defer
+			import landing_csp
+		}
+
+		# Brand and marketing images — the mark, the favicons, the Open Graph
+		# card, the product screenshots. Unlike /assets/* these carry no content
+		# hash, so they get a finite lifetime instead of `immutable`: a
+		# regenerated logo has to be able to reach a browser that already saw the
+		# old one. Without this they were served with no cache directive at all,
+		# which Lighthouse reports as ~128 kB re-fetched on every visit.
+		@publicImages path /icon.svg /favicon.ico /apple-touch-icon.png /icon-*.png /social-preview.png /screenshots/*
+		header @publicImages {
+			defer
+			Cache-Control "public, max-age=604800"
+		}
+
+		# The landing page and the two crawler files: revalidated every visit.
+		# They are small and conditional requests are cheap, and an edit to the
+		# public page must not take a week to surface.
+		@publicDocs path / /index.html /robots.txt /sitemap.xml
+		header @publicDocs {
+			defer
+			Cache-Control "public, max-age=0, must-revalidate"
+		}
+
+		file_server
+	}
+
+	# -----------------------------------------------------------------------
+	# Error responses.
+	# -----------------------------------------------------------------------
+	# `handle_errors` is a SEPARATE route tree. Nothing declared in the site
+	# block above runs inside it — not `import baseline_headers`, not `encode`.
+	# An earlier version of this file imported `landing_csp` here and a comment
+	# claimed the gap was closed; it was closed by exactly one header out of
+	# nine. Measured against Caddy v2.11.4, a 404 carried its CSP and nothing
+	# else: no HSTS, no `nosniff`, no `Referrer-Policy`, no `X-Frame-Options`,
+	# no `Permissions-Policy`, no COOP/CORP — and `-Server` never applied, so
+	# the response advertised `Server: Caddy`.
+	#
+	# That combination matters more here than anywhere else on the origin. A 404
+	# is the single easiest response to make a victim load — any link to any path
+	# produces one — and it was the one response that did NOT pin HTTPS. A
+	# browser whose first contact with this host is an error page therefore
+	# learned no HSTS policy at all, which is the whole window `max-age` exists
+	# to close.
+	#
+	# `encode` is imported for the same structural reason: the error body is the
+	# landing page, ~22 kB, and it was going out uncompressed on every error
+	# while the identical bytes on a 200 were compressed to a few hundred.
+	#
+	# Re-check both after any change here, against a running instance:
+	#   curl -sSI https://host/nope | wc -l          # expect the full header set
+	#   curl -sSI -H 'Accept-Encoding: gzip' https://host/nope | grep -i content-encoding
+	handle_errors {
+		import baseline_headers
+		encode zstd gzip
+
+		header {
+			defer
+			import landing_csp
+		}
+		rewrite * /index.html
+		file_server
+	}
+}
+
+# Optional: keep the bare public page reachable without the application at all.
+# Useful when the instance is on a private network and only the project page is
+# meant to face the internet.
+#
+# www.{$CHAUDRON_SITE_HOST} {
+# 	redir https://{$CHAUDRON_SITE_HOST}{uri} permanent
+# }

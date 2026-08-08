@@ -1,0 +1,114 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This access token is already configured.",
+      "reauth_successful": "Re-authentication was successful",
+      "reconfigure_successful": "Re-configuration was successful"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "insufficient_scope": "This token works, but it was not issued with the `inventory:read` scope. Issue a new one with at least `inventory:read`, plus `shopping:read` and `shopping:write` for the shopping list and `budget:read` for the spend sensor.",
+      "invalid_auth": "The instance refused this access token. It may have been revoked or have expired, or the account that issued it may have left the household.",
+      "invalid_token_format": "A Chaudron access token starts with `chdr_`. This looks like something else.",
+      "invalid_url": "Enter the full address of your Chaudron instance, including `https://`.",
+      "unknown": "Unexpected error"
+    },
+    "step": {
+      "reauth_confirm": {
+        "data": {
+          "access_token": "Access token"
+        },
+        "data_description": {
+          "access_token": "A new machine access token for the same household."
+        },
+        "description": "The token for {url} is no longer accepted. Issue a new one in Chaudron, under Settings, Access tokens, and paste it here.",
+        "title": "Re-authenticate Chaudron"
+      },
+      "reconfigure": {
+        "data": {
+          "access_token": "Access token",
+          "url": "Instance URL"
+        },
+        "data_description": {
+          "access_token": "The machine access token this integration will use.",
+          "url": "The address of your Chaudron instance, for example https://chaudron.example.org."
+        },
+        "description": "Point this entry at another instance or another household.",
+        "title": "Reconfigure Chaudron"
+      },
+      "user": {
+        "data": {
+          "access_token": "Access token",
+          "url": "Instance URL"
+        },
+        "data_description": {
+          "access_token": "Create one in Chaudron under Settings, Access tokens. Tick `inventory:read`, and also `shopping:read`, `shopping:write` and `budget:read` if you want the shopping list and the spend sensor. The token is shown once.",
+          "url": "The address of your Chaudron instance, for example https://chaudron.example.org."
+        },
+        "description": "Connect a Chaudron household so its stock, expiry dates and shopping list appear in Home Assistant.",
+        "title": "Connect Chaudron"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "expiring_within_days": "Expiring soon, in days",
+          "scan_interval_minutes": "Update interval, in minutes"
+        },
+        "data_description": {
+          "expiring_within_days": "How far ahead the expiring-soon sensor looks. Three days is enough to plan a meal around what has to be eaten.",
+          "scan_interval_minutes": "How often Home Assistant asks your instance. A pantry changes a few times a day, so polling faster mostly spends your server's time."
+        },
+        "description": "These settings only affect Home Assistant. Nothing here changes anything in Chaudron.",
+        "title": "Chaudron options"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "items_in_stock": {
+        "name": "Items in stock",
+        "unit_of_measurement": "items"
+      },
+      "expiring_soon": {
+        "name": "Expiring soon",
+        "unit_of_measurement": "items"
+      },
+      "expired": {
+        "name": "Expired",
+        "unit_of_measurement": "items"
+      },
+      "next_expiry": {
+        "name": "Next expiry"
+      },
+      "shopping_list_items": {
+        "name": "Shopping list items",
+        "unit_of_measurement": "items"
+      },
+      "food_spend": {
+        "name": "Food spend ({currency})"
+      }
+    },
+    "todo": {
+      "shopping_list": {
+        "name": "Shopping list"
+      }
+    }
+  },
+  "exceptions": {
+    "item_not_found": {
+      "message": "That item is no longer on the Chaudron shopping list."
+    },
+    "item_without_identifier": {
+      "message": "This item cannot be updated because it carries no identifier."
+    },
+    "rename_not_supported": {
+      "message": "Chaudron cannot rename \"{summary}\". Remove the item and add it again, or rename it in Chaudron."
+    },
+    "shopping_write_failed": {
+      "message": "Chaudron refused the change: {error}"
+    }
+  }
+}

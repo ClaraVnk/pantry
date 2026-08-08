@@ -1,0 +1,253 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.heading {
+  font-size: 1.15rem;
+}
+
+.lead {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.cardName {
+  font-size: 1rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.cardBand {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.cardFacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.cardLine {
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+.cardLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.cardActions {
+  display: flex;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+.cardActions > * {
+  flex: 1;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.formHeading {
+  font-size: 1rem;
+}
+
+.allergenGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-1);
+}
+
+@media (min-width: 480px) {
+  .allergenGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.preferenceNote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35em;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.suggestRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.formActions {
+  display: flex;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+}
+
+.formActions > * {
+  flex: 1;
+}
+
+/* Shopping-list export destination (ADR-0010). */
+
+.consentBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.consentList {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.consentList > li + li {
+  margin-top: 0.25rem;
+}
+
+.consentNote {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.consentDetails {
+  font-size: 0.85rem;
+}
+
+.consentDetails > summary {
+  cursor: pointer;
+  padding: var(--space-1) 0;
+  color: var(--text-muted);
+}
+
+/* Machine access tokens (contract v1.1 §10). */
+
+.tokenReveal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+
+.tokenRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+/* The prefix and the last four characters, side by side with the name. Wraps
+   under it on a narrow phone rather than squeezing the name to two words. */
+.tokenTail {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.scopeList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.scopeList > li::before {
+  content: '· ';
+  color: var(--text-muted);
+}
+
+.scopeGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+}
+
+/* 30em, in em like every other breakpoint here: the threshold has to follow the
+   reader's text size, not the device's pixel count. Two columns of scopes stop
+   being readable below it. */
+@media (min-width: 30em) {
+  .scopeGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.scopeCode {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* The tap targets inside this panel come from `ui.module.css`, which already
+   applies `min-width: var(--tap-target)` and a larger checkbox under
+   `pointer: coarse`. The one control that is not a shared primitive is the
+   read-only token field, and a coarse pointer has to be able to land on it to
+   select the value by hand when the clipboard is refused. */
+@media (pointer: coarse) {
+  .tokenReveal input {
+    min-height: var(--tap-target);
+  }
+
+  .tokenRow {
+    padding: var(--space-4) var(--space-3);
+  }
+}

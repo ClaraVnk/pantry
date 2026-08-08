@@ -4,6 +4,8 @@ import { lookupProduct } from '../../api/endpoints';
 import type { StorageLocation } from '../../api/types';
 import { Button, Callout, EmptyState, LoadingRow } from '../../components/ui';
 import { isRestrictedCirculationNumber } from '../../lib/gtin';
+import { LocationSetup } from '../locations/LocationSetup';
+import { ReceiptsScreen } from '../receipts/ReceiptsScreen';
 import { ManualItemForm, type ItemDraft } from './ManualItemForm';
 import { ScannerView } from './ScannerView';
 import styles from './Add.module.css';
@@ -11,6 +13,7 @@ import styles from './Add.module.css';
 type Stage =
   | { kind: 'choice' }
   | { kind: 'scanning' }
+  | { kind: 'receipt' }
   | { kind: 'looking-up'; gtin: string }
   | { kind: 'form'; draft: ItemDraft }
   | { kind: 'saved'; label: string };
@@ -19,12 +22,19 @@ interface Props {
   locations: StorageLocation[];
   locationsError: string | null;
   onAdded: () => void;
+  onLocationCreated: (location: StorageLocation) => void;
   onGoToInventory: () => void;
 }
 
 const BLANK_DRAFT: ItemDraft = { product: null, gtin: null, source: 'manual', notice: null };
 
-export function AddItemScreen({ locations, locationsError, onAdded, onGoToInventory }: Props) {
+export function AddItemScreen({
+  locations,
+  locationsError,
+  onAdded,
+  onLocationCreated,
+  onGoToInventory,
+}: Props) {
   const [stage, setStage] = useState<Stage>({ kind: 'choice' });
 
   const handleDetected = useCallback((gtin: string) => {
@@ -132,6 +142,14 @@ export function AddItemScreen({ locations, locationsError, onAdded, onGoToInvent
     );
   }
 
+  if (stage.kind === 'receipt') {
+    // The third way in, and the only one that fills the cupboard and the budget
+    // in the same gesture (contract §6ter). It lives here rather than under its
+    // own tab because a receipt *is* an addition to stock — a bulk one — and a
+    // seventh tab on a 390 px screen would cost every other one its label.
+    return <ReceiptsScreen locations={locations} onStockChanged={onAdded} onDone={backToChoice} />;
+  }
+
   if (stage.kind === 'looking-up') {
     return (
       <div className={styles.screen}>
@@ -149,16 +167,34 @@ export function AddItemScreen({ locations, locationsError, onAdded, onGoToInvent
 
   if (stage.kind === 'form') {
     if (locations.length === 0) {
+      // Two different situations, and only one of them is a failure. A household
+      // that simply has no location yet gets the form that creates one; a list
+      // that could not be fetched gets the reason, because creating a location
+      // blind would not help.
+      if (locationsError !== null) {
+        return (
+          <div className={styles.screen}>
+            <h1 className={styles.heading}>Ajouter un article</h1>
+            <Callout tone="danger" title="Emplacements indisponibles">
+              <p>{locationsError}</p>
+              <p>Un article doit être rangé quelque part ; réessayez une fois la liste revenue.</p>
+            </Callout>
+            <Button variant="secondary" onClick={backToChoice}>
+              Retour
+            </Button>
+          </div>
+        );
+      }
       return (
         <div className={styles.screen}>
           <h1 className={styles.heading}>Ajouter un article</h1>
-          <Callout tone="danger" title="Aucun emplacement de stockage">
-            <p>
-              {locationsError ??
-                'Le foyer ne déclare aucun emplacement. Un article doit être rangé quelque part : créez un emplacement côté serveur avant d’ajouter du stock.'}
+          <LocationSetup existing={locations} onCreated={onLocationCreated}>
+            <p className={styles.lead}>
+              Un article doit être rangé quelque part, et ce foyer n’a encore aucun emplacement.
+              Créez-en un : le formulaire d’ajout reprend juste après.
             </p>
-          </Callout>
-          <Button variant="secondary" onClick={backToChoice}>
+          </LocationSetup>
+          <Button variant="ghost" onClick={backToChoice}>
             Retour
           </Button>
         </div>
@@ -210,14 +246,29 @@ export function AddItemScreen({ locations, locationsError, onAdded, onGoToInvent
     <div className={styles.screen}>
       <h1 className={styles.heading}>Ajouter un article</h1>
       <p className={styles.lead}>
-        Deux chemins, également valables : le scan pour les produits emballés, la saisie pour tout
-        ce qui est vendu au poids ou sans code-barres.
+        Trois chemins, également valables : le ticket de caisse pour toutes les courses d’un coup,
+        le scan pour un produit emballé, la saisie pour ce qui est vendu au poids ou sans
+        code-barres.
       </p>
 
       <div className={styles.choices}>
         <button
           type="button"
           className={[styles.choice, styles.choicePrimary].join(' ')}
+          onClick={() => {
+            setStage({ kind: 'receipt' });
+          }}
+        >
+          <span className={styles.choiceTitle}>Importer un ticket de caisse</span>
+          <span className={styles.choiceBody}>
+            Toutes les courses d’un coup, et le montant rejoint votre budget. La photo est lue puis
+            jetée ; vous relisez chaque ligne avant qu’elle n’entre en stock.
+          </span>
+        </button>
+
+        <button
+          type="button"
+          className={styles.choice}
           onClick={() => {
             setStage({ kind: 'scanning' });
           }}

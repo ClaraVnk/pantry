@@ -28,10 +28,12 @@ from chaudron.domain.llm_ports import (
     ProviderContext,
     ProviderNotConfigured,
     ProviderResponseInvalid,
+    TokenUsage,
 )
-from chaudron.infra.llm.base import CompletionRequest, ProviderTransport
+from chaudron.infra.llm.base import Completion, CompletionRequest, ProviderTransport
 from chaudron.infra.llm.http import GuardedHttpClient, HttpFailure, translate_http_status
 from chaudron.infra.llm.settings import LlmSettings
+from chaudron.infra.llm.usage import subtract_cached, token_count
 
 __all__ = [
     "GEMINI_MODELS",
@@ -145,7 +147,7 @@ class GeminiTransport(ProviderTransport):
         self._client = client
         self._secrets = (api_key,) if api_key else ()
 
-    async def complete(self, request: CompletionRequest) -> str:
+    async def complete(self, request: CompletionRequest) -> Completion:
         path = f"/v1beta/models/{self.capabilities.model}:generateContent"
         result = await self._client.post_json(
             path,
@@ -160,7 +162,7 @@ class GeminiTransport(ProviderTransport):
                 provider_label=_LABEL,
                 credentials_hint=_CREDENTIALS_HINT,
             )
-        return self._text_of(result)
+        return Completion(text=self._text_of(result), usage=_usage_of(result))
 
     def _payload(self, request: CompletionRequest) -> dict[str, Any]:
         parts: list[dict[str, Any]] = []
@@ -209,3 +211,23 @@ class GeminiTransport(ProviderTransport):
                 ),
             )
         return joined
+
+
+def _usage_of(payload: dict[str, Any]) -> TokenUsage | None:
+    """Google's ``usageMetadata``, in domain terms.
+
+    ``promptTokenCount`` is the all-in prompt figure and ``cachedContentTokenCount``
+    a subset of it, so the same subtraction as the OpenAI shape applies. Note the
+    camelCase: this is the one adapter whose wire format does not use snake_case,
+    and a key read with the wrong spelling would silently report "unknown" forever.
+    """
+    usage = payload.get("usageMetadata")
+    if not isinstance(usage, dict):
+        return None
+    cached = token_count(usage.get("cachedContentTokenCount"))
+    reported = TokenUsage(
+        input_tokens=subtract_cached(token_count(usage.get("promptTokenCount")), cached),
+        output_tokens=token_count(usage.get("candidatesTokenCount")),
+        cached_input_tokens=cached,
+    )
+    return reported if reported.is_known else None

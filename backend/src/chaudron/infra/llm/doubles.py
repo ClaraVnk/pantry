@@ -55,6 +55,13 @@ SCENARIOS: Final[tuple[str, ...]] = (
 #: SEC-003): providers really do echo the credential they were called with.
 LEAKY_KEY: Final = "sk-ant-contract-DOUBLE-0123456789"
 
+#: What every double reports having consumed, in *its own* vendor vocabulary below.
+#: Deliberately three distinct numbers: a double that answered 1/1/1 would pass
+#: just as well if an adapter read the fields in the wrong order.
+USAGE_INPUT: Final = 1_200
+USAGE_OUTPUT: Final = 340
+USAGE_CACHED: Final = 800
+
 
 def valid_recipe_payload() -> str:
     return json.dumps(
@@ -114,12 +121,30 @@ class _TextBlock:
         self.text = text
 
 
+class _Usage:
+    """Anthropic splits the prompt three ways; the adapter folds writes into input."""
+
+    __slots__ = (
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "input_tokens",
+        "output_tokens",
+    )
+
+    def __init__(self) -> None:
+        self.input_tokens = USAGE_INPUT - 200
+        self.cache_creation_input_tokens = 200
+        self.cache_read_input_tokens = USAGE_CACHED
+        self.output_tokens = USAGE_OUTPUT
+
+
 class _Message:
-    __slots__ = ("content", "stop_reason")
+    __slots__ = ("content", "stop_reason", "usage")
 
     def __init__(self, text: str) -> None:
         self.content = [_TextBlock(text)]
         self.stop_reason = "end_turn"
+        self.usage = _Usage()
 
 
 class _FakeMessages:
@@ -228,7 +253,13 @@ def ollama_transport(scenario: str, *, port_name: str = "RecipeGenerator") -> ht
     """
     return _http_double(
         scenario,
-        lambda text: {"model": "llama3.2", "message": {"role": "assistant", "content": text}},
+        lambda text: {
+            "model": "llama3.2",
+            "message": {"role": "assistant", "content": text},
+            # Ollama counts evaluation, not billing, and has no cache figure at all.
+            "prompt_eval_count": USAGE_INPUT,
+            "eval_count": USAGE_OUTPUT,
+        },
         _payload_for(port_name),
         quota_status=429,
     )
@@ -240,7 +271,17 @@ def chat_completions_transport(
     """The OpenAI / Mistral AI envelope, and their 402 for an exhausted balance."""
     return _http_double(
         scenario,
-        lambda text: {"choices": [{"index": 0, "message": {"role": "assistant", "content": text}}]},
+        lambda text: {
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}}],
+            # `prompt_tokens` is all-in here: it already contains the cached part,
+            # which the adapter has to subtract back out.
+            "usage": {
+                "prompt_tokens": USAGE_INPUT + USAGE_CACHED,
+                "completion_tokens": USAGE_OUTPUT,
+                "total_tokens": USAGE_INPUT + USAGE_CACHED + USAGE_OUTPUT,
+                "prompt_tokens_details": {"cached_tokens": USAGE_CACHED},
+            },
+        },
         _payload_for(port_name),
         quota_status=402,
     )
@@ -250,7 +291,16 @@ def gemini_transport(scenario: str, *, port_name: str = "RecipeGenerator") -> ht
     """Google's ``generateContent`` envelope."""
     return _http_double(
         scenario,
-        lambda text: {"candidates": [{"content": {"role": "model", "parts": [{"text": text}]}}]},
+        lambda text: {
+            "candidates": [{"content": {"role": "model", "parts": [{"text": text}]}}],
+            # camelCase, and an all-in prompt count like the OpenAI shape.
+            "usageMetadata": {
+                "promptTokenCount": USAGE_INPUT + USAGE_CACHED,
+                "candidatesTokenCount": USAGE_OUTPUT,
+                "cachedContentTokenCount": USAGE_CACHED,
+                "totalTokenCount": USAGE_INPUT + USAGE_CACHED + USAGE_OUTPUT,
+            },
+        },
         _payload_for(port_name),
         quota_status=429,
     )

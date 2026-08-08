@@ -7,26 +7,40 @@
 # ---------------------------------------------------------------------------
 # WHY THIS IS A SEPARATE UNIT, AND NOT THE API ENTRYPOINT
 # ---------------------------------------------------------------------------
-# The API runs with AutoUpdate=registry: a new image is pulled and started
-# automatically, within 15 minutes of a merge to `main`, with nobody watching.
+# The API is redeployed automatically: chaudron-verified-update.timer pulls,
+# verifies the cosign signature and restarts the service, within 15 minutes of a
+# merge to `main`, with nobody watching.
 #
 # If migrations ran in the API entrypoint, that pipeline would apply schema
-# changes to production unattended. Podman's automatic rollback would then be
-# actively misleading: it restores the previous *image*, and cannot restore the
-# previous *schema*. You would end up with old code against a new database —
-# usually worse than the failure it was trying to undo.
+# changes to production unattended — and there is no automatic rollback in this
+# deployment at all any more (ops/README.md §5.2), so the failure would simply
+# stand. Even the rollback it used to have would have been actively misleading:
+# it restores the previous *image*, and cannot restore the previous *schema*.
+# Old code against a new database is usually worse than the failure it was
+# trying to undo.
 #
 # So: the image ships without applying anything, and migrations are a deliberate
-# act. `AutoUpdate=` is intentionally absent from this unit.
+# act.
 #
 # Deployment order for a release that carries a migration:
 #   1. systemctl --user start chaudron-migrate.service   (and read the log)
-#   2. let auto-update pick up the API image, or force it:
-#      podman auto-update
+#   2. let the gated timer pick up the API image, or force it:
+#      systemctl --user start chaudron-verified-update.service
 #
 # Which means migrations must be backward compatible with the currently running
 # code, because for a few minutes both will coexist. Expand, migrate, contract —
 # add columns before removing any, never in one release.
+#
+# THIS UNIT AND THE SIGNATURE GATE. It has no `AutoUpdate=` and never had one,
+# which used to mean it sat entirely outside the gate: same `:latest` image, run
+# against the schema, as the OWNER role. It is covered now, and not by a second
+# check — by the fact that the gate deploys from the local store. `:latest` in
+# local storage is either a verified digest or, after a rejection, has been put
+# back onto the last verified one. Podman's default pull policy is `missing`, so
+# this unit runs whatever that tag holds and inherits the guarantee.
+#
+# The exception is a FRESH host, where the gate has never run. That is what
+# ops/README.md §2.4.1 exists for, and why it comes before the first start.
 
 [Unit]
 Description=Chaudron — database migrations (one-shot)
@@ -42,12 +56,24 @@ Network=chaudron-net
 Exec=alembic upgrade head
 
 EnvironmentFile=%h/chaudron/chaudron.env
-Secret=chaudron-database-url,type=env,target=CHAUDRON_DATABASE_URL
+
+# The OWNER's DSN, and the only unit that gets it. A role that cannot create
+# tables cannot run a migration, so this one must be the owner — while the API
+# must not be (row-level security exempts the owner from every policy; see
+# chaudron.container and ops/README.md §6). Two secrets, two names, neither of
+# them the ambiguous `chaudron-database-url` this used to share with the API.
+Secret=chaudron-database-url-owner,type=env,target=CHAUDRON_DATABASE_URL
 
 NoNewPrivileges=true
 DropCapability=ALL
 ReadOnly=true
 Tmpfs=/tmp:rw,size=32M,mode=1777
+
+LogDriver=journald
+
+# A migration is a short, bounded piece of work; if it needs more than this it
+# is rewriting a table, which is a plan to review rather than a limit to raise.
+PodmanArgs=--memory=512m --pids-limit=256
 
 [Service]
 Type=oneshot
@@ -55,6 +81,11 @@ RemainAfterExit=no
 # Fail loudly rather than retrying against a database in an unknown state.
 Restart=no
 TimeoutStartSec=300
+
+MemoryHigh=384M
+MemoryMax=640M
+CPUQuota=100%
+TasksMax=384
 
 # Deliberately no [Install] section: this unit is never enabled, only started
 # on purpose. Enabling it would reintroduce exactly the unattended-migration

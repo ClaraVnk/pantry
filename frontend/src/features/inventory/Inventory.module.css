@@ -27,6 +27,17 @@
   color: var(--text);
 }
 
+/*
+ * The search field stops growing well before the list does: a text input three
+ * times wider than anything ever typed into it reads as a mistake, and the
+ * caret ends up far from the label.
+ */
+@media (min-width: 48em) {
+  .searchRow {
+    max-width: 34rem;
+  }
+}
+
 .summary {
   padding: 0 var(--space-4);
   font-size: 0.85rem;
@@ -53,7 +64,8 @@
   gap: var(--space-2);
   padding: 0 var(--space-1);
   position: sticky;
-  top: 0;
+  /* Just under the app header, not behind it. Falls to 0 when it is not sticky. */
+  top: var(--header-height);
   background: var(--bg);
   padding-block: var(--space-2);
   z-index: 1;
@@ -71,6 +83,22 @@
   letter-spacing: 0.04em;
 }
 
+/*
+ * The first screen a new household sees. Left-aligned rather than centred like
+ * `EmptyState`: this one is asking for a decision and carries a form, and
+ * centred prose above a left-aligned form reads as two unrelated blocks.
+ */
+.firstRunTitle {
+  font-size: 1.15rem;
+  margin-bottom: var(--space-2);
+}
+
+.firstRunBody {
+  font-size: 0.95rem;
+  color: var(--text-muted);
+  max-width: 46ch;
+}
+
 .list {
   list-style: none;
   margin: 0;
@@ -78,6 +106,22 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+/*
+ * 48em: one column of cards has reached its comfortable measure, and the list
+ * can take a second. `auto-fill`, not `auto-fit`: with `auto-fit` a group
+ * holding a single item would stretch that card across the whole row, which is
+ * how a two-column list ends up with one deformed card in it. `auto-fill` keeps
+ * every card the same width whatever the group holds, and a third column
+ * appears on its own once the measured width allows it — no extra breakpoint.
+ */
+@media (min-width: 48em) {
+  .list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+    align-items: start;
+  }
 }
 
 .item {
@@ -89,6 +133,9 @@
   flex-direction: column;
   gap: var(--space-2);
   box-shadow: var(--shadow-sm);
+  /* Establishes the query container used by the action row below. */
+  container-type: inline-size;
+  container-name: item;
 }
 
 .itemExpiring {
@@ -141,6 +188,7 @@
 
 .itemActions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   border-top: 1px solid var(--border);
   padding-top: var(--space-2);
@@ -152,8 +200,151 @@
   font-size: 0.85rem;
 }
 
+/*
+ * A container query, and the reason is concrete rather than fashionable: this
+ * card is 334 px of content on a 390 px phone but 248 px inside a three-column
+ * grid on a 1024 px screen. It gets *narrower* as the window gets wider, so no
+ * `min-width` rule can describe it — a viewport query would relax the layout at
+ * exactly the moment the card tightens.
+ *
+ * Under 16rem of card the three confirmation buttons ("Consommé", "Jeté",
+ * "Annuler") need more room than the row has, so they stack instead of being
+ * squeezed under their own text.
+ */
+@container item (max-width: 16rem) {
+  .itemActions button {
+    flex: 1 1 100%;
+  }
+}
+
 .footer {
   display: flex;
   justify-content: center;
   padding: var(--space-2) 0 var(--space-5);
+}
+
+.adjuster {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.adjusterShortcuts {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.adjusterShortcuts > * {
+  flex: 1;
+  font-size: 0.85rem;
+}
+
+.adjusterRow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.adjusterRow > button {
+  flex: 0 0 var(--tap-target);
+  min-width: var(--tap-target);
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.adjusterField {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.adjusterLabel {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.adjusterHint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.adjusterError {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+/*
+ * The repurchase proposal: docked above the navigation bar, never a modal. It
+ * has no backdrop and no focus trap, so the list underneath stays usable while
+ * it is on screen.
+ */
+.proposal {
+  position: fixed;
+  /* Sits beside the rail, not under it; both terms are 0 while the bar is at the bottom. */
+  left: calc(var(--nav-rail-width) + env(safe-area-inset-left, 0px));
+  right: env(safe-area-inset-right, 0px);
+  bottom: calc(var(--nav-bar-height) + env(safe-area-inset-bottom));
+  z-index: 9;
+  width: auto;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border-top: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+}
+
+.proposalBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.proposalTitle {
+  font-weight: 700;
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.proposalHint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.proposalList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  /*
+   * dvh, never vh: on mobile `100vh` is measured with the URL bar retracted, so
+   * a vh-sized panel is taller than the screen it is on until the user scrolls.
+   */
+  max-height: 40dvh;
+  overflow-y: auto;
+}
+
+.proposalError {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.proposalActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.proposalActions > * {
+  flex: 1;
+  font-size: 0.85rem;
 }

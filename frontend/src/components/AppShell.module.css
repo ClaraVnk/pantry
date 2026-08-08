@@ -1,8 +1,27 @@
+/*
+ * The application shell.
+ *
+ * Mobile first, then widened. The layout geometry it depends on — the height of
+ * the tab bar, the width of the rail, the reading measure — lives in
+ * styles/global.css, because the inventory repurchase panel docks to the same
+ * navigation and the two must not drift apart.
+ *
+ * The navigation moves from the bottom of the screen to the left side entirely
+ * in CSS. The DOM order never changes, so the tab order stays
+ * header → content → navigation on every size.
+ */
+
 .shell {
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg);
+  /*
+   * Clears the rail (0 until it exists) and, in landscape on a notched phone,
+   * the physical cutout as well.
+   */
+  padding-left: calc(var(--nav-rail-width) + env(safe-area-inset-left, 0px));
+  padding-right: env(safe-area-inset-right, 0px);
 }
 
 .header {
@@ -36,7 +55,8 @@
   display: none;
 }
 
-@media (min-width: 560px) {
+/* 35em: measured — the wordmark plus the tagline need this much to share a line. */
+@media (min-width: 35em) {
   .tagline {
     display: block;
     margin-left: auto;
@@ -48,21 +68,43 @@
 .main {
   flex: 1;
   width: 100%;
-  max-width: 720px;
+  max-width: var(--content-max);
   margin: 0 auto;
-  padding-bottom: calc(var(--tap-target) + var(--space-6));
+  /* Clears whatever the navigation currently is; the token is 0 for the rail. */
+  padding-bottom: calc(var(--nav-bar-height) + var(--space-6) + env(safe-area-inset-bottom, 0px));
 }
 
+/*
+ * Narrowest case first: below 22em the six labels cannot share a line without a
+ * tab falling under 44 px, so the bar reflows to two rows of three. Nothing is
+ * dropped or truncated — a label the user cannot read is a label that is not
+ * there.
+ */
 .nav {
   position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   background: var(--surface);
   border-top: 1px solid var(--border);
   padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
   z-index: 10;
+}
+
+@media (min-width: 22em) {
+  /*
+   * One row again. Flex rather than six equal tracks on purpose: the labels are
+   * not the same length, and letting "Inventaire" take the width it needs while
+   * the shorter tabs give some back keeps every target above 44 px down to
+   * 352 px, which equal columns would not.
+   */
+  .nav {
+    display: flex;
+  }
 }
 
 .navButton {
@@ -93,11 +135,80 @@
   line-height: 1;
 }
 
+/*
+ * Hover is a capability of the pointer, not of the window: a touchscreen laptop
+ * is wide and has no hover, and a phone that "hovers" on tap leaves the state
+ * stuck until something else is touched. Keyed on the input device, never on a
+ * width.
+ */
+@media (hover: hover) {
+  .navButton:not(.navButtonActive):hover {
+    background: var(--bg-subtle);
+    color: var(--text);
+  }
+}
+
+/* See global.css: a short window that is too narrow for a rail. */
+@media (max-height: 26em) and (max-width: 40em) {
+  .header {
+    position: static;
+  }
+
+  .nav {
+    position: static;
+  }
+}
+
+/* See global.css for why this query is a comma list rather than a width band. */
+@media (min-width: 64em), (min-width: 40em) and (max-height: 32em) {
+  .header {
+    position: sticky;
+  }
+
+  .nav {
+    position: fixed;
+    top: 0;
+    right: auto;
+    bottom: 0;
+    width: calc(var(--nav-rail-width) + env(safe-area-inset-left, 0px));
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: var(--space-1);
+    border-top: none;
+    border-right: 1px solid var(--border);
+    padding: var(--space-2) var(--space-1);
+    padding-left: calc(var(--space-1) + env(safe-area-inset-left, 0px));
+    padding-bottom: max(var(--space-2), env(safe-area-inset-bottom));
+    /* Six tabs fit a 390 px-tall landscape phone; taller lists still reach. */
+    overflow-y: auto;
+  }
+
+  .navButton {
+    flex: 0 0 auto;
+    min-height: var(--tap-target);
+    border-top: none;
+    /* The active marker moves to the edge the rail is attached to. */
+    border-left: 3px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-1);
+  }
+
+  .navButtonActive {
+    border-top-color: transparent;
+    border-left-color: var(--accent);
+  }
+}
+
 .skipLink {
   position: absolute;
   left: var(--space-2);
   top: var(--space-2);
   transform: translateY(-200%);
+  display: inline-flex;
+  align-items: center;
+  /* A skip link is the first thing a keyboard or switch user lands on. */
+  min-height: var(--tap-target);
   background: var(--surface);
   color: var(--text);
   padding: var(--space-2) var(--space-3);

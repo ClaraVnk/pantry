@@ -1,27 +1,614 @@
 <!doctype html>
+<!--
+  Chaudron — public landing page.
+
+  This is the ONLY page in the deployment meant to be indexed, and the only one
+  that may be shared. It is deliberately:
+
+    * static — no bundle, no framework, no JavaScript at all. If the application
+      build breaks, this page still renders.
+    * self-contained — its CSS is inline, so there is no render-blocking
+      stylesheet request and nothing to coordinate with src/styles/.
+    * free of user data — it describes the project, never an instance's content.
+
+  The application itself lives at /app/ and carries `noindex`. See
+  docs/public-page-and-indexing.md.
+
+  `__SITE_URL__` is substituted at build time from VITE_SITE_URL (vite.config.ts,
+  `seoAssets` plugin). It has no trailing slash.
+-->
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Chaudron — gestion de stock alimentaire auto-hébergée</title>
+    <meta
+      name="description"
+      content="Chaudron suit ce qu'il y a dans vos placards, scanne les codes-barres depuis le navigateur et propose des recettes à partir du stock réel. Vous l'hébergez, vous branchez votre propre modèle d'IA. Logiciel libre sous AGPL-3.0."
+    />
+    <link rel="canonical" href="__SITE_URL__/" />
+
+    <!-- Public page: indexable, and the only one. Referrer stays off everywhere
+         on this origin, so a shared link never carries an instance URL onward. -->
+    <meta name="robots" content="index, follow" />
+    <meta name="referrer" content="no-referrer" />
+
     <meta name="theme-color" content="#F7F6F3" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#17181C" media="(prefers-color-scheme: dark)" />
-    <meta name="description" content="Inventaire de cuisine et suggestions de recettes." />
-    <!--
-      `apple-mobile-web-app-capable` is deliberately absent.
-      docs/technical-notes-scanning.md §2.2: iOS standalone mode still carries
-      open WebKit bugs on camera permission persistence (#215884) and black
-      video streams (#252465). Running inside Safari keeps the icon on the home
-      screen and keeps the scanner working. Add the tag back only after the
-      on-device check described in the note passes.
-    -->
-    <title>Chaudron</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- `<link rel="manifest">` is injected by vite-plugin-pwa; declaring it
+         here too would emit it twice. -->
+
+    <!-- Open Graph. The concrete win: a link pasted into Slack, Discord or a
+         message renders as a card with the mark, the name and the tagline. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Chaudron" />
+    <meta property="og:locale" content="fr_FR" />
+    <meta property="og:url" content="__SITE_URL__/" />
+    <meta property="og:title" content="Chaudron — gestion de stock alimentaire auto-hébergée" />
+    <meta
+      property="og:description"
+      content="Suivez ce que vous avez, scannez vos codes-barres, obtenez des recettes tirées du stock réel. Chez vous, avec votre propre modèle. Libre, AGPL-3.0."
+    />
+    <meta property="og:image" content="__SITE_URL__/social-preview.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta
+      property="og:image:alt"
+      content="Le logo Chaudron : un chaudron en fonte et son contenu incandescent."
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Chaudron — gestion de stock alimentaire auto-hébergée" />
+    <meta
+      name="twitter:description"
+      content="Suivez ce que vous avez, scannez vos codes-barres, obtenez des recettes tirées du stock réel. Chez vous, avec votre propre modèle. Libre, AGPL-3.0."
+    />
+    <meta name="twitter:image" content="__SITE_URL__/social-preview.png" />
+    <meta
+      name="twitter:image:alt"
+      content="Le logo Chaudron : un chaudron en fonte et son contenu incandescent."
+    />
+
+    <style>
+      /*
+       * Inline on purpose: one request for the whole page, no render-blocking
+       * stylesheet, nothing shared with the application's own CSS. Values come
+       * from assets/README.md and mirror src/styles/global.css so the two
+       * surfaces do not drift apart visually.
+       */
+      :root {
+        color-scheme: light dark;
+
+        --bg: #f7f6f3;
+        --bg-subtle: #efede8;
+        --surface: #ffffff;
+        --border: #e2e0da;
+        --text: #22242a;
+        --text-muted: #5d6470;
+        --accent: #f59e0b;
+        --accent-text: #92400e;
+        --accent-subtle: #fdf3e0;
+        --focus-ring: #1d4ed8;
+
+        --radius-md: 10px;
+        --radius-lg: 16px;
+
+        /* No web font is loaded. The brand face (URW Gothic) is not licensed for
+           the web, and a downloaded font here would buy a swap flash and a
+           blocking request in exchange for nothing a visitor would notice. */
+        --font-body:
+          ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #17181c;
+          --bg-subtle: #1d1f24;
+          --surface: #22242a;
+          --border: #383c45;
+          --text: #f2f2f0;
+          --text-muted: #a2a7b0;
+          --accent-text: #fbbf24;
+          --accent-subtle: #33291a;
+          --focus-ring: #93c5fd;
+        }
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font-body);
+        font-size: 1.0625rem;
+        line-height: 1.65;
+        -webkit-text-size-adjust: 100%;
+      }
+
+      :where(a):focus-visible,
+      :where(button):focus-visible {
+        outline: 3px solid var(--focus-ring);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+
+      .skip {
+        position: absolute;
+        left: -9999px;
+      }
+      .skip:focus {
+        left: 1rem;
+        top: 1rem;
+        z-index: 10;
+        padding: 0.5rem 0.75rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+      }
+
+      .wrap {
+        max-width: 46rem;
+        margin: 0 auto;
+        padding: 0 1.25rem;
+      }
+
+      /* Hero. The mark is an image; the name is real text, because a wordmark
+         PNG would be a picture of a word — unreadable to a crawler, a screen
+         reader and anyone who zooms. */
+      .hero {
+        padding: 3.5rem 0 2.5rem;
+        text-align: center;
+      }
+      .hero img {
+        display: block;
+        margin: 0 auto 1rem;
+      }
+      h1 {
+        font-size: clamp(2.25rem, 7vw, 3.25rem);
+        line-height: 1.1;
+        margin: 0 0 0.5rem;
+        letter-spacing: -0.01em;
+      }
+      .tagline {
+        font-size: clamp(1.125rem, 3.2vw, 1.375rem);
+        color: var(--text-muted);
+        margin: 0 auto 1.75rem;
+        max-width: 34rem;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        justify-content: center;
+      }
+      .btn {
+        display: inline-block;
+        padding: 0.7rem 1.25rem;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--text);
+        font-weight: 600;
+        text-decoration: none;
+        /* Comfortable one-handed target, same floor as the application. */
+        min-height: 44px;
+      }
+      .btn--primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #22242a;
+      }
+      .btn:hover {
+        border-color: var(--text-muted);
+      }
+
+      main section {
+        padding: 2.25rem 0;
+        border-top: 1px solid var(--border);
+      }
+      h2 {
+        font-size: 1.5rem;
+        line-height: 1.25;
+        margin: 0 0 1rem;
+      }
+      p {
+        margin: 0 0 1rem;
+      }
+      a {
+        color: var(--accent-text);
+      }
+
+      .note {
+        background: var(--accent-subtle);
+        border: 1px solid var(--accent);
+        border-radius: var(--radius-md);
+        padding: 1rem 1.25rem;
+        margin: 0 0 1.5rem;
+      }
+      .note p:last-child {
+        margin-bottom: 0;
+      }
+      .note strong {
+        display: block;
+      }
+
+      dl {
+        margin: 0;
+      }
+      dt {
+        font-weight: 600;
+        margin-top: 1.25rem;
+      }
+      dd {
+        margin: 0.25rem 0 0;
+        color: var(--text-muted);
+      }
+
+      pre {
+        background: var(--bg-subtle);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        padding: 1rem;
+        /* Wide content scrolls inside its own box; the page body never does. */
+        overflow-x: auto;
+        font-family: var(--font-mono);
+        font-size: 0.9375rem;
+        line-height: 1.55;
+      }
+      code {
+        font-family: var(--font-mono);
+        font-size: 0.9375em;
+      }
+
+      .shots {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 1.25rem;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .shots img {
+        /* Intrinsic size is declared on the element too. Both together are what
+           stop the layout jumping when a screenshot finishes decoding. */
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-subtle);
+      }
+      .shots figcaption {
+        color: var(--text-muted);
+        font-size: 0.9375rem;
+        margin-top: 0.5rem;
+      }
+      /* The desktop capture is landscape and unreadable squeezed into a phone
+         column, so it sits on its own row rather than in the grid above. */
+      .shot-wide {
+        margin: 1.5rem 0 0;
+      }
+      .shot-wide img {
+        width: 100%;
+        height: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-subtle);
+      }
+      .shot-wide figcaption {
+        color: var(--text-muted);
+        font-size: 0.9375rem;
+        margin-top: 0.5rem;
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 2rem 0 3rem;
+        color: var(--text-muted);
+        font-size: 0.9375rem;
+      }
+      footer a {
+        color: inherit;
+      }
+    </style>
   </head>
+
   <body>
-    <div id="root"></div>
-    <noscript>Chaudron a besoin de JavaScript pour fonctionner.</noscript>
-    <script type="module" src="/src/main.tsx"></script>
+    <a class="skip" href="#contenu">Aller au contenu</a>
+
+    <header class="wrap hero">
+      <img
+        src="/icon.svg"
+        alt="Le chaudron de fonte du logo Chaudron"
+        width="96"
+        height="96"
+        fetchpriority="high"
+      />
+      <h1>Chaudron</h1>
+      <p class="tagline">Vous jetez dedans ce que vous avez. Vous voyez ce qui en sort.</p>
+      <p class="actions">
+        <a class="btn btn--primary" href="https://github.com/ClaraVnk/chaudron"
+          >Le projet sur GitHub</a
+        >
+        <a class="btn" href="#auto-hebergement">Auto-héberger</a>
+        <a class="btn" href="/app/" rel="nofollow">Ouvrir l'application</a>
+      </p>
+    </header>
+
+    <main class="wrap" id="contenu">
+      <section aria-labelledby="quoi">
+        <h2 id="quoi">Ce que fait Chaudron</h2>
+
+        <p>
+          Chaudron tient l'inventaire de ce qu'un foyer a réellement en stock — placards,
+          réfrigérateur, congélateur — et s'en sert pour proposer des recettes. Le tout tourne sur
+          votre serveur, avec le modèle de langage de votre choix.
+        </p>
+
+        <dl>
+          <dt>Suivi du stock</dt>
+          <dd>
+            Ce que vous avez, où c'est rangé, et quand ça périme. La date limite de consommation et
+            la date de durabilité minimale sont deux choses différentes : les confondre, c'est soit
+            s'alarmer pour des pâtes sèches, soit se taire sur de la viande hachée.
+          </dd>
+
+          <dt>Lecture de codes-barres</dt>
+          <dd>
+            Le décodage se fait <strong>dans le navigateur</strong> : le serveur ne reçoit jamais un
+            flux vidéo, seulement treize caractères. Les produits sont résolus via Open Food Facts.
+          </dd>
+
+          <dt>Suggestions de recettes</dt>
+          <dd>
+            Elles partent du stock réellement présent. La disponibilité d'un ingrédient est
+            <strong>recalculée sur votre inventaire</strong>, jamais reprise du modèle sur parole.
+          </dd>
+
+          <dt>Votre modèle, votre clé</dt>
+          <dd>
+            Anthropic, OpenAI, Gemini, Mistral, ou un Ollama local. Il n'existe aucun mode dans
+            lequel le projet paierait l'inférence à votre place — et donc aucun endroit où vos
+            habitudes alimentaires transiteraient par un service tiers que vous ne choisissez pas.
+          </dd>
+
+          <dt>Rappels de péremption sur le téléphone</dt>
+          <dd>
+            Une collection CalDAV de tâches, en lecture seule. Parce qu'elle n'annonce que des
+            tâches, un iPhone la classe dans Rappels et non dans Calendrier.
+          </dd>
+        </dl>
+      </section>
+
+      <section aria-labelledby="donnees">
+        <h2 id="donnees">Vos données ne partent pas</h2>
+        <p>
+          Un inventaire de cuisine dit beaucoup : le budget d'un foyer, ses allergies, ses horaires,
+          le nombre de personnes qui y vivent. Chaudron traite cela comme des données personnelles,
+          pas comme du contenu.
+        </p>
+        <p>
+          Il n'y a pas de cloud Chaudron, pas de compte Chaudron, pas de clé d'API Chaudron.
+          L'instance que vous installez ne parle à personne d'autre que vous et au fournisseur de
+          modèle que vous avez vous-même configuré. Les écrans de l'application ne sont pas
+          indexables : cette page d'accueil est la seule que les moteurs de recherche voient.
+        </p>
+      </section>
+
+      <section aria-labelledby="auto-hebergement">
+        <h2 id="auto-hebergement">Auto-héberger Chaudron</h2>
+
+        <div class="note">
+          <p>
+            <strong>Le projet est jeune, et pas encore exposable sur Internet.</strong>
+            L'authentification n'est pas terminée : installez Chaudron sur un réseau privé, ou
+            derrière votre propre authentification, en attendant.
+          </p>
+        </div>
+
+        <p>
+          Il vous faut <a href="https://docs.astral.sh/uv/">uv</a>,
+          <a href="https://podman.io/">Podman</a> et Node.js 22 ou plus récent.
+        </p>
+
+        <pre><code>git clone https://github.com/ClaraVnk/chaudron.git
+cd chaudron
+cp .env.example .env
+
+podman run -d --name chaudron-db \
+  -e POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
+  -v chaudron-db-data:/var/lib/postgresql/data:Z \
+  -p 127.0.0.1:5432:5432 docker.io/library/postgres:16
+
+cd backend &amp;&amp; uv sync &amp;&amp; uv run alembic upgrade head
+uv run uvicorn chaudron.api.main:app</code></pre>
+
+        <p>
+          Le déploiement visé est PostgreSQL, Podman en rootless et des unités systemd
+          <em>quadlet</em>, sur un petit VPS ou un serveur domestique. La marche à suivre complète
+          est dans le dépôt.
+        </p>
+      </section>
+
+      <section aria-labelledby="captures">
+        <h2 id="captures">À quoi ça ressemble</h2>
+        <p>
+          Des captures de l'application en fonctionnement, prises sur une instance réelle avec un
+          vrai modèle derrière.
+        </p>
+        <!--
+          SCREENSHOT SLOTS. Genuine captures of a running stack
+          (tools/screenshots.py drives a real browser against a real backend,
+          signs in, and photographs what it finds). The file names are the
+          contract — the PWA manifest in vite.config.ts and the JSON-LD at the
+          bottom of this page point at the same ones — so re-run the tool and
+          copy over public/screenshots/ rather than renaming anything here.
+        -->
+        <ul class="shots">
+          <li>
+            <figure style="margin: 0">
+              <img
+                src="/screenshots/inventory.webp"
+                alt="L'écran d'inventaire : une liste de produits avec leur emplacement et leur date de péremption."
+                width="440"
+                height="952"
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>L'inventaire, trié par urgence.</figcaption>
+            </figure>
+          </li>
+          <li>
+            <figure style="margin: 0">
+              <img
+                src="/screenshots/recipes.webp"
+                alt="L'écran des recettes : des suggestions générées à partir du stock disponible."
+                width="440"
+                height="952"
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>Des recettes tirées du stock réel.</figcaption>
+            </figure>
+          </li>
+          <li>
+            <figure style="margin: 0">
+              <img
+                src="/screenshots/courses.webp"
+                alt="L'écran des courses : une liste d'articles à acheter, dont deux repérés à partir du stock qui s'épuise."
+                width="440"
+                height="952"
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>La liste de courses, nourrie par le stock.</figcaption>
+            </figure>
+          </li>
+          <li>
+            <figure style="margin: 0">
+              <img
+                src="/screenshots/add.webp"
+                alt="L'écran d'ajout : saisie manuelle d'un produit ou lecture de son code-barres."
+                width="440"
+                height="952"
+                loading="lazy"
+                decoding="async"
+              />
+              <figcaption>Ajouter au code-barres ou à la main.</figcaption>
+            </figure>
+          </li>
+        </ul>
+
+        <figure class="shot-wide">
+          <img
+            src="/screenshots/inventory-wide.webp"
+            alt="Le même inventaire sur un écran d'ordinateur : la mise en page s'élargit au lieu d'étirer la colonne du téléphone."
+            width="1280"
+            height="800"
+            loading="lazy"
+            decoding="async"
+          />
+          <figcaption>
+            La même application sur grand écran. L'interface est la même, la mise en page suit la
+            largeur disponible.
+          </figcaption>
+        </figure>
+      </section>
+
+      <section aria-labelledby="licence">
+        <h2 id="licence">Libre, et qui le reste</h2>
+        <p>
+          Chaudron est publié sous
+          <a href="https://www.gnu.org/licenses/agpl-3.0.html" rel="license">licence AGPL-3.0</a>.
+          Le choix de l'AGPL plutôt que d'une licence permissive est délibéré : quiconque fait
+          tourner une version modifiée comme service doit en publier le code. Un projet dont
+          l'argument est « vous gardez la main sur vos données » ne peut pas laisser quelqu'un
+          d'autre en faire un service fermé.
+        </p>
+        <p>
+          Le code, les tickets et les contributions sont sur
+          <a href="https://github.com/ClaraVnk/chaudron">github.com/ClaraVnk/chaudron</a>.
+        </p>
+      </section>
+    </main>
+
+    <footer class="wrap">
+      <p>
+        Chaudron — logiciel libre sous AGPL-3.0 —
+        <a href="https://github.com/ClaraVnk/chaudron">code source</a>
+      </p>
+    </footer>
+
+    <!--
+      JSON-LD. Every property below is defined on SoftwareApplication or
+      inherited from CreativeWork/Thing (schema.org). `codeRepository` is NOT one
+      of them — it belongs to SoftwareSourceCode — so the repository is expressed
+      by a second node of that type, linked with `mainEntityOfPage`, rather than
+      by hanging an invalid property off the application.
+    -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "SoftwareApplication",
+            "@id": "__SITE_URL__/#chaudron",
+            "name": "Chaudron",
+            "url": "__SITE_URL__/",
+            "description": "Gestion de stock alimentaire auto-hébergée : inventaire du foyer, lecture de codes-barres dans le navigateur, et suggestions de recettes générées à partir du stock réellement disponible, avec le modèle de langage de votre choix.",
+            "applicationCategory": "LifestyleApplication",
+            "applicationSubCategory": "Gestion de stock alimentaire",
+            "operatingSystem": "Web browser; Linux server (Podman, PostgreSQL)",
+            "softwareVersion": "0.1.0",
+            "inLanguage": "fr",
+            "image": "__SITE_URL__/social-preview.png",
+            "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+            "isAccessibleForFree": true,
+            "softwareRequirements": "PostgreSQL 16, Podman, Node.js 22+, une clé d'API de fournisseur de modèle ou une instance Ollama",
+            "featureList": [
+              "Inventaire par foyer, avec emplacements et dates de péremption",
+              "Lecture de codes-barres décodée dans le navigateur",
+              "Suggestions de recettes recalculées sur le stock réel",
+              "Fournisseur de modèle au choix : Anthropic, OpenAI, Gemini, Mistral ou Ollama local",
+              "Rappels de péremption exposés en CalDAV",
+              "Déploiement auto-hébergé en conteneurs rootless"
+            ],
+            "screenshot": [
+              "__SITE_URL__/screenshots/inventory.webp",
+              "__SITE_URL__/screenshots/recipes.webp",
+              "__SITE_URL__/screenshots/courses.webp",
+              "__SITE_URL__/screenshots/add.webp",
+              "__SITE_URL__/screenshots/inventory-wide.webp"
+            ],
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "EUR"
+            },
+            "sameAs": "https://github.com/ClaraVnk/chaudron",
+            "mainEntityOfPage": { "@id": "__SITE_URL__/#source" }
+          },
+          {
+            "@type": "SoftwareSourceCode",
+            "@id": "__SITE_URL__/#source",
+            "name": "Chaudron",
+            "codeRepository": "https://github.com/ClaraVnk/chaudron",
+            "programmingLanguage": ["Python", "TypeScript"],
+            "license": "https://www.gnu.org/licenses/agpl-3.0.html"
+          }
+        ]
+      }
+    </script>
   </body>
 </html>

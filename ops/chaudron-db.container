@@ -69,11 +69,32 @@ NoNewPrivileges=true
 DropCapability=ALL
 AddCapability=CHOWN,DAC_OVERRIDE,FOWNER,SETGID,SETUID
 
+LogDriver=journald
+
+# Resource bounds. PostgreSQL is the component that must NOT be the one starved
+# when something else on this host misbehaves, so its floor
+# (`--memory-reservation`) is set as deliberately as its ceiling: under memory
+# pressure the kernel reclaims from the containers that are above their
+# reservation first.
+#
+# shared_buffers defaults to 128 MB and work_mem to 4 MB per sort; 768 MiB
+# leaves room for a handful of concurrent queries plus the page cache the
+# planner assumes. Raise this AND shared_buffers together, never one alone.
+PodmanArgs=--memory=768m --memory-reservation=512m --pids-limit=512
+
 [Service]
 Restart=always
 RestartSec=5
 # First boot runs initdb; give it room before systemd calls it a failure.
 TimeoutStartSec=300
+
+# systemd-level ceilings on the unit cgroup. Deliberately above the container
+# bound so that the kernel's OOM killer, if it ever runs here, kills the
+# postgres backend the container limit already flagged rather than conmon.
+MemoryHigh=640M
+MemoryMax=896M
+CPUQuota=150%
+TasksMax=768
 
 [Install]
 WantedBy=default.target

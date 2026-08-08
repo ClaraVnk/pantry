@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Chaudron">
+  <title>Chaudron</title>
+
+  <defs>
+    <!-- Cast iron: lit from above-left, so the belly falls away into shadow. -->
+    <linearGradient id="iron" x1="0.25" y1="0" x2="0.75" y2="1">
+      <stop offset="0" stop-color="#4A4E57"/>
+      <stop offset="0.55" stop-color="#33363D"/>
+      <stop offset="1" stop-color="#22242A"/>
+    </linearGradient>
+
+    <!-- What is cooking. The whole point of the mark is that this glows. -->
+    <radialGradient id="broth" cx="0.5" cy="0.42" r="0.72">
+      <stop offset="0" stop-color="#FFD166"/>
+      <stop offset="0.5" stop-color="#F59E0B"/>
+      <stop offset="1" stop-color="#D9480F"/>
+    </radialGradient>
+
+    <!-- Warm bounce light thrown back onto the inner rim by the contents. -->
+    <linearGradient id="rimGlow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F59E0B" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#F59E0B" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Handles sit behind the body so the body edge stays unbroken. Kept short
+       and hugging the belly: longer arcs read as arms, not as ears. -->
+  <g fill="none" stroke="#2E3138" stroke-width="14" stroke-linecap="round">
+    <path d="M56 112 C 30 120, 30 142, 46 154"/>
+    <path d="M200 112 C 226 120, 226 142, 210 154"/>
+  </g>
+
+  <!-- Legs, short and splayed: a cauldron stands over the fire, it does not sit. -->
+  <g stroke="#22242A" stroke-width="12" stroke-linecap="round">
+    <path d="M84 196 L 72 224"/>
+    <path d="M172 196 L 184 224"/>
+  </g>
+
+  <!-- Belly. -->
+  <path d="M40 112 C 40 186, 78 214, 128 214 C 178 214, 216 186, 216 112 Z" fill="url(#iron)"/>
+
+  <!-- Rim, drawn as a full ellipse: reads as an opening, not a lid. The glow is
+       confined to the inner edge; spread across the whole ring it turned the
+       cast iron a muddy brown. -->
+  <ellipse cx="128" cy="112" rx="88" ry="26" fill="#42464F"/>
+  <ellipse cx="128" cy="113" rx="78" ry="21" fill="url(#rimGlow)"/>
+
+  <!-- The contents. -->
+  <ellipse cx="128" cy="114" rx="72" ry="19" fill="url(#broth)"/>
+
+  <!-- Two ingredients breaking the surface — the "throw in what you have" idea.
+       Kept as simple discs so they survive down to 16 px. -->
+  <circle cx="103" cy="110" r="7.5" fill="#FFF1CC" opacity="0.92"/>
+  <circle cx="146" cy="117" r="5.5" fill="#FFF1CC" opacity="0.78"/>
+
+  <!-- Steam. Three strokes, staggered, thinning as they rise. -->
+  <g fill="none" stroke="#F0B93B" stroke-linecap="round">
+    <path d="M100 78 C 88 62, 112 54, 100 36" stroke-width="10" opacity="0.5"/>
+    <path d="M130 70 C 116 50, 146 40, 132 18" stroke-width="11" opacity="0.72"/>
+    <path d="M160 80 C 150 66, 170 58, 160 42" stroke-width="9" opacity="0.42"/>
+  </g>
+</svg>

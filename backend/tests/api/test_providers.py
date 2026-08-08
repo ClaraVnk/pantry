@@ -16,6 +16,8 @@ import datetime as dt
 import uuid
 
 import httpx
+import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from chaudron.domain.models import (
@@ -34,6 +36,12 @@ CAPABILITIES_URL = "/v1/providers/capabilities"
 #: A household's own key, in the shape a provider issues one.
 STORED_KEY = "sk-ant-api03-this-households-own-key-cafe"
 
+#: Fixed rather than ``now()``: the ordering constraint compares the two, so a
+#: withdrawal has to sit after the agreement it withdraws, and a test that produced
+#: both from the same clock tick would pass on ``>=`` while saying nothing.
+_CONSENT_GRANTED_AT = dt.datetime(2026, 1, 5, 9, 0, tzinfo=dt.UTC)
+_CONSENT_REVOKED_AT = dt.datetime(2026, 3, 17, 18, 30, tzinfo=dt.UTC)
+
 
 async def add_config(
     session: AsyncSession,
@@ -51,6 +59,8 @@ async def add_config(
     last_verified_at: dt.datetime | None = None,
     api_key: str | None = None,
     cipher: CredentialCipher | None = None,
+    consented: bool = True,
+    consent_revoked: bool = False,
 ) -> LlmProviderConfig:
     """Insert a provider configuration; no endpoint creates one in this slice.
 
@@ -62,6 +72,13 @@ async def add_config(
 
     The identifier is generated here rather than at flush time because it is part of
     what the ciphertext is bound to.
+
+    ``consented`` defaults to ``True`` because the sentence almost every caller is
+    writing is "a household with a working provider", and since revision ``0016``
+    such a household has agreed to its data being sent (``services/providers.py``
+    refuses otherwise, for every mode but ``ollama``). The default keeps those tests
+    saying what they meant, and the two consent states get their own tests below
+    rather than being smuggled in as a fixture side effect.
     """
     config_id = uuid.uuid7()
     stored = (
@@ -87,6 +104,8 @@ async def add_config(
         api_key_ciphertext=None if stored is None else stored.ciphertext,
         api_key_last4=None if stored is None else stored.last4,
         api_key_encryption_key_id=None if stored is None else stored.key_id,
+        consented_at=_CONSENT_GRANTED_AT if consented else None,
+        consent_revoked_at=_CONSENT_REVOKED_AT if consent_revoked else None,
     )
     session.add(config)
     await session.flush()
@@ -291,5 +310,105 @@ async def test_the_purpose_binding_decides_between_two_configurations(
     assert bound["model"] == "gpt-4o"
 
 
-async def test_the_endpoint_needs_a_resolved_household(api_client: httpx.AsyncClient) -> None:
-    assert (await api_client.get(CAPABILITIES_URL)).status_code == 401
+async def test_the_endpoint_needs_a_session(anonymous_client: httpx.AsyncClient) -> None:
+    assert (await anonymous_client.get(CAPABILITIES_URL)).status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# Consent (revision 0016)
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_provider_without_a_recorded_consent_is_refused(
+    api_client: httpx.AsyncClient, db_session: AsyncSession, make_household: MakeHousehold
+) -> None:
+    """No agreement on record means the provider is unusable, not merely flagged.
+
+    ``docs/security-model.md`` section 12 makes consent the legal basis for sending
+    anything to a model provider, and requires it to be opt-in. A configuration whose
+    ``consented_at`` is ``NULL`` predates revision 0016 or was written straight to the
+    database; either way nobody agreed, and the row fails closed.
+    """
+    household = await make_household()
+    await add_config(db_session, household, consented=False)
+
+    body = (await api_client.get(CAPABILITIES_URL, headers=household_headers(household))).json()
+
+    assert body["configured"] is False
+    assert body["degraded"] is True
+    reason = body["degraded_reasons"][0]
+    assert "accord" in reason, reason
+    assert "Ollama" in reason, "the remedy must name the mode that needs no consent"
+
+
+async def test_a_withdrawn_consent_stops_the_provider_and_says_so_differently(
+    api_client: httpx.AsyncClient, db_session: AsyncSession, make_household: MakeHousehold
+) -> None:
+    """Withdrawal takes effect at the next request, and reads as a decision.
+
+    The sentence differs from the never-granted one on purpose: telling somebody who
+    has just withdrawn their consent that they never gave any reads as the
+    application having mislaid it.
+    """
+    household = await make_household()
+    await add_config(db_session, household, consent_revoked=True)
+
+    body = (await api_client.get(CAPABILITIES_URL, headers=household_headers(household))).json()
+
+    assert body["configured"] is False
+    assert "retiré son accord" in body["degraded_reasons"][0]
+
+
+async def test_ollama_needs_no_consent_because_it_sends_nothing(
+    api_client: httpx.AsyncClient, db_session: AsyncSession, make_household: MakeHousehold
+) -> None:
+    """ADR-0007's premise, held as a test rather than as an intention.
+
+    A household unwilling to send anything to anybody still gets the whole feature,
+    and ``docs/security-model.md`` states it as a requirement in the same row that
+    demands consent everywhere else: "the ``ollama`` mode must remain fully
+    functional without this consent".
+    """
+    household = await make_household()
+    await add_config(
+        db_session,
+        household,
+        mode=LlmProviderMode.OLLAMA,
+        provider_code="ollama",
+        model="llama3.2-vision",
+        base_url="http://127.0.0.1:11434",
+        max_context_tokens=131072,
+        last_verified_at=dt.datetime(2026, 2, 1, tzinfo=dt.UTC),
+        consented=False,
+    )
+
+    body = (await api_client.get(CAPABILITIES_URL, headers=household_headers(household))).json()
+
+    assert body["configured"] is True, body
+    assert body["mode"] == "ollama"
+
+
+async def test_consent_cannot_be_withdrawn_before_it_was_given(
+    db_session: AsyncSession, make_household: MakeHousehold
+) -> None:
+    """The ordering constraint, exercised rather than asserted from the model.
+
+    The case here is the one the sibling table cannot reach: **withdrawn, having
+    never agreed**. ``shopping_export_target`` forbids it through ``NOT NULL`` and so
+    its constraint needs only ``consent_revoked_at >= consented_at``; on a nullable
+    column that comparison yields NULL, which a CHECK accepts. Written as a test
+    because the first version of this constraint was the verbatim copy, and it
+    admitted the row.
+    """
+    household = await make_household()
+
+    with pytest.raises(IntegrityError) as raised:
+        await add_config(
+            db_session,
+            household,
+            consented=False,
+            consent_revoked=True,
+        )
+
+    assert "revocation_follows_consent" in str(raised.value)
+    await db_session.rollback()

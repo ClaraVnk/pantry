@@ -30,6 +30,7 @@ first place, rather than being neutralised at every one of its readers.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import deque
@@ -40,7 +41,9 @@ from typing import Any, Final, Self
 import httpx
 
 from chaudron.config import Settings
+from chaudron.domain.dietary import assess_allergens, markers_for_categories
 from chaudron.domain.ports import CatalogRecord, ProductCatalogUnavailableError, display_gtin
+from chaudron.domain.shelf_life import family_for_categories
 from chaudron.infra.untrusted_text import sanitize_optional
 
 logger = logging.getLogger(__name__)
@@ -61,11 +64,32 @@ DEFAULT_RETRY_AFTER_SECONDS: Final = 30
 
 _REQUEST_TIMEOUT_SECONDS: Final = 10.0
 
-#: Redirects are followed -- the API answers on a country subdomain and moving the
-#: base URL between them is an operator's prerogative -- but only a couple, and only
-#: within the catalogue's own domain. Unbounded following turns a compromised
-#: upstream into a way to make this server dial an address of its choosing.
-_MAX_REDIRECTS: Final = 2
+#: Redirects are **not** followed, and a 3xx is a failure -- the same rule the two
+#: other outbound clients of this codebase already applied (``infra/llm/http.py``,
+#: ``infra/todo/http.py``).
+#:
+#: This client used to follow up to two hops and check the final host afterwards.
+#: That check ran after the socket was open and the body was read, which is one
+#: request too late: a compromised or hijacked upstream chooses where this server
+#: dials, and the answer is only refused once it has already arrived. Refusing the
+#: hop itself is the version of that control which happens before anything is sent.
+#:
+#: The cost is real and worth stating: an operator who points
+#: ``CHAUDRON_OFF_BASE_URL`` at a host that redirects -- ``openfoodfacts.org``
+#: without the ``world.`` prefix, or an ``http://`` URL -- now gets a clean failure
+#: naming the variable instead of a silent hop. The configured default answers
+#: 200 directly on the ``/api/v3`` path and does not redirect.
+_REDIRECT_HINT: Final = (
+    "set CHAUDRON_OFF_BASE_URL to the host that answers directly "
+    "(https://world.openfoodfacts.org), since redirects are not followed"
+)
+
+#: Ceiling on a single product document. The largest real Open Food Facts products
+#: -- the ones with a full ingredient analysis, every language's labels and the
+#: nutrient tables -- land under 500 kB; this leaves headroom for a fat one and
+#: still refuses a body meant to exhaust this process. Enforced while streaming,
+#: so an unbounded response is abandoned rather than buffered.
+_MAX_RESPONSE_BYTES: Final = 2_000_000
 
 #: Ceilings on the free text the wiki supplies. A product name is a name; a label
 #: longer than this is either vandalism or a description in the wrong field, and in
@@ -128,8 +152,7 @@ class OpenFoodFactsCatalog:
         self._client = client or httpx.AsyncClient(
             timeout=_REQUEST_TIMEOUT_SECONDS,
             headers={"User-Agent": settings.off_user_agent, "Accept": "application/json"},
-            follow_redirects=True,
-            max_redirects=_MAX_REDIRECTS,
+            follow_redirects=False,
         )
         self._limiter = limiter or RateLimiter(MAX_CALLS_PER_MINUTE, RATE_LIMIT_WINDOW_SECONDS)
 
@@ -162,23 +185,33 @@ class OpenFoodFactsCatalog:
         # index is keyed on the unpadded form.
         url = f"{self._base_url}/api/v3/product/{display_gtin(gtin)}"
         try:
-            response = await self._client.get(url)
+            request = self._client.build_request("GET", url)
+            # `follow_redirects` is passed per request, not left to the client: the
+            # client can be supplied by a caller (the tests do), and a guard that a
+            # constructor argument can switch off is not a guard.
+            response = await self._client.send(request, stream=True, follow_redirects=False)
+            try:
+                body = await self._read_bounded(response)
+            finally:
+                await response.aclose()
         except httpx.HTTPError as exc:
             logger.warning("open_food_facts_unreachable", extra={"error": str(exc)})
             raise ProductCatalogUnavailableError(
                 "Open Food Facts is unreachable", retry_after=DEFAULT_RETRY_AFTER_SECONDS
             ) from exc
 
-        if response.history and not _within(response.url.host, self._trusted_suffix):
-            # A redirect off the catalogue's own domain is a body we must not read
-            # and a hop we did not intend. It cannot un-dial the first request, but
-            # it stops the chain and keeps the answer out of the shared table.
+        if httpx.codes.MULTIPLE_CHOICES <= response.status_code < httpx.codes.BAD_REQUEST:
+            # Not a hop: a host we were told to trust asking us to dial another one.
+            # Nothing is followed, so nothing off-domain is ever read.
             logger.warning(
-                "open_food_facts_redirected_off_domain",
-                extra={"final_host": response.url.host},
+                "open_food_facts_redirected",
+                extra={
+                    "status": response.status_code,
+                    "location_host": _location_host(response),
+                },
             )
             raise ProductCatalogUnavailableError(
-                "Open Food Facts redirected off its own domain",
+                f"Open Food Facts answered with a redirect; {_REDIRECT_HINT}",
                 retry_after=DEFAULT_RETRY_AFTER_SECONDS,
             )
 
@@ -193,7 +226,7 @@ class OpenFoodFactsCatalog:
                 retry_after=DEFAULT_RETRY_AFTER_SECONDS,
             )
 
-        payload = _decode(response)
+        payload = _decode(body)
 
         if response.status_code == httpx.codes.NOT_FOUND:
             # v3 distinguishes "no such product" from "the request was wrong";
@@ -217,15 +250,50 @@ class OpenFoodFactsCatalog:
             )
         return _to_record(gtin, product, trusted_suffix=self._trusted_suffix)
 
+    async def _read_bounded(self, response: httpx.Response) -> str:
+        """Read the body, abandoning it past the ceiling rather than buffering it.
 
-def _decode(response: httpx.Response) -> dict[str, Any]:
+        Streamed and counted for the same reason ``infra/llm/http.py`` and
+        ``infra/todo/http.py`` do it: a ``Content-Length`` is a claim, and a body
+        that keeps arriving is how a broken or hostile endpoint takes this process
+        down without ever having to be malicious about it.
+        """
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > _MAX_RESPONSE_BYTES:
+                logger.warning(
+                    "open_food_facts_response_too_large", extra={"limit": _MAX_RESPONSE_BYTES}
+                )
+                raise ProductCatalogUnavailableError(
+                    f"Open Food Facts answered with more than {_MAX_RESPONSE_BYTES} bytes "
+                    "and the response was abandoned",
+                    retry_after=DEFAULT_RETRY_AFTER_SECONDS,
+                )
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _location_host(response: httpx.Response) -> str | None:
+    """The host a refused redirect pointed at, for the log line only."""
+    location = response.headers.get("Location")
+    if not location:
+        return None
+    try:
+        return httpx.URL(location).host or None
+    except httpx.InvalidURL, ValueError:
+        return None
+
+
+def _decode(body: str) -> dict[str, Any]:
     """Parse the body as JSON, or report the service as unavailable.
 
     A banned IP is served an HTML page with a 2xx or 4xx status; decoding it as
     JSON is the failure mode ADR-0008 records as observed in practice.
     """
     try:
-        payload = response.json()
+        payload = json.loads(body)
     except ValueError as exc:
         raise ProductCatalogUnavailableError(
             "Open Food Facts answered with a non-JSON body, which is what a ban looks like",
@@ -292,21 +360,58 @@ def _raw_string(product: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _domain_suffix(base_url: str) -> str:
-    """The registrable-ish domain of the configured catalogue, lower-cased.
+#: The Open Food Facts family of domains, and the *only* configurations for which
+#: this client trusts a host it was not pointed at.
+#:
+#: They are listed rather than derived because the derivation is what broke. The
+#: previous version kept the last two labels of the configured host, and a comment
+#: asserted that "the failure direction that matters is never widening the trust".
+#: It is not: two labels of ``off.example.co.uk`` are ``co.uk``, a public suffix, so
+#: the trusted set became every registrable domain under it -- an image URL pointing
+#: at ``https://attacker.co.uk/x.png`` was accepted and put in an ``<img src>``,
+#: which is AUD-017 (the household's browser announces its IP, User-Agent and
+#: referrer to a host a wiki contributor chose) reopened by configuration. ``com.au``
+#: and ``github.io`` do the same. The default, ``world.openfoodfacts.org``, happens
+#: to reduce correctly, so nothing about it showed.
+#:
+#: The replacement is a comparison rather than a heuristic, and a public-suffix list
+#: is still not a dependency here -- it would only be needed to make the heuristic
+#: safe, and the heuristic is gone. Every entry is a registrable domain: none is a
+#: public suffix, so ``_within`` cannot be widened by one.
+_OPEN_FOOD_FACTS_DOMAINS: Final[tuple[str, ...]] = (
+    "openfoodfacts.org",
+    # The staging deployment, which the project documents for integration work.
+    "openfoodfacts.net",
+    # The sibling catalogues, which share the codebase, the image hosts and the
+    # API shape. Listed so that pointing the client at one keeps its photographs.
+    "openbeautyfacts.org",
+    "openpetfoodfacts.org",
+    "openproductsfacts.org",
+)
 
-    Deliberately a heuristic and not a public-suffix lookup: the last two labels of
-    ``world.openfoodfacts.org`` give ``openfoodfacts.org``, which is what the image
-    hosts and the country subdomains share, and a public-suffix list is a dependency
-    and a data file to keep current for one comparison. A base URL that is already
-    two labels long is used whole rather than reduced to its TLD -- the failure
-    direction that matters is never widening the trust.
+
+def _domain_suffix(base_url: str) -> str:
+    """The host an image is allowed to come from, given the configured catalogue.
+
+    Two answers, and no third:
+
+    * a configured host inside one of :data:`_OPEN_FOOD_FACTS_DOMAINS` trusts that
+      whole registrable domain, because that is the deployment this exists for:
+      ``world.openfoodfacts.org`` answers the API and ``images.openfoodfacts.org``
+      serves the photographs, and a country subdomain moves the first without
+      moving the second;
+    * **anything else trusts exactly the host it was given**, which is the only
+      statement that is true of a host whose registrable boundary this process
+      cannot know. A self-hosted mirror serving its images from a sibling host
+      loses the photographs -- ``_safe_image_url`` returns ``None`` and the
+      interface already renders that as "no photograph". Losing a picture is the
+      correct trade against trusting a stranger's.
     """
     host = (httpx.URL(base_url).host or "").lower()
-    labels = host.split(".")
-    if len(labels) <= 2:
-        return host
-    return ".".join(labels[-2:])
+    for domain in _OPEN_FOOD_FACTS_DOMAINS:
+        if _within(host, domain):
+            return domain
+    return host
 
 
 def _within(host: str | None, suffix: str) -> bool:
@@ -350,6 +455,12 @@ def _to_record(gtin: str, product: dict[str, Any], *, trusted_suffix: str) -> Ca
     without rescanning the article. That raw copy is storage only -- nothing reads
     it into a prompt or a page, and the projected fields above are the sanitised
     ones every reader actually uses.
+
+    The allergen, food-group and keeping-family fields are normalised **here**,
+    at the boundary, for the same reason the free text is: a taxonomy read at
+    every call site is a taxonomy that gets read differently at one of them. The
+    functions doing the work live in the domain, because a product typed in by
+    hand or lifted off a receipt has to be classified by the same rules.
     """
     categories = product.get("categories_tags")
     category_tag = (
@@ -357,6 +468,10 @@ def _to_record(gtin: str, product: dict[str, Any], *, trusted_suffix: str) -> Ca
         if isinstance(categories, list) and categories and isinstance(categories[0], str)
         else None
     )
+    # Never sanitised or truncated: these are matched against closed
+    # vocabularies, and a tag shortened to fit would either stop matching or --
+    # worse -- start matching a different one.
+    allergens = assess_allergens(product)
 
     net_value: Decimal | None = None
     net_unit: str | None = None
@@ -385,5 +500,10 @@ def _to_record(gtin: str, product: dict[str, Any], *, trusted_suffix: str) -> Ca
         category_tag=category_tag,
         net_content_value=net_value,
         net_content_unit_code=net_unit,
+        allergen_state=allergens.state,
+        allergens_contains=allergens.contains,
+        allergens_may_contain=allergens.may_contain,
+        pnns_markers=markers_for_categories(categories, product.get("food_groups_tags")),
+        food_family=family_for_categories(categories),
         payload=product,
     )

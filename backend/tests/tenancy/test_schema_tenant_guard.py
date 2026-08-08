@@ -32,8 +32,29 @@ _TENANT_COLUMN: Final = "household_id"
 GLOBAL_TABLES: Final[dict[str, str]] = {
     "household": "the tenant root itself",
     "user_account": "a person's identity, independent of any household (ADR-0006)",
+    # A session belongs to an *account*, and an account may open two households
+    # (family home and flatshare). Putting a tenant on the session would mean one
+    # login per household, which is the modelling mistake `user_account` exists to
+    # avoid. It also could not work: the session is what *establishes* the tenant,
+    # so a policy keyed on the tenant would have to be satisfied before the tenant
+    # is known (migration `0009`).
+    "user_session": "one signed-in browser, belonging to an account rather than a household",
     "unit": "shared reference data",
     "llm_provider": "shared reference data",
+    # Published public-health guidance and its editions. Per-household copies
+    # would mean a household could hold a *different* answer to "is honey
+    # forbidden before twelve months", which is not a preference (ADR-0009).
+    "nutrition_reference": "published guidance editions, identical for everyone",
+    "pnns_guideline": "published food-group benchmarks, identical for everyone",
+    "infant_food_restriction": "published infant safety rules, identical for everyone",
+    "shelf_life_guideline": "indicative keeping times, identical for everyone",
+    # Not business data, and the keys are the reason: a bucket may be keyed on a
+    # client address seen before any household is known, or on the normalised
+    # e-mail of an account that does not exist. A tenant column would be NULL on
+    # exactly the pre-authentication rows that matter most -- the login and
+    # registration limiters -- and a policy keyed on it would have to be satisfied
+    # before the tenant is known, the same impossibility as `user_session`.
+    "rate_limit_bucket": "shared token buckets, keyed on addresses and accounts, not tenants",
 }
 
 #: Tables where the tenant column may be NULL, with the reason.
@@ -46,6 +67,13 @@ NULLABLE_TENANT_TABLES: Final[dict[str, str]] = {
 #: tenant table lets one household's data collide with -- or disclose -- another's.
 UNIQUE_CONSTRAINT_EXEMPTIONS: Final[dict[str, str]] = {
     "uq_product_gtin_global": "partial index over the public catalogue (household_id IS NULL)",
+    # The digest of a machine token is what *decides* the household (migration
+    # `0011`), so a composite `(household_id, token_hash)` index would have to be
+    # probed with the answer it is being asked for. It is also not a leak of the
+    # kind this guard exists to catch: a collision would need two 256-bit secrets
+    # to hash alike, and the only caller able to trigger the error is one who
+    # already holds the colliding value.
+    "uq_machine_token_token_hash": "the lookup key of a bearer credential, global by necessity",
 }
 
 #: References to a tenant-scoped parent that are *not* composite yet, with the reason.
@@ -65,9 +93,17 @@ SIMPLE_FOREIGN_KEY_EXEMPTIONS: Final[dict[tuple[str, str], str]] = {
     ("recipe_suggestion_ingredient", "product_id"): "same nullable-product hole",
     ("shopping_list_item", "product_id"): "same nullable-product hole",
     ("inventory_lot", "product_id"): "same nullable-product hole",
-    ("shopping_list_item", "origin_recipe_suggestion_id"): "origin trace, not an access path",
-    ("inventory_lot", "source_receipt_line_id"): "origin trace, not an access path",
-    ("stock_movement", "recipe_suggestion_id"): "origin trace, not an access path",
+    ("declined_repurchase", "product_id"): "same nullable-product hole",
+    # The three "origin trace, not an access path" entries that used to sit here
+    # are gone, and the reasoning behind them is worth keeping as a warning. It
+    # was: nothing ever writes these columns from a request, the join back is
+    # scoped so a cross-household value renders as NULL, and all three are
+    # `ON DELETE SET NULL`. Every clause of that is true and none of it is a
+    # schema property -- it is a description of today's service layer, offered as
+    # an argument about what the database permits. PostgreSQL's referential
+    # integrity triggers are not subject to row-level security, so the database
+    # permitted the row; what refused it was code, and code is what this file
+    # exists to stop relying on. Revision `0015` made all three composite.
 }
 
 _ALL_TABLES: Final[tuple[Table, ...]] = tuple(Base.metadata.sorted_tables)

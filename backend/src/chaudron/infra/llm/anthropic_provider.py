@@ -33,8 +33,10 @@ from chaudron.domain.llm_ports import (
     ProviderQuotaExceeded,
     ProviderResponseInvalid,
     ProviderUnavailable,
+    TokenUsage,
 )
-from chaudron.infra.llm.base import CompletionRequest, ProviderTransport
+from chaudron.infra.llm.base import Completion, CompletionRequest, ProviderTransport
+from chaudron.infra.llm.usage import token_count
 
 __all__ = [
     "ANTHROPIC_MODELS",
@@ -137,13 +139,13 @@ class AnthropicTransport(ProviderTransport):
         # interpolated into a message.
         self._secrets = (api_key,) if api_key else ()
 
-    async def complete(self, request: CompletionRequest) -> str:
+    async def complete(self, request: CompletionRequest) -> Completion:
         payload = self._payload(request)
         try:
             message = await self._client.messages.create(**payload)
         except anthropic.AnthropicError as exc:
             raise self._translate(exc) from None
-        return self._text_of(message)
+        return Completion(text=self._text_of(message), usage=_usage_of(message))
 
     # -- request ---------------------------------------------------------- #
 
@@ -274,6 +276,33 @@ class AnthropicTransport(ProviderTransport):
             haystack = str(exc)
         lowered = haystack.lower()
         return any(marker in lowered for marker in _BILLING_MARKERS)
+
+
+def _usage_of(message: object) -> TokenUsage | None:
+    """Anthropic's four counters, mapped onto the domain's three.
+
+    The SDK reports ``input_tokens`` (uncached), ``cache_read_input_tokens`` (served
+    from the prompt cache at ~0.1x) and ``cache_creation_input_tokens`` (written to
+    the cache at ~1.25x) as three separate figures, plus ``output_tokens``.
+
+    Cache *writes* are folded into :attr:`TokenUsage.input_tokens` rather than
+    dropped. They are prompt tokens the household was billed for, at a premium; the
+    domain's split is "paid full rate or better" against "served cheap from cache",
+    and a write belongs on the first side. Dropping them would under-report the
+    prompt of the very first call of a cached conversation -- the one call that
+    proves prompt caching is doing anything.
+    """
+    usage = getattr(message, "usage", None)
+    if usage is None:
+        return None
+    uncached = token_count(getattr(usage, "input_tokens", None))
+    written = token_count(getattr(usage, "cache_creation_input_tokens", None))
+    reported = TokenUsage(
+        input_tokens=uncached if written is None else (uncached or 0) + written,
+        output_tokens=token_count(getattr(usage, "output_tokens", None)),
+        cached_input_tokens=token_count(getattr(usage, "cache_read_input_tokens", None)),
+    )
+    return reported if reported.is_known else None
 
 
 def _b64(data: bytes) -> str:

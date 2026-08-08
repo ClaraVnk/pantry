@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import type { InventoryItem, RemovalReason } from '../../api/types';
+import type { InventoryItem, RemovalReason, UpdatedInventoryItem } from '../../api/types';
 import { Badge, Button } from '../../components/ui';
+import { unitSymbol } from '../../lib/units';
 import {
   expiryKindShortLabel,
   expiryLevel,
@@ -8,15 +9,19 @@ import {
   formatDate,
   formatExpiryRelative,
 } from '../../lib/expiry';
+import { QuantityAdjuster } from './QuantityAdjuster';
 import styles from './Inventory.module.css';
 
 interface Props {
   item: InventoryItem;
   onRemove: (id: string, reason: RemovalReason) => Promise<void>;
+  onAdjusted: (item: UpdatedInventoryItem) => void;
 }
 
-export function InventoryItemRow({ item, onRemove }: Props) {
-  const [confirming, setConfirming] = useState(false);
+type Mode = 'idle' | 'removing' | 'adjusting';
+
+export function InventoryItemRow({ item, onRemove, onAdjusted }: Props) {
+  const [mode, setMode] = useState<Mode>('idle');
   const [busy, setBusy] = useState(false);
 
   const level = expiryLevel(item.expires_on);
@@ -33,7 +38,7 @@ export function InventoryItemRow({ item, onRemove }: Props) {
     setBusy(true);
     void onRemove(item.id, reason).finally(() => {
       setBusy(false);
-      setConfirming(false);
+      setMode('idle');
     });
   };
 
@@ -49,7 +54,7 @@ export function InventoryItemRow({ item, onRemove }: Props) {
         <span className={styles.itemQuantity}>
           {formatAmount(item.quantity.amount)}
           <span aria-hidden="true"> </span>
-          {item.quantity.unit}
+          {unitSymbol(item.quantity.unit)}
         </span>
       </div>
 
@@ -69,7 +74,18 @@ export function InventoryItemRow({ item, onRemove }: Props) {
         {item.opened_at ? <Badge tone="neutral">entamé</Badge> : null}
       </div>
 
-      {confirming ? (
+      {mode === 'adjusting' ? (
+        <QuantityAdjuster
+          item={item}
+          onSaved={(updated) => {
+            onAdjusted(updated);
+            setMode('idle');
+          }}
+          onCancel={() => {
+            setMode('idle');
+          }}
+        />
+      ) : mode === 'removing' ? (
         <div className={styles.itemActions}>
           <Button
             variant="secondary"
@@ -92,7 +108,7 @@ export function InventoryItemRow({ item, onRemove }: Props) {
           <Button
             variant="ghost"
             onClick={() => {
-              setConfirming(false);
+              setMode('idle');
             }}
           >
             Annuler
@@ -103,7 +119,16 @@ export function InventoryItemRow({ item, onRemove }: Props) {
           <Button
             variant="ghost"
             onClick={() => {
-              setConfirming(true);
+              setMode('adjusting');
+            }}
+          >
+            Ajuster
+            <span className="visually-hidden"> la quantité de {item.product.name}</span>
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setMode('removing');
             }}
           >
             Retirer du stock

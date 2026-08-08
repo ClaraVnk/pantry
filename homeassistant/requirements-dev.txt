@@ -1,0 +1,11 @@
+# Everything needed to run `pytest` against this integration.
+#
+# `pytest-homeassistant-custom-component` pins the exact Home Assistant release
+# it mirrors, along with pytest, freezegun and the aiohttp mocker, so the version
+# below is what decides which Home Assistant this suite is tested against.
+# Bumping it is how the integration is checked against a new release.
+#
+# The integration itself has no runtime dependency at all: `manifest.json`
+# declares an empty `requirements`, and the API client is a single module built
+# on the aiohttp Home Assistant already ships.
+pytest-homeassistant-custom-component==0.13.316

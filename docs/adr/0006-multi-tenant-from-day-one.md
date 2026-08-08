@@ -1,56 +1,56 @@
-# 0006. Multi-tenant dès le premier jour
+# 0006. Multi-tenant from day one
 
-## Statut
+## Status
 
-Accepté — 2026-08-03
+Accepted — 2026-08-03
 
-## Contexte
+## Context
 
-En phase 1, Chaudron sert un seul foyer. La modélisation la plus économique serait donc mono-tenant : des tables `item`, `stock_entry`, `shopping_list_item` sans notion de propriétaire, et une authentification réduite à un utilisateur unique.
+In phase 1, Chaudron serves a single household. The cheapest modelling would therefore be single-tenant: `item`, `stock_entry`, `shopping_list_item` tables with no notion of owner, and authentication reduced to a single user.
 
-La phase 2 envisagée est une ouverture publique multi-utilisateurs. Le stock, la liste de courses et l'historique d'achats appartiennent à un **foyer**, pas à une personne : deux conjoints partagent le même frigo et doivent voir le même stock. L'unité d'isolation naturelle est donc le foyer (`household`), pas l'utilisateur.
+The envisaged phase 2 is a public multi-user opening. Stock, shopping list and purchase history belong to a **household**, not to a person: two partners share the same fridge and must see the same stock. The natural unit of isolation is therefore the household (`household`), not the user.
 
-La question n'est pas de savoir si le multi-tenant sera nécessaire, mais quand le payer. Or ce coût n'est pas linéaire dans le temps : ajouter une colonne de tenant à un schéma existant est mécanique, mais **rétrofitter le filtrage de tenant dans un code applicatif qui n'en a jamais eu ne l'est pas**. Chaque requête écrite sans clause de tenant est un chemin de fuite potentiel, et il faut toutes les auditer une par une, sans qu'aucun test existant n'échoue si on en oublie une.
+The question is not whether multi-tenancy will be needed, but when to pay for it. And that cost is not linear over time: adding a tenant column to an existing schema is mechanical, but **retrofitting tenant filtering into application code that never had any is not**. Every query written without a tenant clause is a potential leak path, and they all have to be audited one by one, with no existing test failing if one is missed.
 
-## Décision
+## Decision
 
-Le multi-tenant est présent dès la première migration, même si une seule ligne existe dans `household`.
+Multi-tenancy is present from the first migration, even with a single row in `household`.
 
-**Modèle.** Une table `household` est la racine d'isolation. Toute table métier porte une colonne `household_id` non nulle, avec clé étrangère vers `household`. Les contraintes d'unicité fonctionnelles sont composites et incluent toujours `household_id` (par exemple `UNIQUE (household_id, barcode)` et non `UNIQUE (barcode)`). Les index de lecture sont préfixés par `household_id`. Le lien utilisateur ↔ foyer passe par une table d'association `household_member` portant un rôle, ce qui permet à une personne d'appartenir à plusieurs foyers sans changer le modèle.
+**Model.** A `household` table is the isolation root. Every business table carries a non-null `household_id` column, with a foreign key to `household`. Functional unique constraints are composite and always include `household_id` (for instance `UNIQUE (household_id, barcode)`, not `UNIQUE (barcode)`). Read indexes are prefixed by `household_id`. The user ↔ household link goes through a `household_member` association table carrying a role, which lets a person belong to several households without changing the model.
 
-**Accès aux données.** Aucune requête métier ne s'exécute sans filtre de tenant. Le `household_id` courant est résolu une seule fois, à la frontière HTTP, à partir du contexte d'authentification — **jamais lu depuis le corps ou les paramètres de la requête**. Il est propagé explicitement par la couche applicative jusqu'au dépôt. Les fonctions de dépôt prennent le `household_id` en paramètre obligatoire, de sorte que l'omettre soit une erreur de typage détectée par `mypy`, pas un défaut d'exécution.
+**Data access.** No business query runs without a tenant filter. The current `household_id` is resolved once, at the HTTP boundary, from the authentication context — **never read from the request body or parameters**. It is propagated explicitly by the application layer down to the repository. Repository functions take `household_id` as a required parameter, so that omitting it is a typing error caught by `mypy`, not a runtime defect.
 
-**Tests.** Toute ressource exposée dispose d'un test d'isolation : deux foyers sont créés avec des données propres, et les opérations du foyer A sur les identifiants du foyer B doivent renvoyer `404` (jamais `403`, qui confirmerait l'existence de la ressource). Ces tests sont obligatoires pour toute nouvelle ressource ; leur absence est un motif de refus en revue.
+**Tests.** Every exposed resource has an isolation test: two households are created with their own data, and household A's operations on household B's identifiers must return `404` (never `403`, which would confirm the resource exists). These tests are mandatory for every new resource; their absence is grounds for rejection in review.
 
-**Isolation stricte.** Un identifiant appartenant à un autre foyer se comporte comme un identifiant inexistant. Cela vaut pour les lectures comme pour les écritures.
+**Strict isolation.** An identifier belonging to another household behaves exactly like a non-existent identifier. That holds for reads as well as writes.
 
-## Conséquences
+## Consequences
 
-### Positives
+### Positive
 
-- La phase 2 ne nécessite ni migration de données risquée, ni audit exhaustif du code d'accès.
-- Le partage entre membres d'un même foyer — nécessaire dès la phase 1 pour un couple — est acquis sans travail supplémentaire.
-- Les tests d'isolation constituent un filet permanent : une régression d'étanchéité fait échouer la CI au lieu de fuiter en production.
-- Les index préfixés par `household_id` sont ceux dont on a besoin de toute façon, puisque toutes les lectures sont scopées.
-- Le modèle supporte des scénarios ultérieurs (résidence secondaire, colocation, foyer partagé temporairement) sans refonte.
+- Phase 2 requires neither a risky data migration nor an exhaustive audit of the access code.
+- Sharing between members of the same household — needed from phase 1 for a couple — comes for free.
+- The isolation tests are a permanent safety net: a leak-tightness regression fails CI instead of leaking in production.
+- The `household_id`-prefixed indexes are the ones we need anyway, since every read is scoped.
+- The model supports later scenarios (second home, flatshare, temporarily shared household) with no redesign.
 
-### Négatives
+### Negative
 
-- **Toutes les signatures sont plus lourdes.** Chaque fonction de dépôt porte un paramètre supplémentaire, chaque requête une clause de plus. En phase 1 mono-foyer, c'est de la cérémonie pure : la valeur est toujours la même.
-- Les fixtures de test sont plus verbeuses : créer un foyer avant de créer un article, dans chaque scénario.
-- La discipline dépend d'une convention. Le typage aide, mais un `session.execute(select(Item))` sans filtre reste écrivable et compile. Une fuite reste possible tant que le filtrage n'est pas appliqué par la base elle-même.
-- Le coût est payé immédiatement, le bénéfice ne se matérialise qu'à la phase 2 — qui pourrait ne jamais arriver. C'est un pari assumé, pas une certitude.
-- Certaines requêtes analytiques transverses (statistiques globales, référentiel produit mutualisé) devront explicitement sortir du scope de tenant, ce qui crée une exception à documenter et à protéger séparément.
+- **Every signature is heavier.** Each repository function carries one more parameter, each query one more clause. In single-household phase 1, that is pure ceremony: the value is always the same.
+- Test fixtures are more verbose: create a household before creating an item, in every scenario.
+- The discipline rests on a convention. Typing helps, but a `session.execute(select(Item))` with no filter is still writable and still compiles. A leak stays possible as long as filtering is not enforced by the database itself.
+- The cost is paid immediately, the benefit only materialises in phase 2 — which may never come. It is a deliberate bet, not a certainty.
+- Some cross-cutting analytical queries (global statistics, a shared product reference) will have to step out of tenant scope explicitly, which creates an exception to document and to protect separately.
 
-## Alternatives écartées
+## Rejected alternatives
 
-- **Mono-tenant maintenant, migration à la phase 2** — le choix par défaut. Écarté : la migration se décompose en ajout de colonne (facile, `ALTER TABLE ... ADD COLUMN household_id`, backfill à une valeur unique), reprise de toutes les contraintes d'unicité (moyennement risqué : passer de `UNIQUE (barcode)` à `UNIQUE (household_id, barcode)` sous charge), puis **audit de chaque requête applicative** (le vrai coût). Cette dernière étape n'a pas de garde-fou : rien n'échoue si on oublie une requête, la fuite se découvre en production, chez un utilisateur, sur des données personnelles. Sur une base de quelques dizaines de fichiers d'accès aux données, c'est plusieurs jours de travail à haut risque, contre quelques heures de discipline étalées maintenant.
-- **Une base ou un schéma PostgreSQL par foyer** — isolation la plus forte, imposée par le moteur. Écarté : les migrations doivent alors être appliquées à N schémas, le pooling de connexions se complique, et l'exploitation d'un VPS unique devient disproportionnée pour la taille de la donnée. Reste l'option de référence si un besoin de conformité stricte apparaît.
-- **Row-Level Security PostgreSQL** — l'isolation est appliquée par la base, pas par la convention applicative, ce qui supprime la principale faiblesse de la décision retenue. Écarté **pour maintenant** : RLS exige de propager le tenant dans la session (`SET LOCAL`), ce qui interagit mal avec le pooling de connexions et demande une gestion soigneuse en contexte asynchrone. C'est le renforcement naturel, pas une alternative concurrente : le schéma retenu (`household_id` partout) est exactement le prérequis de RLS.
-- **Tenant identifié par sous-domaine ou en-tête HTTP** — pratique en SaaS B2B. Écarté : le tenant doit dériver de l'authentification seule. Toute source contrôlable par le client est une élévation de privilège offerte.
+- **Single-tenant now, migrate at phase 2** — the default choice. Rejected: the migration breaks down into adding a column (easy, `ALTER TABLE ... ADD COLUMN household_id`, backfill to a single value), reworking every unique constraint (moderately risky: going from `UNIQUE (barcode)` to `UNIQUE (household_id, barcode)` under load), and then **auditing every application query** (the real cost). That last step has no safeguard: nothing fails if a query is missed, the leak is discovered in production, at a user's expense, on personal data. Across a few dozen data-access files, that is several days of high-risk work, against a few hours of discipline spread out now.
+- **One PostgreSQL database or schema per household** — the strongest isolation, enforced by the engine. Rejected: migrations then have to be applied to N schemas, connection pooling gets complicated, and operating this on a single VPS becomes disproportionate for the size of the data. It remains the reference option if a strict compliance requirement appears.
+- **PostgreSQL Row-Level Security** — isolation is enforced by the database rather than by application convention, which removes the main weakness of the chosen decision. Rejected **for now**: RLS requires propagating the tenant into the session (`SET LOCAL`), which interacts badly with connection pooling and demands careful handling in an async context. This is the natural hardening, not a competing alternative: the chosen schema (`household_id` everywhere) is exactly RLS's prerequisite.
+- **Tenant identified by subdomain or HTTP header** — convenient in B2B SaaS. Rejected: the tenant must derive from authentication alone. Any source the client controls is a privilege escalation handed over for free.
 
-## Révision
+## Revisiting
 
-Activer Row-Level Security sur les tables métier avant l'ouverture publique de la phase 2 : le schéma est déjà compatible, et cela déplace la garantie d'isolation de la convention vers le moteur.
+Enable Row-Level Security on the business tables before phase 2's public opening: the schema is already compatible, and it moves the isolation guarantee from convention to engine.
 
-Passer à une isolation par schéma si un besoin de conformité impose une séparation physique des données, ou si un foyer unique atteint un volume qui justifie un partitionnement.
+Move to schema-level isolation if a compliance requirement forces physical data separation, or if a single household reaches a volume that justifies partitioning.

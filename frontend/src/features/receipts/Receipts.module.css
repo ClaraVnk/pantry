@@ -1,0 +1,369 @@
+/*
+ * Receipt import and review (contract §6ter and §7).
+ *
+ * Designed at 390×844 first: every control clears --tap-target, the two totals
+ * stack before they crowd, and nothing here is a modal — the review is a state
+ * of the screen, not a layer over it, so the browser's back gesture never leaves
+ * a half-reviewed receipt behind a dismissed dialogue.
+ *
+ * Breakpoints are in `em` so they follow the reader's text size rather than a
+ * device width, and touch targets grow under `@media (pointer: coarse)` rather
+ * than at a width: a phone in landscape is wide and still thumbed.
+ *
+ * Muted text uses --text-muted (#5D6470 in light mode). The brand's #6B7280
+ * measures 4.47:1 on this warm background and fails AA, so it is not used here
+ * or anywhere else.
+ */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+
+.sectionTitle {
+  font-size: 1rem;
+  margin-bottom: var(--space-2);
+}
+
+/*
+ * Prose is bounded by its own measure rather than by the container, so widening
+ * the screen adds columns of cards instead of lengthening the line.
+ */
+.lead {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  max-width: 68ch;
+}
+
+.note {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  max-width: 68ch;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  max-width: 68ch;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.formError {
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.fieldLabel {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/*
+ * A native file input, on purpose. The usual trick — a hidden input driven by a
+ * styled button — loses the filename the browser writes next to it, and on
+ * mobile that filename is the only confirmation the right document was picked.
+ */
+.fileInput {
+  padding: var(--space-2);
+  line-height: 1.4;
+}
+
+/* -------------------------------------------------------------------------
+ * Pending receipts
+ * ---------------------------------------------------------------------- */
+
+.pendingList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pendingItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+
+.pendingLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.pendingMeta {
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* -------------------------------------------------------------------------
+ * The review
+ * ---------------------------------------------------------------------- */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.reviewIntro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/*
+ * The two figures the whole feature turns on, side by side and equally
+ * prominent. They are laid out as a pair precisely because they can disagree:
+ * showing the total alone would hide the disagreement, and showing the line sum
+ * alone would put the least reliable number in the most visible place.
+ */
+.totals {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+}
+
+@media (min-width: 30em) {
+  .totals {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.total {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.totalLabel {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.totalValue {
+  font-size: 1.35rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.totalHint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.lineList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/*
+ * 48em: room for a second column, a third when the width allows. `auto-fill`
+ * keeps every card the same size, so a receipt with one line does not stretch it
+ * across the row.
+ */
+@media (min-width: 48em) {
+  .lineList {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+    align-items: start;
+  }
+
+  .card {
+    max-width: 46rem;
+  }
+}
+
+.lineCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-shadow: var(--shadow-sm);
+}
+
+.lineCardInvalid {
+  border-color: var(--danger);
+}
+
+/*
+ * A removed line stays in place, dimmed, with its undo button where its remove
+ * button was. Removing it from the list would make a mis-tap cost the line, and
+ * a confirmation dialogue would tax the common case to protect the rare one.
+ */
+.lineCardRemoved {
+  opacity: 0.62;
+  border-style: dashed;
+}
+
+.lineHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The label is the field, not a value with an edit button beside it. */
+.lineLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.lineRemove {
+  flex: 0 0 auto;
+  min-width: var(--tap-target);
+  font-size: 1.1rem;
+  color: var(--text-muted);
+}
+
+.lineQuantity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.lineQuantityLabel {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.lineAmount {
+  flex: 0 1 5.5rem;
+  width: 5.5rem;
+  text-align: right;
+}
+
+.lineUnit {
+  flex: 0 1 9rem;
+  width: auto;
+}
+
+.linePrice {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+/* The lexicon's own reading, offered rather than applied. */
+.lineSuggestion {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.lineSuggestionText {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lineMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+.lineNote {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  max-width: 68ch;
+}
+
+.lineRaw {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.lineRawLabel {
+  font-weight: 600;
+}
+
+.lineError {
+  color: var(--danger);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.reviewActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+}
+
+/*
+ * Touch, not width. A phone held sideways is a wide viewport and still a thumb,
+ * so the controls that carry a whole line's meaning are sized by pointer
+ * coarseness rather than by a breakpoint.
+ */
+@media (pointer: coarse) {
+  .lineAmount,
+  .lineUnit,
+  .fileInput {
+    min-height: var(--tap-target);
+  }
+
+  .pendingItem {
+    min-height: var(--tap-target);
+  }
+}

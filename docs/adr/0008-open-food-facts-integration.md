@@ -1,130 +1,129 @@
-# 0008. Stratégie d'intégration d'Open Food Facts
+# 0008. Open Food Facts integration strategy
 
-## Statut
+## Status
 
-Accepté — 2026-08-03.
+Accepted — 2026-08-03.
 
-## Contexte
+## Context
 
-La résolution d'un code EAN vers une fiche produit s'appuie sur Open Food Facts,
-service communautaire gratuit sous licence ODbL. L'étude de faisabilité
-(`docs/technical-notes-scanning.md`) a mis au jour quatre faits qui changent la
-nature de cette intégration.
+Resolving an EAN code to a product record relies on Open Food Facts, a free
+community service under the ODbL licence. The feasibility study
+(`docs/technical-notes-scanning.md`) brought four facts to light that change the
+nature of this integration.
 
-**Le plafond de débit s'applique par adresse IP, pas par utilisateur.** La
-documentation d'Open Food Facts précise que la limite s'applique par utilisateur
-*lorsque les requêtes proviennent directement des clients*. En centralisant les
-appels dans le backend — ce que nous faisons, et qui reste le bon choix — toutes
-les requêtes sortent d'une seule IP : le plafond devient global à l'instance
-entière. L'ordre de grandeur relevé est de quinze requêtes par minute, avec
-bannissement d'IP au dépassement. Le comportement en dépassement a été observé
-en pratique : l'API répond en HTML, pas en JSON.
+**The rate limit applies per IP address, not per user.** The Open Food Facts
+documentation states that the limit applies per user *when the requests come
+directly from clients*. By centralising the calls in the backend — which is what
+we do, and which remains the right choice — every request leaves from a single
+IP: the limit becomes global to the whole instance. The order of magnitude
+observed is fifteen requests per minute, with an IP ban on overrun. The
+behaviour on overrun has been observed in practice: the API answers in HTML, not
+JSON.
 
-**Le cache ne peut donc pas être scopé par foyer.** L'ADR-0006 impose un
-`household_id` sur toute table métier. Appliqué mécaniquement au cache produit,
-il multiplierait les appels sortants par le nombre de foyers, pour un contenu
-strictement identique — exactement ce que le plafond interdit.
+**The cache therefore cannot be scoped per household.** ADR-0006 mandates a
+`household_id` on every business table. Applied mechanically to the product
+cache, it would multiply outbound calls by the number of households, for
+strictly identical content — exactly what the rate limit forbids.
 
-**Une part substantielle des articles d'un placard réel n'a pas de code
-exploitable.** Produits absents du référentiel, emballages froissés, fruits,
-légumes, boucherie, vrac. Et surtout les **codes internes magasin** à préfixe
-`02` et `20`–`29` : utilisés pour les articles à poids variable, ils embarquent
-le prix, changent donc à chaque achat, et ne figureront jamais dans un
-référentiel public.
+**A substantial share of the items in a real cupboard has no usable code.**
+Products absent from the reference dataset, crumpled packaging, fruit,
+vegetables, butcher's cuts, loose goods. And above all the **store-internal
+codes** with prefixes `02` and `20`–`29`: used for variable-weight items, they
+embed the price, therefore change with every purchase, and will never appear in
+a public reference dataset.
 
-**La v2 de l'API est dépréciée.** La v3 est la version courante et son contrat
-d'erreur diffère : `result.id == "product_not_found"` avec un HTTP 404, là où la
-v2 renvoyait `status: 0`.
+**API v2 is deprecated.** v3 is the current version and its error contract
+differs: `result.id == "product_not_found"` with an HTTP 404, where v2 returned
+`status: 0`.
 
-## Décision
+## Decision
 
-**Le catalogue produit est un référentiel externe partagé, pas une donnée de
-foyer.** Il est matérialisé par `product` avec `household_id IS NULL`. Les fiches
-créées ou corrigées par un foyer portent un `household_id` non nul et sont
-isolées. C'est une exception explicite et bornée à la règle de l'ADR-0006, et la
-seule.
+**The product catalogue is a shared external reference dataset, not household
+data.** It is materialised by `product` with `household_id IS NULL`. Records
+created or corrected by a household carry a non-null `household_id` and are
+isolated. This is an explicit and bounded exception to ADR-0006's rule, and the
+only one.
 
-**Le cache est une condition de fonctionnement, pas une optimisation.** Toute
-résolution passe par le cache d'abord. Les échecs sont mis en cache négatif : un
-code absent d'Open Food Facts ne doit pas déclencher un appel à chaque scan.
+**The cache is a condition of operation, not an optimisation.** Every resolution
+goes through the cache first. Failures are negatively cached: a code absent from
+Open Food Facts must not trigger a call on every scan.
 
-**Les codes internes magasin sont détectés côté client** à partir de leur
-préfixe, et ne donnent lieu à aucun appel réseau — ni au backend, ni à Open Food
-Facts. L'utilisateur passe directement à la saisie manuelle.
+**Store-internal codes are detected client-side** from their prefix, and cause
+no network call at all — neither to the backend nor to Open Food Facts. The user
+goes straight to manual entry.
 
-**La saisie manuelle est une fonctionnalité de premier rang**, pas un repli
-dégradé. Une fiche éditée localement l'emporte sur tout rafraîchissement
-ultérieur venant d'Open Food Facts : le champ qui porte cette précédence est
-prévu dès la première migration, parce que l'ajouter après coup exige de
-retrouver quelles fiches avaient été corrigées à la main.
+**Manual entry is a first-class feature**, not a degraded fallback. A locally
+edited record wins over any later refresh coming from Open Food Facts: the field
+that carries this precedence is planned from the first migration, because adding
+it after the fact would mean working out which records had been corrected by
+hand.
 
-**Le développement se fait contre l'environnement de recette**
-(`world.openfoodfacts.net`), comme la documentation le demande, et l'API v3 est
-la cible.
+**Development is done against the staging environment**
+(`world.openfoodfacts.net`), as the documentation requires, and API v3 is the
+target.
 
-**Un identifiant d'appelant honnête est envoyé** dans l'en-tête `User-Agent`,
-conformément à la politique du projet — nom de l'application, version, adresse de
-contact.
+**An honest caller identifier is sent** in the `User-Agent` header, in
+accordance with the project's policy — application name, version, contact
+address.
 
-**En phase 2, l'import du dump local devient un prérequis.** Servir des
-utilisateurs externes derrière un plafond de quinze requêtes par minute n'est pas
-tenable. L'API ne sert alors plus qu'à combler les manques ponctuels du dump.
+**In phase 2, importing the local dump becomes a prerequisite.** Serving
+external users behind a limit of fifteen requests per minute is not viable. The
+API then only serves to fill the dump's occasional gaps.
 
-## Conséquences
+## Consequences
 
-### Positives
+### Positive
 
-- L'application continue de résoudre les produits déjà vus quand Open Food Facts
-  est indisponible ou nous a bannis.
-- Le cache mutualisé rend le coût d'appel indépendant du nombre de foyers.
-- Détecter les codes magasin côté client économise un aller-retour complet sur
-  des articles qui ne seront jamais résolus.
-- Aucun coût de licence : l'alternative qualitativement supérieure, CodeOnline
-  Food de GS1 France, exige une adhésion à cinq chiffres.
+- The application keeps resolving already-seen products when Open Food Facts is
+  unavailable or has banned us.
+- The shared cache makes the call cost independent of the number of households.
+- Detecting store codes client-side saves a full round trip on items that will
+  never be resolved anyway.
+- No licensing cost: the qualitatively superior alternative, GS1 France's
+  CodeOnline Food, requires a five-figure membership.
 
-### Négatives
+### Negative
 
-- **Le plafond reste une limite dure en phase 1.** Un foyer qui déballe ses
-  courses peut scanner plus vite que le débit autorisé. Il faut une file d'attente
-  côté serveur, une limitation de débit propre et un message honnête à
-  l'utilisateur — pas une erreur brute.
-- **L'exception à l'ADR-0006 est une brèche dans une règle qui vaut par son
-  caractère absolu.** « `household_id` partout, sauf ici » est plus difficile à
-  faire respecter que « `household_id` partout ». Le risque est qu'un autre
-  développeur invoque ce précédent pour une table qui, elle, contient bien des
-  données de foyer.
-- **L'ODbL impose un partage à l'identique.** Tant que le référentiel n'est que
-  consulté, l'obligation reste théorique ; dès qu'un dump est importé et enrichi,
-  elle devient réelle. Elle devra être instruite avant la phase 2, pas pendant.
-- **L'import du dump a un coût d'infrastructure** — espace disque, rafraîchissement
-  périodique, fenêtre de reconstruction — qui n'existe pas aujourd'hui.
-- **La couverture n'est pas la complétude.** Environ 1,25 million de produits
-  vendus en France sont présents, mais le taux de complétude des champs utiles
-  n'a pas pu être mesuré, le plafond de débit ayant empêché la mesure. À vérifier
-  sur un dump local avant de promettre quoi que ce soit dans l'interface.
+- **The rate limit remains a hard limit in phase 1.** A household unpacking its
+  shopping can scan faster than the allowed rate. That calls for a server-side
+  queue, our own rate limiting and an honest message to the user — not a raw
+  error.
+- **The exception to ADR-0006 is a breach in a rule whose value lies in being
+  absolute.** "`household_id` everywhere, except here" is harder to enforce than
+  "`household_id` everywhere". The risk is that another developer invokes this
+  precedent for a table that does hold household data.
+- **The ODbL imposes share-alike.** As long as the reference dataset is only
+  queried, the obligation stays theoretical; as soon as a dump is imported and
+  enriched, it becomes real. It will have to be examined before phase 2, not
+  during.
+- **Importing the dump has an infrastructure cost** — disk space, periodic
+  refresh, rebuild window — that does not exist today.
+- **Coverage is not completeness.** Roughly 1.25 million products sold in France
+  are present, but the completeness rate of the useful fields could not be
+  measured, the rate limit having prevented the measurement. To be checked
+  against a local dump before promising anything in the interface.
 
-## Alternatives écartées
+## Rejected alternatives
 
-- **Appels effectués depuis le navigateur du client**, ce qui ramènerait le
-  plafond à un compte par utilisateur. Écarté : expose la stratégie d'appel,
-  empêche toute mise en cache partagée, et rend l'application dépendante de la
-  disponibilité d'Open Food Facts depuis le réseau de chaque utilisateur. Le gain
-  ne compense pas la perte du cache mutualisé.
-- **Cache scopé par foyer**, cohérent avec l'ADR-0006 sans exception. Écarté : il
-  multiplie les appels sortants par le nombre de foyers pour un contenu
-  identique, ce que le plafond interdit.
-- **CodeOnline Food (GS1 France)**, données fournies par les marques et de
-  meilleure qualité. Écarté : adhésion GS1 à cinq chiffres, hors de portée d'un
-  projet solo.
-- **Import du dump dès la phase 1.** Écarté : coût d'infrastructure immédiat pour
-  un foyer unique dont le volume de scans tient largement sous le plafond.
+- **Calls made from the client's browser**, which would bring the limit back to
+  one budget per user. Rejected: it exposes the call strategy, prevents any
+  shared caching, and makes the application dependent on Open Food Facts being
+  reachable from each user's network. The gain does not offset the loss of the
+  shared cache.
+- **A per-household cache**, consistent with ADR-0006 with no exception.
+  Rejected: it multiplies outbound calls by the number of households for
+  identical content, which the rate limit forbids.
+- **CodeOnline Food (GS1 France)**, brand-supplied data of better quality.
+  Rejected: five-figure GS1 membership, out of reach for a solo project.
+- **Importing the dump from phase 1.** Rejected: immediate infrastructure cost
+  for a single household whose scan volume sits comfortably under the limit.
 
-## Révision
+## Revisiting
 
-- Importer le dump dès qu'une deuxième instance ou un deuxième foyer actif
-  existe, sans attendre l'ouverture publique — le plafond est global, donc il se
-  partage.
-- Réexaminer l'exception à l'ADR-0006 si une seconde table réclame le même
-  traitement : deux exceptions ne font plus une exception, elles font une règle
-  mal formulée.
-- Instruire les obligations ODbL avant tout import de dump.
+- Import the dump as soon as a second instance or a second active household
+  exists, without waiting for the public opening — the limit is global, so it is
+  shared.
+- Re-examine the exception to ADR-0006 if a second table demands the same
+  treatment: two exceptions are no longer an exception, they are a badly
+  formulated rule.
+- Examine the ODbL obligations before any dump import.

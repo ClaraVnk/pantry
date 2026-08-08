@@ -24,7 +24,11 @@ from decimal import Decimal
 from typing import Any, Final, Protocol
 
 from chaudron.domain.models import (
+    Allergen,
+    AllergenDataState,
     ExpiryDateKind,
+    FoodFamily,
+    PnnsMarker,
     ProductSource,
     QuantityDimension,
     StockEntrySource,
@@ -35,11 +39,14 @@ from chaudron.domain.models import (
 __all__ = [
     "GTIN_STORAGE_LENGTH",
     "UNSET",
+    "Allergen",
+    "AllergenDataState",
     "BarcodeNotFoundError",
     "CatalogRecord",
     "DomainError",
     "ExpiryDateInconsistentError",
     "ExpiryDateKind",
+    "FoodFamily",
     "HouseholdRepository",
     "InvalidBarcodeError",
     "InvalidQuantityError",
@@ -49,6 +56,8 @@ __all__ = [
     "InventoryItemNotFoundError",
     "InventoryPage",
     "InventoryRepository",
+    "LocationDraft",
+    "LocationNameTakenError",
     "LocationNotFoundError",
     "LocationRepository",
     "LocationSummary",
@@ -57,6 +66,7 @@ __all__ = [
     "LotState",
     "LotUpdate",
     "Maybe",
+    "PnnsMarker",
     "ProductCatalog",
     "ProductCatalogUnavailableError",
     "ProductDraft",
@@ -131,6 +141,20 @@ class LocationNotFoundError(DomainError):
         self.location_id = location_id
 
 
+class LocationNameTakenError(DomainError):
+    """An active location of this household already carries that name.
+
+    The uniqueness is the partial index ``uq_storage_location_name`` -- per
+    household, case-insensitive, and only over rows that are not archived. Two
+    active "Frigo" is a typo the user wants told about; one active and one
+    archived is history, and stays legal.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"a storage location named {name!r} already exists in this household")
+        self.name = name
+
+
 class ProductNotFoundError(DomainError):
     def __init__(self, product_id: uuid.UUID) -> None:
         super().__init__(f"no product with id {product_id}")
@@ -174,6 +198,80 @@ class InventoryConflictError(DomainError):
     The database arbitrates (``uq_inventory_lot_merge_key``); the loser is told
     to retry rather than being served a fabricated result.
     """
+
+
+# -- Dietary constraints (ADR-0009, contract v1.1) ------------------------- #
+#
+# None of the four below interpolates anything about a person. An eater's
+# allergies, diet and age band are health data (GDPR article 9); a message that
+# quoted them would put them in an HTTP body, a log line and a support ticket at
+# once. The only identifier any of them carries is an opaque row id the client
+# already sent.
+
+
+class MemberNotFoundError(DomainError):
+    def __init__(self, member_id: uuid.UUID) -> None:
+        super().__init__(f"no household member with id {member_id}")
+        self.member_id = member_id
+
+
+class MemberNotInHouseholdError(DomainError):
+    """A ``member_id`` that belongs to another household, or to nobody."""
+
+    def __init__(self, member_id: uuid.UUID) -> None:
+        super().__init__(f"member {member_id} does not belong to this household")
+        self.member_id = member_id
+
+
+class InfantTextureInconsistentError(DomainError):
+    """A texture outside an infant band, or an infant band without one.
+
+    The database refuses it too (``ck_household_person_infant_texture_band``).
+    Raised here so the client gets the contract's 422 with a sentence it can
+    show, rather than a constraint name.
+    """
+
+
+class NoSuggestionWithinConstraintsError(DomainError):
+    """The screen emptied the inventory. Not an execution failure.
+
+    Carries the *reasons* that emptied it -- allergen, diet, infant rule -- and
+    the counts, so the interface can explain a blank screen without naming who
+    at the table caused it.
+    """
+
+    def __init__(self, *, reasons: tuple[str, ...], withheld: int) -> None:
+        super().__init__("no product survived the dietary screen")
+        self.reasons = reasons
+        self.withheld = withheld
+
+
+class ConstraintViolationDetectedError(DomainError):
+    """The post-call check refused every suggestion the model produced.
+
+    Thrown away rather than served with a warning: a suggestion whose
+    ingredients this application cannot name is one it cannot vouch for, and
+    ADR-0009 forbids returning it partially.
+    """
+
+    def __init__(self, *, examined: int) -> None:
+        super().__init__("every suggestion failed the post-generation check")
+        self.examined = examined
+
+
+class RecipeSuggestionNotFoundError(DomainError):
+    """No suggestion with this identifier belongs to this household.
+
+    One error for "never existed" and "belongs to somebody else" alike. Two
+    distinguishable answers would turn the feedback endpoint into an oracle for
+    the existence of another household's rows, which is the same reasoning that
+    made ``get_household_id`` answer 401 identically in all three of its failure
+    cases (audit AUD-013).
+    """
+
+    def __init__(self, suggestion_id: uuid.UUID) -> None:
+        super().__init__(f"no recipe suggestion with id {suggestion_id}")
+        self.suggestion_id = suggestion_id
 
 
 class BarcodeNotFoundError(DomainError):
@@ -249,6 +347,14 @@ class LocationSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class LocationDraft:
+    """A storage location about to be created. Name already trimmed by the API."""
+
+    name: str
+    kind: StorageKind
+
+
+@dataclass(frozen=True, slots=True)
 class InventoryItem:
     id: uuid.UUID
     product: ProductView
@@ -258,6 +364,13 @@ class InventoryItem:
     best_before: date | None
     date_kind: ExpiryDateKind
     opened_at: date | None
+    #: When this lot actually becomes unfit -- ``min(best_before, opened_at +
+    #: shelf_life_guideline.opened_days)``, computed by the query
+    #: (``domain/shelf_life.py``). Kept beside ``best_before`` rather than
+    #: replacing it: the printed date is what a human read off the packaging and
+    #: what a ``PATCH`` round-trips, and overwriting it with a derived value
+    #: would make the application look like it had invented a label.
+    effective_expiry: date | None
     entry_source: StockEntrySource
     created_at: datetime
 
@@ -296,6 +409,13 @@ class LotDraft:
     date_kind: ExpiryDateKind
     opened_at: date | None
     entry_source: StockEntrySource
+    #: The receipt line this lot was created from, when one was (contract 6ter).
+    #: Written only on creation: when the draft merges into an existing lot the
+    #: older row keeps its own provenance, because a lot that grew has more than
+    #: one origin and this column can only hold one. The budget reads it to count
+    #: what went into the cupboard *without* a receipt, so an approximation here
+    #: would be an approximation in the one figure that exists to be honest.
+    source_receipt_line_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +423,9 @@ class LotState:
     """What a service needs to know about an existing lot to change it."""
 
     id: uuid.UUID
+    #: The product this lot holds. Carried so that a removal can say *what* ran
+    #: out without loading the display projection again (contract 6bis).
+    product_id: uuid.UUID
     quantity_value: Decimal
     quantity_unit_code: str
     quantity_dimension: QuantityDimension
@@ -329,12 +452,17 @@ class LotUpdate:
 
 @dataclass(frozen=True, slots=True)
 class ProductDraft:
-    """A manually created product. Private to the household that created it."""
+    """A product created here rather than fetched. Private to its household."""
 
     name: str
     brand: str | None = None
     gtin: str | None = None
     default_unit_code: str | None = None
+    #: How the row came about. ``manual`` is somebody typing a name; the receipt
+    #: import passes ``receipt_import`` so that "where did this product come
+    #: from?" stays answerable a year later, when the label is the only clue
+    #: left as to why the catalogue holds ``pomme de terre nouvelle 1 kg``.
+    source: ProductSource = ProductSource.MANUAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,6 +482,19 @@ class CatalogRecord:
     net_content_unit_code: str | None = None
     payload: dict[str, Any] | None = None
 
+    # Normalisation of the catalogue's own taxonomies, done once at the
+    # boundary. The defaults are the safe ones: a record built by a caller that
+    # knows nothing about allergens declares nothing, and `UNKNOWN` withholds
+    # the product from anybody with a declared allergy rather than clearing it.
+    allergen_state: AllergenDataState = AllergenDataState.UNKNOWN
+    allergens_contains: tuple[Allergen, ...] = ()
+    allergens_may_contain: tuple[Allergen, ...] = ()
+    #: Empty means *unresolved*, never "belongs to no food group".
+    pnns_markers: tuple[PnnsMarker, ...] = ()
+    #: ``None`` means unresolved, and unresolved means no expiry date is
+    #: proposed at all -- see :class:`~chaudron.domain.models.FoodFamily`.
+    food_family: FoodFamily | None = None
+
 
 # --------------------------------------------------------------------------- #
 # Ports
@@ -372,6 +513,9 @@ class LocationRepository(Protocol):
     async def list_with_counts(self, household_id: uuid.UUID) -> Sequence[LocationSummary]: ...
 
     async def exists(self, household_id: uuid.UUID, location_id: uuid.UUID) -> bool: ...
+
+    async def create(self, household_id: uuid.UUID, draft: LocationDraft) -> LocationSummary:
+        """Add an active location, or raise :class:`LocationNameTakenError`."""
 
 
 class ProductRepository(Protocol):

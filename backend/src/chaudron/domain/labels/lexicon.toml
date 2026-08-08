@@ -1,0 +1,1500 @@
+# =============================================================================
+# Chaudron — lexique d'expansion des abréviations d'étiquettes de caisse (FR)
+#
+# CE FICHIER EST DE LA DONNÉE, PAS DU CODE. Il se modifie sans savoir programmer.
+# La procédure d'enrichissement est décrite dans docs/label-lexicon.md.
+#
+# Une entrée = une forme abrégée + ses lectures possibles + d'où elle vient.
+#
+#   form        la forme telle qu'imprimée (la casse et les accents sont ignorés)
+#   expansions  TOUTES les lectures plausibles. Deux lectures = ambiguïté réelle,
+#               et l'ambiguïté doit remonter : ne jamais en supprimer une pour
+#               « faire propre ».
+#   confidence  high   : forme lue sur un vrai ticket ET lecture imposée par la ligne
+#               medium : forme lue sur un vrai ticket, lecture déduite du contexte
+#               low    : plausible, non vérifié — traité comme « je ne sais pas »
+#   kind        truncation | skeleton | initialism | qualifier | packaging
+#               | brand | private_label | department
+#   evidence    OÙ la forme a été vue. « assumed » = aucune preuve, à supprimer en
+#               premier si un mauvais appariement est signalé.
+#   retailers   enseignes concernées ; vide = toutes. Une entrée d'enseigne est
+#               ignorée quand l'enseigne du ticket est inconnue.
+#
+# Les preuves `openprices:NNNNN` renvoient à une photo de ticket publique :
+# https://prices.openfoodfacts.org/api/v1/proofs/NNNNN
+#
+#   openprices:23005   Intermarché Contact  (2024)
+#   openprices:8932    Super U              (2024-09-19)
+#   openprices:111936  Carrefour Market     (2026-05-09)
+#   openprices:60947   E.Leclerc            (2025-12-17, ticket dématérialisé)
+#   openprices:60984   Auchan               (2025-12-17)
+#   openprices:16595   Monoprix
+#   openprices:122557  U Express
+#   openprices:19960   Lidl                 (casse mixte, accents conservés)
+#
+# RÈGLE : on n'inscrit ici que ce qui DIFFÈRE de la forme française courante.
+# `BIO`, `UHT`, `AOP`, `IGP`, `VRAC` s'écrivent pareil dans Open Food Facts : les
+# développer n'aiderait pas l'appariement et allongerait le lexique pour rien.
+# =============================================================================
+
+[meta]
+version = "2026-08-04"
+language = "fr"
+
+
+# -----------------------------------------------------------------------------
+# Préfixes en barre oblique. `S/GLUTEN`, `P/JUS` : la barre remplace un mot outil.
+# -----------------------------------------------------------------------------
+
+[[slash_prefix]]
+form = "S/"
+expansions = ["sans"]
+confidence = "high"
+kind = "qualifier"
+evidence = "openprices:122557 (TART.CROU.AVOINE S/GLUTEN 230G); openprices:23005 (RICOLA S/SUC CITRON)"
+
+[[slash_prefix]]
+form = "P/"
+expansions = ["pur"]
+confidence = "medium"
+kind = "qualifier"
+evidence = "openprices:8932 (P/JUS ORANG/MANGUE/GOYAVE U 1L, P/JUS/ORANGE AV.PULPE U PET 1L)"
+notes = "Le même ticket porte SAV.CHEVREFEUIL.P/MARS où P/ n'est pas « pur » — d'où medium."
+
+[[slash_prefix]]
+form = "H/"
+expansions = ["huile"]
+confidence = "medium"
+kind = "qualifier"
+evidence = "openprices:8932 (SAVON H/OLIVE PETIT OLIV.250G)"
+
+
+# -----------------------------------------------------------------------------
+# Désignations — troncatures (le mot est coupé, la fin tombe)
+# -----------------------------------------------------------------------------
+
+[[token]]
+form = "BEUR"
+expansions = ["beurre"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (BEUR.PLAQ.PRESID.DX); openprices:111936 (250G BEUR.MOULE DX); openprices:122557 (BEUR.BIO DX 82%)"
+
+[[token]]
+form = "FROM"
+expansions = ["fromage"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (FROM.BLC NAT.7,6%MG, CROUT.SAV.AIL/FROM); openprices:8932 (MONSTER MUNCH JAM/FROM)"
+
+[[token]]
+form = "BISC"
+expansions = ["biscuit"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (BISC.ORIG.CHOC.LT); openprices:23005 (GERBLEBIO BISC.CITR/)"
+
+[[token]]
+form = "BISCUI"
+expansions = ["biscuit"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:60984 (*BONNE MAMAN BISCUI..)"
+
+[[token]]
+form = "CROUT"
+expansions = ["crouton"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (CROUT.SAV.ORIGINAL FRESH.G.80G, CROUT.SAV.AIL/FROM)"
+
+[[token]]
+form = "SAV"
+expansions = ["saveur", "savon"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:8932 — CROUT.SAV.ORIGINAL (saveur) ET SAV.CHEVREFEUIL.P/MARS (savon), même ticket"
+notes = "Ambiguïté réelle, tranchée par le rayon. Ne pas la supprimer."
+
+[[token]]
+form = "SAVEU"
+expansions = ["saveur"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:16595 (VIOLIFE RAPE SAVEU)"
+
+[[token]]
+form = "CHOCO"
+expansions = ["chocolat"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (CHOCO.NR ORANGE BIO A.ECO 100G)"
+
+[[token]]
+form = "CHOC"
+expansions = ["chocolat"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (CHOC.NR 75% BIO ALTER ECO 100G)"
+
+[[token]]
+form = "CHOCOLA"
+expansions = ["chocolat"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:111936 (BARRES SSN CHOCOLA)"
+
+[[token]]
+form = "CHO"
+expansions = ["chocolat"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:8932 (4CROISS+4PAIN CHO PUR BEURRE U)"
+
+[[token]]
+form = "CEREA"
+expansions = ["cereale"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:111936 (150G BISCUIT CEREA); openprices:23005 (CHAB.BARR.CEREA.FIGU)"
+
+[[token]]
+form = "BARR"
+expansions = ["barre"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (CHAB.BARR.CEREA.FIGU)"
+
+[[token]]
+form = "FIGU"
+expansions = ["figue"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (CHAB.BARR.CEREA.FIGU)"
+
+[[token]]
+form = "BRIOCH"
+expansions = ["brioche"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:111936 (125G TOASTS BRIOCH)"
+
+[[token]]
+form = "BOULAN"
+expansions = ["boulanger"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:111936 (6ST LEVURE BOULAN.)"
+
+[[token]]
+form = "VEL"
+expansions = ["veloute"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (ST ELOI VEL.TOMAT/BA, avec ST ELOI VELOUTE LEGU deux lignes plus bas)"
+
+[[token]]
+form = "TOMAT"
+expansions = ["tomate"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (ST ELOI VEL.TOMAT/BA)"
+
+[[token]]
+form = "LEGU"
+expansions = ["legume"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (ST ELOI VELOUTE LEGU)"
+
+[[token]]
+form = "LEG"
+expansions = ["legume"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:16595 (SOUPE BIO 5 LEG 1L)"
+
+[[token]]
+form = "GARN"
+expansions = ["garniture"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:23005 (RANOU GARN BCHE REIN)"
+
+[[token]]
+form = "REIN"
+expansions = ["reine"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:23005 (RANOU GARN BCHE REIN — bouchée à la reine)"
+
+[[token]]
+form = "AUVERG"
+expansions = ["auvergne"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (M.RANOU POTEE AUVERG)"
+
+[[token]]
+form = "ECHAL"
+expansions = ["echalote"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (BO VINAIGRETTE ECHAL); openprices:19960 écrit « Vinaigrette échalote » en entier"
+
+[[token]]
+form = "VINAIGRET"
+expansions = ["vinaigrette"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (B.D OR VINAIGRET.FIN)"
+
+[[token]]
+form = "SESAM"
+expansions = ["sesame"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (GERBLE BISCUIT SESAM)"
+
+[[token]]
+form = "PAPRI"
+expansions = ["paprika"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:23005 (BO.CRUSTY NUTS PAPRI)"
+
+[[token]]
+form = "SICI"
+expansions = ["sicile"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:23005 (SALVETAT CITRON SICI)"
+
+[[token]]
+form = "CITR"
+expansions = ["citron"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (GERBLEBIO BISC.CITR/)"
+
+[[token]]
+form = "CIT"
+expansions = ["citron"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:122557 (SOJASUN MANDARIN.CIT.VRT4X100G)"
+
+[[token]]
+form = "MANDARIN"
+expansions = ["mandarine"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (SOJASUN MANDARIN.CIT.VRT4X100G)"
+
+[[token]]
+form = "ORANG"
+expansions = ["orange"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (P/JUS ORANG/MANGUE/GOYAVE); openprices:122557 (INFU.TILLEUL ORANG.BIO)"
+
+[[token]]
+form = "RAIS"
+expansions = ["raisin"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (JUS CLEMENTINE/ORANG/RAIS.U 1L)"
+
+[[token]]
+form = "FRAMB"
+expansions = ["framboise"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (RICOLA FRAMB/MELISSE)"
+
+[[token]]
+form = "POM"
+expansions = ["pomme"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:60947 (DESS.POM/CHATAIGNE); openprices:111936 (125G SAUCE POM FRI); openprices:23005 (PAQUITO SSA POM/PRUN)"
+
+[[token]]
+form = "PRUN"
+expansions = ["pruneau", "prune"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:23005 (PAQUITO SSA POM/PRUN)"
+
+[[token]]
+form = "DESS"
+expansions = ["dessert"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:60947 (DESS.POM/CHATAIGNE ANDROS X8)"
+
+[[token]]
+form = "MANG"
+expansions = ["mangue"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (SKYR MANG.PASS.SOJASUN 400G)"
+
+[[token]]
+form = "PASS"
+expansions = ["passion"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:122557 (SKYR MANG.PASS.SOJASUN 400G)"
+
+[[token]]
+form = "CREV"
+expansions = ["crevette"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (SOUPE NOUILL.YUM YUM CREV.100G)"
+
+[[token]]
+form = "NOUILL"
+expansions = ["nouille"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (SOUPE NOUILL.YUM YUM CREV.100G)"
+
+[[token]]
+form = "JACQ"
+expansions = ["jacques"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (ST JACQ.FOND.POIREAUX RIZ 280G)"
+
+[[token]]
+form = "FOND"
+expansions = ["fondue"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:8932 (ST JACQ.FOND.POIREAUX RIZ 280G)"
+
+[[token]]
+form = "JAM"
+expansions = ["jambon"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:8932 (MONSTER MUNCH JAM/FROM.2X135G)"
+
+[[token]]
+form = "MOZZA"
+expansions = ["mozzarella"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (MOZZA.PAST.18%MG U SACH.125G)"
+
+[[token]]
+form = "ROCAMAD"
+expansions = ["rocamadour"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (ROCAMAD.AOP 22% UDNR X3 105G)"
+
+[[token]]
+form = "PAST"
+expansions = ["pasteurise", "pastille"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:122557 (MOZZA.PAST.18%MG) ; openprices:111936 (30 PAST.LVSL TOUTE)"
+notes = "Deux lectures attestées sur deux enseignes différentes."
+
+[[token]]
+form = "INFUS"
+expansions = ["infusion"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (INFUS.CAMOMILLE U X25 22.5G)"
+
+[[token]]
+form = "INFU"
+expansions = ["infusion"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (INFU.TILLEUL ORANG.BIO JB 30G)"
+
+[[token]]
+form = "INF"
+expansions = ["infusion"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:8932 (INF.ELEPH.NUIT TRANQUIL.X20ST)"
+
+[[token]]
+form = "TART"
+expansions = ["tartine", "tarte"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:122557 (TART.CROU.AVOINE S/GLUTEN 230G)"
+
+[[token]]
+form = "CROU"
+expansions = ["croustillant"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:122557 (TART.CROU.AVOINE S/GLUTEN 230G)"
+
+[[token]]
+form = "CROUST"
+expansions = ["croustillant"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:60947 (MUESLI CROUST NOIX 500G MR)"
+
+[[token]]
+form = "CROUSTIL"
+expansions = ["croustillant"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:111936 (CROUSTIL CAHT BEL)"
+
+[[token]]
+form = "COURG"
+expansions = ["courgette"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:16595 (MBIO\"COURG POTI)"
+
+[[token]]
+form = "POTI"
+expansions = ["potiron", "potimarron"]
+confidence = "low"
+kind = "truncation"
+evidence = "openprices:16595 (MBIO\"COURG POTI)"
+
+[[token]]
+form = "SACHE"
+expansions = ["sachet"]
+confidence = "high"
+kind = "packaging"
+evidence = "openprices:16595 (MBIO CAROTTE SACHE)"
+
+[[token]]
+form = "SACH"
+expansions = ["sachet"]
+confidence = "high"
+kind = "packaging"
+evidence = "openprices:122557 (MOZZA.PAST.18%MG U SACH.125G)"
+
+[[token]]
+form = "BARQ"
+expansions = ["barquette"]
+confidence = "high"
+kind = "packaging"
+evidence = "openprices:8932 (HARICOT MUNGO BARQ 250G)"
+
+[[token]]
+form = "BARQUET"
+expansions = ["barquette"]
+confidence = "high"
+kind = "packaging"
+evidence = "openprices:23005 (SALADE MACHE BARQUET)"
+
+[[token]]
+form = "BARQUETT"
+expansions = ["barquette"]
+confidence = "high"
+kind = "packaging"
+evidence = "openprices:60947 (CHAMPIGNON BRUN EMINCE BARQUETT)"
+
+[[token]]
+form = "PLAQ"
+expansions = ["plaquette"]
+confidence = "high"
+kind = "packaging"
+evidence = "openprices:8932 (BEUR.PLAQ.PRESID.DX 82%MG 500G)"
+
+[[token]]
+form = "BOUT"
+expansions = ["bouteille"]
+confidence = "medium"
+kind = "packaging"
+evidence = "openprices:60947 (LAIT 1/2 ECREME BIO BOUT 6X1L)"
+
+[[token]]
+form = "TRAN"
+expansions = ["tranche"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:16595 (PAIN INTEGRAL TRAN)"
+
+[[token]]
+form = "TRA"
+expansions = ["tranche"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:19960 (Pain de mie gdes tra)"
+
+[[token]]
+form = "DENOYA"
+expansions = ["denoyaute"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:19960 (Olives vertes denoya)"
+
+[[token]]
+form = "MOY"
+expansions = ["moyen"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:60984 (*BIO LOUE OEUFS MOY..)"
+
+[[token]]
+form = "DAUP"
+expansions = ["dauphinois"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:60984 (*AUCHAN POMMES DAUP..)"
+
+[[token]]
+form = "VEGE"
+expansions = ["vegetal"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:60984 (*LA VIE LARDON VEGE..)"
+
+[[token]]
+form = "EPON"
+expansions = ["eponge"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:60984 (SPONTEX GRATTE EPON..)"
+
+[[token]]
+form = "VITROCER"
+expansions = ["vitroceramique"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:60984 (AUC EPONGE VITROCER..)"
+
+[[token]]
+form = "TRANQUIL"
+expansions = ["tranquille"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (INF.ELEPH.NUIT TRANQUIL.X20ST)"
+
+[[token]]
+form = "AV"
+expansions = ["avec"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:8932 (P/JUS/ORANGE AV.PULPE U PET 1L)"
+
+[[token]]
+form = "SUC"
+expansions = ["sucre"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (RICOLA S/SUC CITRON)"
+
+[[token]]
+form = "ECREM"
+expansions = ["ecreme"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (LAIT UHT 1/2ECREM.BBC U 6X25CL)"
+
+[[token]]
+form = "ORIG"
+expansions = ["original"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:122557 (BISC.ORIG.CHOC.LT MC VITIE300G)"
+
+[[token]]
+form = "ANTIOXI"
+expansions = ["antioxydant"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:122557 (SUP.SMOOTH ANTIOXI.INNOC.750ML)"
+
+[[token]]
+form = "MIC"
+expansions = ["micro"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:23005 (BENS.RIZ MIC.OND.MED)"
+
+[[token]]
+form = "OND"
+expansions = ["onde"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:23005 (BENS.RIZ MIC.OND.MED — micro-ondes)"
+
+[[token]]
+form = "VSL"
+expansions = ["vaisselle"]
+confidence = "medium"
+kind = "skeleton"
+evidence = "openprices:23005 (APTA VSL ECOLABEL CI)"
+
+[[token]]
+form = "LVSL"
+expansions = ["lave vaisselle"]
+confidence = "medium"
+kind = "skeleton"
+evidence = "openprices:111936 (30 PAST.LVSL TOUTE)"
+
+[[token]]
+form = "SHP"
+expansions = ["shampooing"]
+confidence = "medium"
+kind = "skeleton"
+evidence = "openprices:8932 (SHP.CHEV.SECS ARGAN U 250ML)"
+
+[[token]]
+form = "CHEV"
+expansions = ["cheveux", "chevre"]
+confidence = "low"
+kind = "truncation"
+evidence = "openprices:8932 (SHP.CHEV.SECS ARGAN — cheveux) ; « chèvre » est la lecture courante au rayon fromage, non attestée ici"
+
+
+# -----------------------------------------------------------------------------
+# Désignations — squelettes consonantiques (les voyelles sautent)
+# -----------------------------------------------------------------------------
+
+[[token]]
+form = "PDT"
+expansions = ["pomme de terre"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:60984 (*PDT 1,5KG) ; openprices:60947 (CHIPS PDT SEL ET POIVRE 150G, CHIPS PDT VIN DE CIDRE 150G)"
+
+[[token]]
+form = "BLC"
+expansions = ["blanc"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:8932 (FROM.BLC NAT.7,6%MG U 1KG, AIL BLC FILIERE U FLT 3 TETES)"
+
+[[token]]
+form = "YRT"
+expansions = ["yaourt"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:8932 (YRT BREBIS NAT.BIO VRAI 2X125G)"
+
+[[token]]
+form = "FLT"
+expansions = ["filet"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:23005 (P&C FLT MERLU FI&CHI) ; openprices:8932 (AIL BLC FILIERE U FLT 3 TETES)"
+notes = "Même mot pour le filet de poisson et le filet d'emballage — l'ambiguïté est dans le français, pas dans l'abréviation."
+
+[[token]]
+form = "NR"
+expansions = ["noir"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:122557 (CHOCO.NR ORANGE BIO) ; openprices:8932 (3 RIZ BASMATI NR RGE RISO 500G)"
+
+[[token]]
+form = "NRS"
+expansions = ["noires"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:122557 (OLIVE.NRS NYONS AOP UDNR 230G)"
+
+[[token]]
+form = "RGE"
+expansions = ["rouge"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:8932 (3 RIZ BASMATI NR RGE RISO 500G)"
+
+[[token]]
+form = "ROUG"
+expansions = ["rouge"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:23005 (RANOU BETTERAVE ROUG)"
+
+[[token]]
+form = "RDE"
+expansions = ["ronde"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:111936 (TOMATE RDE CHARNUE)"
+
+[[token]]
+form = "VRT"
+expansions = ["vert"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:122557 (SOJASUN MANDARIN.CIT.VRT4X100G)"
+
+[[token]]
+form = "JNE"
+expansions = ["jaune"]
+confidence = "medium"
+kind = "skeleton"
+evidence = "openprices:16595 (BIO POMME JNE K1K)"
+
+[[token]]
+form = "GDES"
+expansions = ["grandes"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:19960 (Pain de mie gdes tra)"
+
+[[token]]
+form = "GD"
+expansions = ["grand"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:60984 (*GD FERM BEUR MOULE.. — Grand Fermage)"
+
+[[token]]
+form = "DX"
+expansions = ["doux"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:8932 (BEUR.PLAQ.PRESID.DX 82%MG) ; openprices:111936 (250G BEUR.MOULE DX) ; openprices:122557 (BEUR.BIO DX 82%)"
+
+[[token]]
+form = "BTE"
+expansions = ["boite"]
+confidence = "high"
+kind = "skeleton"
+evidence = "openprices:60947 (CREME UHT BTE 25CL BIO MR)"
+
+[[token]]
+form = "BCHE"
+expansions = ["bouchee"]
+confidence = "medium"
+kind = "skeleton"
+evidence = "openprices:23005 (RANOU GARN BCHE REIN — bouchée à la reine)"
+
+[[token]]
+form = "LT"
+expansions = ["lait"]
+confidence = "medium"
+kind = "skeleton"
+evidence = "openprices:122557 (BISC.ORIG.CHOC.LT MC VITIE300G)"
+notes = "Le litre est consommé par l'analyseur de quantités avant d'arriver ici ; reste le risque sur un ticket mal océrisé."
+
+
+# -----------------------------------------------------------------------------
+# Désignations — sigles
+# -----------------------------------------------------------------------------
+
+[[token]]
+form = "SSA"
+expansions = ["sans sucres ajoutes"]
+confidence = "high"
+kind = "initialism"
+evidence = "openprices:23005 (PAQUITO SSA POM/PRUN) ; openprices:16595 (CHARL&AL SSA POM/M)"
+
+[[token]]
+form = "MG"
+expansions = ["matiere grasse"]
+confidence = "high"
+kind = "initialism"
+evidence = "openprices:8932 (82%MG, 7,6%MG) ; openprices:122557 (18%MG)"
+
+[[token]]
+form = "VPF"
+expansions = ["viande de porc francaise"]
+confidence = "high"
+kind = "initialism"
+evidence = "openprices:60947 (JAMBON SUP DD 10T VPF)"
+
+[[token]]
+form = "DD"
+expansions = ["decouenne degraisse"]
+confidence = "medium"
+kind = "initialism"
+evidence = "openprices:60947 (JAMBON SUP DD 10T VPF)"
+
+[[token]]
+form = "NTAR"
+expansions = ["non traite apres recolte"]
+confidence = "medium"
+kind = "initialism"
+evidence = "openprices:122557 (CITRON EUREKA NTAR)"
+
+[[token]]
+form = "SDG"
+expansions = ["sel de guerande"]
+confidence = "medium"
+kind = "initialism"
+evidence = "openprices:122557 (CHIPS A.BEURRE &SDG BRETS 125G)"
+
+[[token]]
+form = "BBC"
+expansions = ["bleu blanc coeur"]
+confidence = "medium"
+kind = "initialism"
+evidence = "openprices:8932 (LAIT UHT 1/2ECREM.BBC U 6X25CL)"
+
+[[token]]
+form = "E.T"
+expansions = ["essuie tout"]
+confidence = "medium"
+kind = "initialism"
+evidence = "openprices:16595 (MPVT E.T. COMPACT)"
+
+[[token]]
+form = "PH"
+expansions = ["papier hygienique"]
+confidence = "medium"
+kind = "initialism"
+evidence = "openprices:16595 (MPVT PH COMPACT X4)"
+
+
+# -----------------------------------------------------------------------------
+# Qualificatifs
+# -----------------------------------------------------------------------------
+
+[[token]]
+form = "1/2"
+expansions = ["demi"]
+confidence = "high"
+kind = "qualifier"
+evidence = "openprices:60947 (LAIT 1/2 ECREME BIO BOUT 6X1L) ; openprices:8932 (LAIT UHT 1/2ECREM.BBC U)"
+
+[[token]]
+form = "NAT"
+expansions = ["nature"]
+confidence = "high"
+kind = "qualifier"
+evidence = "openprices:60947 (GERVAIS PETIT SUISSE NAT X12) ; openprices:8932 (FROM.BLC NAT.7,6%MG) ; openprices:16595 (MPBIO YAOURT NAT.)"
+
+[[token]]
+form = "ENT"
+expansions = ["entier"]
+confidence = "high"
+kind = "qualifier"
+evidence = "openprices:8932 (CREME UHT ENT.LIQ.30% U 3X20CL)"
+
+[[token]]
+form = "LIQ"
+expansions = ["liquide"]
+confidence = "high"
+kind = "qualifier"
+evidence = "openprices:8932 (CREME UHT ENT.LIQ.30% U 3X20CL)"
+
+[[token]]
+form = "AFF"
+expansions = ["affine"]
+confidence = "medium"
+kind = "qualifier"
+evidence = "openprices:8932 (BRILLAT SAVARI.AFF.IGP LP 100G)"
+
+[[token]]
+form = "SUP"
+expansions = ["superieur", "super"]
+confidence = "medium"
+kind = "qualifier"
+evidence = "openprices:60947 (JAMBON SUP DD 10T VPF — supérieur) ; openprices:122557 (SUP.SMOOTH ANTIOXI.INNOC. — super smoothie)"
+
+[[token]]
+form = "ST"
+expansions = ["saint", "sachet"]
+confidence = "low"
+kind = "truncation"
+evidence = "openprices:8932 (ST JACQ., INF.ELEPH.NUIT TRANQUIL.X20ST) ; openprices:111936 (6ST LEVURE BOULAN.)"
+notes = "Position-dépendant : « saint » devant un nom propre, « sachet » derrière un compte. Le module rend les deux ; les bigrammes ST JACQ / ST MARCELLIN tranchent quand ils s'appliquent."
+
+[[token]]
+form = "ST JACQ"
+expansions = ["saint jacques"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:8932 (ST JACQ.FOND.POIREAUX RIZ 280G)"
+
+[[token]]
+form = "ST MARCELLIN"
+expansions = ["saint marcellin"]
+confidence = "high"
+kind = "truncation"
+evidence = "openprices:60984 (*ST MARCELLIN RLX 3..) ; openprices:19960 (Raviole St Marcellin)"
+
+[[token]]
+form = "STE"
+expansions = ["sainte"]
+confidence = "medium"
+kind = "truncation"
+evidence = "openprices:60984 (*SOIGNON STE MAURE .. — Sainte-Maure)"
+
+
+# -----------------------------------------------------------------------------
+# Marques et marques de distributeur. Aucune lecture : elles sont retirées de la
+# désignation pour que « coleslaw » s'apparie, plutôt que « ranou coleslaw ».
+# -----------------------------------------------------------------------------
+
+[[token]]
+form = "MR"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["leclerc"]
+evidence = "openprices:60947 (CREME UHT BTE 25CL BIO MR, CHIPS POIVRE NOIR 120G MR — Marque Repère)"
+
+[[token]]
+form = "DELISSE"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["leclerc"]
+evidence = "openprices:60947 (CREME UHT 12% UHT DELISSE 1L, YAG NATURE DELISSE 450G)"
+
+[[token]]
+form = "TRADILEGE"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["leclerc"]
+evidence = "openprices:60947 (ALLUMETTES BACON TRADILEGE 200G)"
+
+[[token]]
+form = "TOP BUDGET"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (TOP BUDGET SALADE ME)"
+
+[[token]]
+form = "CHABRIOR"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (CHABRIOR GRANDMIE CO)"
+
+[[token]]
+form = "CHAB"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (CHAB.BARR.CEREA.FIGU)"
+
+[[token]]
+form = "ST ELOI"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (ST ELOI POIS FF/CAR, ST ELOI VELOUTE LEGU, ST ELOI MACEDOINE LE)"
+
+[[token]]
+form = "RANOU"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (RANOU GARN BCHE REIN, RANOU COLESLAW 300GR — Monique Ranou)"
+
+[[token]]
+form = "M.RANOU"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (M.RANOU CHOUCROUTE G, M.RANOU POTEE AUVERG)"
+
+[[token]]
+form = "PAQUITO"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (PAQUITO SSA POM/PRUN)"
+
+[[token]]
+form = "PAT"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (PAT BIFIDUS NAT 12X1 — Pâturages)"
+notes = "Portée volontairement limitée à Intermarché : ailleurs, PAT est une troncature de « pâte »."
+
+[[token]]
+form = "APTA"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (APTA VSL ECOLABEL CI)"
+
+[[token]]
+form = "IDS"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (IDS NEM POULET X4, IDS KTIPITI 180 GR — Itinéraire des Saveurs)"
+
+[[token]]
+form = "ODYSS"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["intermarche"]
+evidence = "openprices:23005 (ODYSS FILET HARENG N — Odyssée)"
+
+[[token]]
+form = "U"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["super-u", "u-express", "hyper-u", "utile"]
+evidence = "openprices:8932 (LARDONS NATURE U 200G, RIZ LONG ARBORIO U ETUI 500G) ; openprices:122557"
+notes = "Portée obligatoire : une lettre isolée retirée d'une désignation chez la mauvaise enseigne est une perte d'information silencieuse."
+
+[[token]]
+form = "UDNR"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["super-u", "u-express", "hyper-u", "utile"]
+evidence = "openprices:122557 (OLIVE.NRS NYONS AOP UDNR 230G, ROCAMAD.AOP 22% UDNR X3 105G)"
+
+[[token]]
+form = "PXM"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["super-u", "u-express", "hyper-u", "utile"]
+evidence = "openprices:8932 (RIZ LONG BLANC PXM 1KG — gamme Prix Mini)"
+
+[[token]]
+form = "AUC"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["auchan"]
+evidence = "openprices:60984 (*AUC TAVOLA ITALIA .., AUC EPONGE VITROCER.., AUC LIQ VAISSELLE S..)"
+
+[[token]]
+form = "AUCHAN"
+expansions = []
+confidence = "high"
+kind = "private_label"
+retailers = ["auchan"]
+evidence = "openprices:60984 (*AUCHAN POMMES DAUP..)"
+
+[[token]]
+form = "CRF"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["carrefour", "carrefour-market"]
+evidence = "openprices:111936 (BANANE CRF BIO)"
+
+[[token]]
+form = "FQC"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["carrefour", "carrefour-market"]
+evidence = "openprices:111936 (CAROTTE FQC VRAC — Filière Qualité Carrefour)"
+
+[[token]]
+form = "MBIO"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["monoprix"]
+evidence = "openprices:16595 (MBIO CAROTTE SACHE, MBIO\"COURG POTI)"
+
+[[token]]
+form = "MPBIO"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["monoprix"]
+evidence = "openprices:16595 (MPBIO YAOURT NAT.)"
+
+[[token]]
+form = "M/BIO"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["monoprix"]
+evidence = "openprices:16595 (M/BIO\"ORANGE\"T\"F.1)"
+
+[[token]]
+form = "MPVT"
+expansions = []
+confidence = "medium"
+kind = "private_label"
+retailers = ["monoprix"]
+evidence = "openprices:16595 (MPVT E.T. COMPACT, MPVT PH COMPACT X4)"
+
+[[token]]
+form = "PRESID"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (BEUR.PLAQ.PRESID.DX 82%MG 500G — Président)"
+
+[[token]]
+form = "ENTRMONT"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (*ENTRMONT EMMENTAL .. — Entremont)"
+
+[[token]]
+form = "ELEPH"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (INF.ELEPH.NUIT TRANQUIL.X20ST — Éléphant)"
+
+[[token]]
+form = "GD FERM"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (*GD FERM BEUR MOULE..) ; openprices:122557 (BEUR.BIO DX 82% GD FERM.250G — Grand Fermage)"
+
+[[token]]
+form = "A.ECO"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:122557 (CHOCO.NR ORANGE BIO A.ECO 100G, avec ALTER ECO en entier deux lignes plus bas)"
+
+[[token]]
+form = "MC VITIE"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:122557 (BISC.ORIG.CHOC.LT MC VITIE300G) ; openprices:111936 (MC VITIES ORIGINAL — McVitie's)"
+
+[[token]]
+form = "MC VITIES"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:111936 (MC VITIES ORIGINAL)"
+
+[[token]]
+form = "BENS"
+expansions = []
+confidence = "medium"
+kind = "brand"
+evidence = "openprices:23005 (BENS.RIZ MIC.OND.MED — Ben's)"
+
+[[token]]
+form = "LA VOSGIEN"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:23005 (LA VOSGIEN.SEVE DES — La Vosgienne)"
+
+[[token]]
+form = "JB"
+expansions = []
+confidence = "low"
+kind = "brand"
+evidence = "openprices:122557 (INFU.TILLEUL ORANG.BIO JB 30G — Jardin BiO' supposé)"
+
+[[token]]
+form = "INNOC"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:122557 (SUP.SMOOTH ANTIOXI.INNOC.750ML — Innocent)"
+
+[[token]]
+form = "CHARL&AL"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:16595 (CHARL&AL SSA POM/M — Charles & Alice)"
+
+[[token]]
+form = "GERBL"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:16595 (GERBL LEVURE DIET) ; openprices:23005 (GERBLE BISCUIT PAVOT — Gerblé)"
+
+[[token]]
+form = "GERBLE"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:23005 (GERBLE GOUTER.ECORCE, GERBLE BISCUIT SOJA)"
+
+[[token]]
+form = "GERBLEBIO"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:23005 (GERBLEBIO BISC.CITR/)"
+
+[[token]]
+form = "BOND"
+expansions = []
+confidence = "medium"
+kind = "brand"
+evidence = "openprices:23005 (BOND. CHAMPIGNON/GRE — Bonduelle supposé)"
+
+[[token]]
+form = "SOJASUN"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:122557 (SOJASUN SKYR NATURE 400G)"
+
+[[token]]
+form = "SALVETAT"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:23005 (SALVETAT CITRON SICI) ; openprices:19960 (Salvetat)"
+
+[[token]]
+form = "RICOLA"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:23005 (RICOLA S/SUC CITRON) ; openprices:19960 (Ricola Orange Menthe)"
+
+[[token]]
+form = "SPONTEX"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (SPONTEX GRATTE EPON..)"
+
+[[token]]
+form = "SANYTOL"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (SANYTOL GEL THYM CI..)"
+
+[[token]]
+form = "TIPIAK"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (*TIPIAK CROUTONS L ..)"
+
+[[token]]
+form = "LUSTUCRU"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (*LUSTUCRU GNOCCHI A..)"
+
+[[token]]
+form = "BONNE MAMAN"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (*BONNE MAMAN BISCUI..)"
+
+[[token]]
+form = "BONS MAYENNAIS"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (*BONS MAYENNAIS BRI..)"
+
+[[token]]
+form = "SOIGNON"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (*SOIGNON STE MAURE ..)"
+
+[[token]]
+form = "LACTEL"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60984 (*BIO LACTEL ENTIER ..)"
+
+[[token]]
+form = "ANDROS"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60947 (DESS.POM/CHATAIGNE ANDROS X8)"
+
+[[token]]
+form = "BARILLA"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (SPAGHETTI N°5 BARILLA ETUI 1KG)"
+
+[[token]]
+form = "HERTA"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (PATE A TARTE BRISEE HERTA 230G)"
+
+[[token]]
+form = "PASQUIER"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (BRIOCHETTES PASQUIER X12 480G)"
+
+[[token]]
+form = "CIRIO"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (COULIS DE TOMATE CIRIO 200G)"
+
+[[token]]
+form = "MAPLE JOE"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (SIROP D'ERABLE MAPLE JOE 250G)"
+
+[[token]]
+form = "LA TISANIERE"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (20SACHETS DETOX LA TISANIERE)"
+
+[[token]]
+form = "MONSTER MUNCH"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (MONSTER MUNCH JAM/FROM.2X135G)"
+
+[[token]]
+form = "YUM YUM"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:8932 (SOUPE NOUILL.YUM YUM CREV.100G)"
+
+[[token]]
+form = "KERCADELAC"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:122557 (QUATRE-QUARTS KERCADELAC 200G)"
+
+[[token]]
+form = "DELACRE"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:122557 (CANASTA AU GOUDA DELACRE 75G)"
+
+[[token]]
+form = "SALAKIS"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:122557 (SALAKIS LP BREBIS 22,8% 200G)"
+
+[[token]]
+form = "BRETS"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:122557 (CHIPS A.BEURRE &SDG BRETS 125G)"
+
+[[token]]
+form = "VIOLIFE"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:16595 (VIOLIFE RAPE SAVEU)"
+
+[[token]]
+form = "WASA"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:111936 (270G WASA LEGER)"
+
+[[token]]
+form = "LAYS"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:111936 (135G LAYS BARBEC)"
+
+[[token]]
+form = "VOLVIC"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:111936 (8L VOLVIC)"
+
+[[token]]
+form = "CHOCAPIC"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:60947 (CHOCAPIC CEREALES BIO 375G)"
+
+[[token]]
+form = "BJORG"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:23005 (BJORG MUESLI 375G BI)"
+
+[[token]]
+form = "FIORINI"
+expansions = []
+confidence = "high"
+kind = "brand"
+evidence = "openprices:23005 (FIORINI RAVIOLIS BOE)"
+
+
+# -----------------------------------------------------------------------------
+# ⚠️ BLOC NON VÉRIFIÉ — formes citées dans la littérature interne mais absentes
+# des huit tickets dépouillés. Toutes en `low` : le module les rend en signalant
+# qu'une revue humaine est nécessaire. C'est le bloc à supprimer en premier si
+# un mauvais appariement remonte.
+# -----------------------------------------------------------------------------
+
+[[token]]
+form = "CRQ"
+expansions = ["croque"]
+confidence = "low"
+kind = "skeleton"
+evidence = "assumed — non observé sur les tickets dépouillés"
+
+[[token]]
+form = "NOUV"
+expansions = ["nouveau", "nouvelle"]
+confidence = "low"
+kind = "truncation"
+evidence = "assumed — non observé sur les tickets dépouillés"
+
+[[token]]
+form = "ECR"
+expansions = ["ecreme"]
+confidence = "low"
+kind = "truncation"
+evidence = "assumed — la forme observée est ECREM (openprices:8932), pas ECR"
+
+[[token]]
+form = "SS"
+expansions = ["sans"]
+confidence = "low"
+kind = "skeleton"
+evidence = "assumed — la forme observée est S/ (openprices:122557, openprices:23005), pas SS"

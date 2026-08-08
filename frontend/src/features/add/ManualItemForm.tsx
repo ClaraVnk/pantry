@@ -11,9 +11,20 @@ import type {
 import { Button, Callout, Field } from '../../components/ui';
 import { controlClass } from '../../components/controlClass';
 import { hasValidGtinChecksum, isPlausibleGtin, normaliseGtin } from '../../lib/gtin';
+import { normaliseAmount } from '../../lib/quantity';
+import { unitOptions } from '../../lib/units';
 import styles from './Add.module.css';
 
-const UNITS = ['g', 'kg', 'mL', 'L', 'pièce', 'portion', 'boîte', 'sachet', 'bocal'];
+/**
+ * The unit vocabulary, from the one module that holds it (`lib/units.ts`).
+ *
+ * This form used to carry its own list — `pièce`, `portion`, `boîte`, `sachet`,
+ * `bocal`, `mL`, `L` — and not one of those is a code in the `unit` reference
+ * table seeded by migration `0002`. Every one came back `422 unknown-unit`, and
+ * `pièce` was the field's *default value*: "saisir un article à la main" failed
+ * on submit for anybody who did not happen to type `g` or `kg`.
+ */
+const UNITS = unitOptions([]);
 
 export interface ItemDraft {
   /** Set when the GTIN resolved to a known product; we then send product_id. */
@@ -39,21 +50,13 @@ interface FieldErrors {
   gtin?: string;
 }
 
-/** Amounts travel as decimal strings; accept a French comma, send a dot. */
-function normaliseAmount(input: string): string | null {
-  const trimmed = input.trim().replace(',', '.');
-  if (!/^\d+(\.\d{1,3})?$/.test(trimmed)) return null;
-  if (Number(trimmed) <= 0) return null;
-  return trimmed;
-}
-
 export function ManualItemForm({ draft, locations, onSaved, onCancel }: Props) {
   const [name, setName] = useState(draft.product?.name ?? '');
   const [brand, setBrand] = useState(draft.product?.brand ?? '');
   const [gtin, setGtin] = useState(draft.gtin ?? draft.product?.gtin ?? '');
   const [locationId, setLocationId] = useState(locations[0]?.id ?? '');
   const [amount, setAmount] = useState('1');
-  const [unit, setUnit] = useState('pièce');
+  const [unit, setUnit] = useState('piece');
   const [expiresOn, setExpiresOn] = useState('');
   const [expiryKind, setExpiryKind] = useState<ExpiryKind>('use_by');
   const [errors, setErrors] = useState<FieldErrors>({});
@@ -240,28 +243,31 @@ export function ManualItemForm({ draft, locations, onSaved, onCancel }: Props) {
             )}
           </Field>
 
+          {/*
+            A `<select>` over the closed set, not a text field with a datalist.
+            A datalist *suggests*; it accepts anything typed past it, and what
+            the server accepts is a code from one table. The shopping screens
+            reached the same conclusion first (`lib/units.ts`); this field now
+            behaves like them.
+          */}
           <Field label="Unité" required error={errors.unit}>
             {({ id, describedBy, invalid }) => (
-              <>
-                <input
-                  id={id}
-                  aria-describedby={describedBy}
-                  aria-invalid={invalid}
-                  className={controlClass(invalid)}
-                  type="text"
-                  list="chaudron-units"
-                  autoComplete="off"
-                  value={unit}
-                  onChange={(event) => {
-                    setUnit(event.target.value);
-                  }}
-                />
-                <datalist id="chaudron-units">
-                  {UNITS.map((value) => (
-                    <option key={value} value={value} />
-                  ))}
-                </datalist>
-              </>
+              <select
+                id={id}
+                aria-describedby={describedBy}
+                aria-invalid={invalid}
+                className={controlClass(invalid)}
+                value={unit}
+                onChange={(event) => {
+                  setUnit(event.target.value);
+                }}
+              >
+                {UNITS.map((entry) => (
+                  <option key={entry.code} value={entry.code}>
+                    {entry.symbol}
+                  </option>
+                ))}
+              </select>
             )}
           </Field>
         </div>
